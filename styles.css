@@ -270,7 +270,7 @@
     font-size: 12px;
     font-weight: 600;
     height: 100%; /* Passt sich der Input-Höhe an */
-    min-width: 100px;
+    min-width: 120px; /* UPDATED: Von 100px auf 120px erhöht */
     white-space: nowrap;
 }
 
@@ -288,7 +288,8 @@
     border-radius: 4px;
     box-shadow: 0 4px 10px rgba(0,0,0,0.1);
     z-index: 1000;
-    min-width: 250px;
+    min-width: 350px; /* UPDATED: Verbreitert (war 250px), damit lange Texte passen */
+    white-space: nowrap; /* UPDATED: Verhindert Zeilenumbruch */
     overflow: hidden;
 }
 
