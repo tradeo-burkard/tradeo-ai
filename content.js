@@ -1,5 +1,4 @@
 // --- KONFIGURATION ---
-const MODEL_NAME = "gemini-2.5-flash"; 
 const API_VERSION = "v1beta";
 
 // SYSTEM PROMPT
@@ -22,6 +21,25 @@ Struktur:
 }
 `;
 
+// Model Definitionen
+const AI_MODELS = {
+    "gemini-2.5-flash-lite": { 
+        id: "gemini-2.5-flash-lite", 
+        label: "2.5 Flash Lite", 
+        dropdownText: "gemini-2.5-flash-lite (sehr schnell)" 
+    },
+    "gemini-2.5-flash": { 
+        id: "gemini-2.5-flash", 
+        label: "2.5 Flash", 
+        dropdownText: "gemini-2.5-flash (schnell)" 
+    },
+    "gemini-3-pro-preview": { 
+        id: "gemini-3-pro-preview", 
+        label: "3 Pro", 
+        dropdownText: "gemini-3-pro-preview (langsam, deep thinking)" 
+    }
+};
+
 function init() {
     const originalReplyBtn = document.querySelector('.conv-reply');
     if (!originalReplyBtn || document.getElementById('tradeo-ai-copilot-zone')) return;
@@ -32,14 +50,21 @@ function init() {
 
     const copilotContainer = document.createElement('div');
     copilotContainer.id = 'tradeo-ai-copilot-zone';
+    
+    // HTML mit neuem Model-Selector Wrapper
     copilotContainer.innerHTML = `
         <div id="tradeo-ai-dummy-draft">
             <em>🤖 AI analysiert das Ticket...</em>
         </div>
         <div id="tradeo-ai-chat-history">
-            </div>
+        </div>
         <div id="tradeo-ai-resize-handle" title="Höhe anpassen"></div>
         <div id="tradeo-ai-input-area">
+            <div class="tradeo-ai-model-wrapper">
+                <button id="tradeo-ai-model-btn" type="button">2.5 Flash</button>
+                <div id="tradeo-ai-model-dropdown" class="hidden">
+                    </div>
+            </div>
             <textarea id="tradeo-ai-input" placeholder="Anweisung an AI (z.B. 'Kürzer fassen' oder 'Rabatt anbieten')..."></textarea>
             <button id="tradeo-ai-send-btn">Go</button>
         </div>
@@ -59,7 +84,53 @@ function init() {
 
     checkApiKeyUI();
 
-    // 2. BUTTONS
+    // 2. STATE & BUTTONS
+    window.aiState = {
+        lastDraft: "",     
+        isRealMode: false,
+        chatHistory: [],
+        currentModel: "gemini-2.5-flash" // Default
+    };
+
+    // --- MODEL SELECTOR LOGIC ---
+    const modelBtn = document.getElementById('tradeo-ai-model-btn');
+    const modelDropdown = document.getElementById('tradeo-ai-model-dropdown');
+
+    // Dropdown füllen
+    Object.values(AI_MODELS).forEach(model => {
+        const item = document.createElement('div');
+        item.className = 'model-item';
+        if(model.id === window.aiState.currentModel) item.classList.add('selected');
+        item.innerText = model.dropdownText;
+        item.onclick = (e) => {
+            // State Update
+            window.aiState.currentModel = model.id;
+            
+            // UI Update
+            modelBtn.innerText = model.label;
+            document.querySelectorAll('.model-item').forEach(el => el.classList.remove('selected'));
+            item.classList.add('selected');
+            modelDropdown.classList.add('hidden');
+            e.stopPropagation();
+        };
+        modelDropdown.appendChild(item);
+    });
+
+    // Toggle Dropdown
+    modelBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        modelDropdown.classList.toggle('hidden');
+    });
+
+    // Close on click outside
+    document.addEventListener('click', () => {
+        if (!modelDropdown.classList.contains('hidden')) {
+            modelDropdown.classList.add('hidden');
+        }
+    });
+
+    // --- EXISTING LOGIC ---
+
     const aiBtn = originalReplyBtn.cloneNode(true);
     aiBtn.classList.add('tradeo-ai-toolbar-btn');
     aiBtn.setAttribute('data-original-title', 'Mit AI Antworten');
@@ -73,23 +144,12 @@ function init() {
 
     originalReplyBtn.parentNode.insertBefore(aiBtn, originalReplyBtn.nextSibling);
 
-    // --- STATE MANAGEMENT ---
-    window.aiState = {
-        lastDraft: "",     
-        isRealMode: false,
-        chatHistory: [] 
-    };
-
-    // 3. EVENT LISTENER
-
-    // A) Blitz Button
+    // Event Listeners (Rest wie gehabt)
     aiBtn.addEventListener('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
         originalReplyBtn.click();
-        
         window.aiState.isRealMode = true;
-
         waitForSummernote(function(editable) {
             const contentToTransfer = window.aiState.lastDraft || document.getElementById('tradeo-ai-dummy-draft').innerHTML;
             setEditorContent(editable, contentToTransfer);
@@ -97,13 +157,11 @@ function init() {
         });
     });
 
-    // B) Standard Button
     originalReplyBtn.addEventListener('click', function() {
         window.aiState.isRealMode = true;
         document.getElementById('tradeo-ai-dummy-draft').style.display = 'none';
     });
 
-    // C) Verwerfen (Mülleimer)
     document.body.addEventListener('click', function(e) {
         if (e.target.closest('button[aria-label="Verwerfen"]') || e.target.closest('.glyphicon-trash')) {
             window.aiState.isRealMode = false;
@@ -115,7 +173,6 @@ function init() {
         }
     });
 
-    // D) Chat Senden
     document.getElementById('tradeo-ai-send-btn').addEventListener('click', () => runAI());
     document.getElementById('tradeo-ai-input').addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -124,7 +181,7 @@ function init() {
         }
     });
 
-    // E) RESIZE LOGIK (Optimiert: Sticky Bottom)
+    // Resize Handler (unverändert)
     const resizer = document.getElementById('tradeo-ai-resize-handle');
     const chatHistory = document.getElementById('tradeo-ai-chat-history');
 
@@ -134,33 +191,23 @@ function init() {
             const startY = e.clientY;
             const startHeight = chatHistory.offsetHeight;
             
-            // Wir merken uns, ob wir ganz unten waren (optional, aber hier erzwingen wir es einfach wie gewünscht)
-            
             function doDrag(e) {
-                // Berechne neue Höhe: Start-Höhe + Differenz der Mausbewegung
                 const newHeight = startHeight + (e.clientY - startY);
-                
-                if (newHeight >= 120) { // Minimum 120px
+                if (newHeight >= 120) { 
                     chatHistory.style.height = newHeight + 'px';
-                    
-                    // DAS IST DER FIX:
-                    // Wir setzen die Scroll-Position sofort auf das Maximum (ganz unten).
-                    // Dadurch "wandert" der Inhalt optisch mit nach oben, wenn die Box kleiner wird.
                     chatHistory.scrollTop = chatHistory.scrollHeight;
                 }
             }
-
             function stopDrag() {
                 document.removeEventListener('mousemove', doDrag);
                 document.removeEventListener('mouseup', stopDrag);
             }
-
             document.addEventListener('mousemove', doDrag);
             document.addEventListener('mouseup', stopDrag);
         });
     }
 
-    // 4. AUTO START
+    // Auto Start
     copilotContainer.style.display = 'block';
     addChatMessage("system", "Starte AI...");
     runAI(true);
@@ -377,7 +424,9 @@ async function runAI(isInitial = false) {
     User: ${userPrompt}
     `;
 
-    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
+    // DYNAMIC MODEL SELECTION
+    const selectedModel = window.aiState.currentModel || "gemini-2.5-flash";
+    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${selectedModel}:generateContent?key=${apiKey}`;
 
     try {
         const response = await fetch(endpoint, {
@@ -387,7 +436,7 @@ async function runAI(isInitial = false) {
         });
 
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error?.message);
+        if (!response.ok) throw new Error(data.error?.message || "API Error");
 
         let rawText = data.candidates[0].content.parts[0].text;
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
@@ -411,23 +460,22 @@ async function runAI(isInitial = false) {
             const editable = document.querySelector('.note-editable');
             if (editable) {
                 setEditorContent(editable, jsonResponse.draft);
-                // Flash wird IN setEditorContent ausgelöst
             } else {
                 dummyDraft.innerHTML = jsonResponse.draft;
                 dummyDraft.style.display = 'block';
                 window.aiState.isRealMode = false;
-                flashElement(dummyDraft); // NEU: Flash für Dummy
+                flashElement(dummyDraft);
             }
         } else {
             dummyDraft.innerHTML = jsonResponse.draft;
             dummyDraft.style.display = 'block';
-            flashElement(dummyDraft); // NEU: Flash für Dummy
+            flashElement(dummyDraft);
         }
 
         if (!isInitial) input.value = '';
 
     } catch (error) {
-        addChatMessage('system', `<span style="color:red">Fehler: ${error.message}</span>`);
+        addChatMessage('system', `<span style="color:red">Fehler (${selectedModel}): ${error.message}</span>`);
     } finally {
         btn.disabled = false;
         btn.innerText = "Go";
