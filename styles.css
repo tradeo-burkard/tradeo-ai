@@ -1,0 +1,77 @@
+/* Container für das AI Widget */
+#tradeo-ai-box {
+    background: #fff;
+    border: 1px solid #dcdcdc;
+    border-radius: 5px;
+    padding: 15px;
+    margin-top: 20px;
+    margin-bottom: 20px; /* Etwas Abstand nach unten */
+    box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    clear: both; /* Stellt sicher, dass es unter anderen Elementen steht */
+}
+
+#tradeo-ai-box h3 {
+    margin-top: 0;
+    font-size: 14px;
+    font-weight: bold;
+    color: #333;
+    border-bottom: 2px solid #4285f4; /* Google Blue */
+    padding-bottom: 8px;
+    margin-bottom: 10px;
+}
+
+#tradeo-ai-input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    margin-bottom: 10px;
+    box-sizing: border-box;
+    font-size: 13px;
+    resize: vertical;
+}
+
+#tradeo-ai-btn {
+    background-color: #4285f4;
+    color: white;
+    border: none;
+    padding: 8px 15px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    width: 100%;
+    font-weight: bold;
+}
+
+#tradeo-ai-btn:hover {
+    background-color: #3367d6;
+}
+
+#tradeo-ai-btn:disabled {
+    background-color: #ccc;
+    cursor: not-allowed;
+}
+
+#tradeo-ai-result {
+    margin-top: 15px;
+    padding: 10px;
+    background: #f0f2f5;
+    border: 1px solid #dcdcdc;
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap; /* WICHTIG: Damit Zeilenumbrüche der KI erhalten bleiben */
+    display: none; /* Erst ausblenden */
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* Kleines Feld für den API Key beim ersten Start */
+#tradeo-apikey-input {
+    width: 100%;
+    margin-bottom: 10px;
+    border: 1px solid #d93025; /* Rot, damit es auffällt */
+    padding: 5px;
+    border-radius: 4px;
+}
