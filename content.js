@@ -88,25 +88,23 @@ function init() {
     window.aiState = {
         lastDraft: "",     
         isRealMode: false,
+        isGenerating: false,      // NEU: Arbeitet die AI gerade?
+        preventOverwrite: false,  // NEU: Verhindert Schreiben in Editor wenn true
         chatHistory: [],
-        currentModel: "gemini-2.5-flash" // Default
+        currentModel: "gemini-2.5-flash"
     };
 
     // --- MODEL SELECTOR LOGIC ---
     const modelBtn = document.getElementById('tradeo-ai-model-btn');
     const modelDropdown = document.getElementById('tradeo-ai-model-dropdown');
 
-    // Dropdown füllen
     Object.values(AI_MODELS).forEach(model => {
         const item = document.createElement('div');
         item.className = 'model-item';
         if(model.id === window.aiState.currentModel) item.classList.add('selected');
         item.innerText = model.dropdownText;
         item.onclick = (e) => {
-            // State Update
             window.aiState.currentModel = model.id;
-            
-            // UI Update
             modelBtn.innerText = model.label;
             document.querySelectorAll('.model-item').forEach(el => el.classList.remove('selected'));
             item.classList.add('selected');
@@ -116,20 +114,18 @@ function init() {
         modelDropdown.appendChild(item);
     });
 
-    // Toggle Dropdown
     modelBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         modelDropdown.classList.toggle('hidden');
     });
 
-    // Close on click outside
     document.addEventListener('click', () => {
         if (!modelDropdown.classList.contains('hidden')) {
             modelDropdown.classList.add('hidden');
         }
     });
 
-    // --- EXISTING LOGIC ---
+    // --- EXISTING LOGIC & OBSERVER ---
 
     const aiBtn = originalReplyBtn.cloneNode(true);
     aiBtn.classList.add('tradeo-ai-toolbar-btn');
@@ -144,12 +140,18 @@ function init() {
 
     originalReplyBtn.parentNode.insertBefore(aiBtn, originalReplyBtn.nextSibling);
 
-    // Event Listeners (Rest wie gehabt)
+    // Observer starten, um zu erkennen, wann der Editor geschlossen wird
+    setupEditorObserver();
+
+    // EVENT LISTENER: AI Button
     aiBtn.addEventListener('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
-        originalReplyBtn.click();
+        originalReplyBtn.click(); // Öffnet den echten Editor
+        
         window.aiState.isRealMode = true;
+        window.aiState.preventOverwrite = false; // Hier wollen wir explizit überschreiben
+        
         waitForSummernote(function(editable) {
             const contentToTransfer = window.aiState.lastDraft || document.getElementById('tradeo-ai-dummy-draft').innerHTML;
             setEditorContent(editable, contentToTransfer);
@@ -157,21 +159,23 @@ function init() {
         });
     });
 
+    // EVENT LISTENER: Original Antworten Button
     originalReplyBtn.addEventListener('click', function() {
-        window.aiState.isRealMode = true;
+        // UI sofort aufräumen: Dummy weg
         document.getElementById('tradeo-ai-dummy-draft').style.display = 'none';
-    });
+        
+        // Logik: Wir sind jetzt im "echten" Modus
+        window.aiState.isRealMode = true;
 
-    document.body.addEventListener('click', function(e) {
-        if (e.target.closest('button[aria-label="Verwerfen"]') || e.target.closest('.glyphicon-trash')) {
-            window.aiState.isRealMode = false;
-            const dummy = document.getElementById('tradeo-ai-dummy-draft');
-            if (dummy) {
-                if(window.aiState.lastDraft) dummy.innerHTML = window.aiState.lastDraft;
-                dummy.style.display = 'block';
-            }
+        // ABER: Wenn die AI gerade noch am Denken ist (Start-Trigger), 
+        // darf sie uns nicht den Text überschreiben, sobald sie fertig ist.
+        if (window.aiState.isGenerating) {
+            console.log("AI arbeitet noch -> Overwrite verhindern");
+            window.aiState.preventOverwrite = true;
         }
     });
+
+    // Der alte "Trash-Click-Listener" wurde entfernt, da der Observer das jetzt zuverlässig macht.
 
     document.getElementById('tradeo-ai-send-btn').addEventListener('click', () => runAI());
     document.getElementById('tradeo-ai-input').addEventListener('keydown', (e) => {
@@ -181,7 +185,7 @@ function init() {
         }
     });
 
-    // Resize Handler (unverändert)
+    // Resize Handler
     const resizer = document.getElementById('tradeo-ai-resize-handle');
     const chatHistory = document.getElementById('tradeo-ai-chat-history');
 
@@ -190,7 +194,6 @@ function init() {
             e.preventDefault();
             const startY = e.clientY;
             const startHeight = chatHistory.offsetHeight;
-            
             function doDrag(e) {
                 const newHeight = startHeight + (e.clientY - startY);
                 if (newHeight >= 120) { 
@@ -211,6 +214,45 @@ function init() {
     copilotContainer.style.display = 'block';
     addChatMessage("system", "Starte AI...");
     runAI(true);
+}
+
+// --- NEU: MUTATION OBSERVER FÜR DEN EDITOR ---
+function setupEditorObserver() {
+    const editorBlock = document.querySelector('.conv-reply-block');
+    if (!editorBlock) return;
+
+    // Wir beobachten Attribut-Änderungen (speziell 'class' und 'style')
+    const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            if (mutation.attributeName === 'class' || mutation.attributeName === 'style') {
+                // Check: Ist der Editor versteckt?
+                // FreeScout nutzt meistens die Klasse 'hidden' oder display:none
+                const isHidden = editorBlock.classList.contains('hidden') || editorBlock.style.display === 'none';
+                
+                if (isHidden) {
+                    // Editor ist zu (wurde gelöscht, gesendet oder verworfen)
+                    // -> Reset State
+                    window.aiState.isRealMode = false;
+                    window.aiState.preventOverwrite = false;
+                    
+                    // -> Show Dummy Draft
+                    const dummy = document.getElementById('tradeo-ai-dummy-draft');
+                    if (dummy) {
+                        // Inhalt auffrischen falls nötig
+                        if(window.aiState.lastDraft) dummy.innerHTML = window.aiState.lastDraft;
+                        dummy.style.display = 'block';
+                    }
+                } else {
+                    // Editor ist offen
+                    // -> Hide Dummy Draft (Sicherheitshalber, falls Button-Logik versagt)
+                    const dummy = document.getElementById('tradeo-ai-dummy-draft');
+                    if (dummy) dummy.style.display = 'none';
+                }
+            }
+        });
+    });
+
+    observer.observe(editorBlock, { attributes: true });
 }
 
 function checkApiKeyUI() {
@@ -236,33 +278,19 @@ function waitForSummernote(callback) {
 
 function setEditorContent(editableElement, htmlContent) {
     if (!editableElement) return;
-
-    // 1. Scroll-Position merken
     const scrollX = window.scrollX;
     const scrollY = window.scrollY;
-
     editableElement.innerHTML = htmlContent;
     editableElement.dispatchEvent(new Event('input', { bubbles: true }));
-    
-    // 2. Fokus ohne Scrollen
     editableElement.focus({ preventScroll: true });
-
-    // 3. Scroll wiederherstellen
     window.scrollTo(scrollX, scrollY);
-
-    // 4. NEU: Visuelles Feedback
-    // Wir flashen das Elternelement (oft .note-editor), damit der Rahmen schön aussieht
-    // Falls Summernote Struktur anders ist, nehmen wir direkt das Element.
     const flashTarget = editableElement.closest('.note-editor') || editableElement;
     flashElement(flashTarget);
 }
 
-// --- HISTORY FUNKTIONEN ---
-
 function addChatMessage(role, text) {
     const historyContainer = document.getElementById('tradeo-ai-chat-history');
     const msgDiv = document.createElement('div');
-    
     if (role === 'user') {
         msgDiv.className = 'user-msg';
         msgDiv.innerHTML = `<strong>DU</strong> ${text}`;
@@ -274,23 +302,15 @@ function addChatMessage(role, text) {
         msgDiv.style.fontStyle = 'italic';
         msgDiv.innerHTML = text;
     }
-    
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
 }
 
 function flashElement(element) {
     if (!element) return;
-    
-    // Animation resetten, falls sie gerade läuft (für schnelle Updates hintereinander)
     element.classList.remove('tradeo-flash-active');
-    
-    // "Reflow" erzwingen (Magic Trick, damit der Browser die CSS-Animation neu startet)
     void element.offsetWidth;
-    
     element.classList.add('tradeo-flash-active');
-    
-    // Klasse nach Animation aufräumen
     setTimeout(() => {
         element.classList.remove('tradeo-flash-active');
     }, 1200);
@@ -333,9 +353,20 @@ function addDraftMessage(htmlContent) {
         
         window.aiState.lastDraft = htmlContent;
 
-        if (window.aiState.isRealMode) {
+        // Klügere Logik beim Übernehmen:
+        // Wir schauen, ob der Editor sichtbar ist, nicht nur auf die Variable
+        const editorBlock = document.querySelector('.conv-reply-block');
+        const isEditorVisible = editorBlock && !editorBlock.classList.contains('hidden');
+
+        if (window.aiState.isRealMode || isEditorVisible) {
              const editable = document.querySelector('.note-editable');
-             if (editable) setEditorContent(editable, htmlContent);
+             if (editable) {
+                 setEditorContent(editable, htmlContent);
+             } else {
+                 // Fallback: Editor aufmachen
+                 document.querySelector('.conv-reply').click();
+                 waitForSummernote((ed) => setEditorContent(ed, htmlContent));
+             }
         } else {
             const dummy = document.getElementById('tradeo-ai-dummy-draft');
             if (dummy) {
@@ -364,7 +395,10 @@ async function runAI(isInitial = false) {
 
     let userPrompt = input.value.trim();
     
-    // State Check
+    // State setzen
+    window.aiState.isGenerating = true;
+
+    // Content Check
     let currentDraftContent = "";
     if (window.aiState.isRealMode) {
         const editable = document.querySelector('.note-editable');
@@ -387,7 +421,10 @@ async function runAI(isInitial = false) {
         const stored = await chrome.storage.local.get(['geminiApiKey']);
         apiKey = stored.geminiApiKey;
     }
-    if (!apiKey) return;
+    if (!apiKey) {
+        window.aiState.isGenerating = false;
+        return;
+    }
 
     btn.disabled = true;
     btn.innerText = "...";
@@ -424,7 +461,6 @@ async function runAI(isInitial = false) {
     User: ${userPrompt}
     `;
 
-    // DYNAMIC MODEL SELECTION
     const selectedModel = window.aiState.currentModel || "gemini-2.5-flash";
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${selectedModel}:generateContent?key=${apiKey}`;
 
@@ -453,23 +489,37 @@ async function runAI(isInitial = false) {
         addChatMessage('ai', jsonResponse.feedback);
         window.aiState.chatHistory.push({role: "AI", text: jsonResponse.feedback});
 
-        // 2. Update
+        // 2. Update Logic
         window.aiState.lastDraft = jsonResponse.draft;
 
-        if (window.aiState.isRealMode) {
+        // CHECK: Darf ich in den Editor schreiben?
+        // Bedingung: RealMode ist an UND wir haben KEIN Prevent-Flag
+        if (window.aiState.isRealMode && !window.aiState.preventOverwrite) {
             const editable = document.querySelector('.note-editable');
             if (editable) {
                 setEditorContent(editable, jsonResponse.draft);
             } else {
+                // Fallback, falls Element nicht gefunden, doch in Dummy
                 dummyDraft.innerHTML = jsonResponse.draft;
-                dummyDraft.style.display = 'block';
-                window.aiState.isRealMode = false;
-                flashElement(dummyDraft);
+                // Nicht anzeigen, da User im RealMode ist (aber ohne Editor?) - Edge Case.
             }
         } else {
+            // Wir schreiben NUR in den Dummy Draft
+            // Das passiert, wenn:
+            // a) Editor zu ist (Standard)
+            // b) preventOverwrite gesetzt ist (User hat manuell geklickt während AI lief)
             dummyDraft.innerHTML = jsonResponse.draft;
-            dummyDraft.style.display = 'block';
-            flashElement(dummyDraft);
+            
+            // Wenn preventOverwrite an war, ist der Dummy versteckt (durch den Klick).
+            // Wir lassen ihn versteckt, damit der User nicht gestört wird.
+            // Falls preventOverwrite NICHT an war (also AI im Hintergrund fertig wurde ohne Klick), 
+            // zeigen wir ihn an.
+            if (!window.aiState.preventOverwrite && !window.aiState.isRealMode) {
+                 dummyDraft.style.display = 'block';
+                 flashElement(dummyDraft);
+            } else {
+                console.log("AI fertig, Update im Hintergrund in Dummy Draft gespeichert.");
+            }
         }
 
         if (!isInitial) input.value = '';
@@ -479,11 +529,12 @@ async function runAI(isInitial = false) {
     } finally {
         btn.disabled = false;
         btn.innerText = "Go";
+        window.aiState.isGenerating = false;
+        window.aiState.preventOverwrite = false; // Flag resetten für nächste Runde
     }
 }
 
 // --- BOOTSTRAP / LOADER LOGIC ---
-// Smart-Loader: Wartet auf DOM-Stabilisierung (Debounce) statt starrer Pause.
 
 let bootTimer = null;
 
@@ -492,35 +543,25 @@ function tryStartApp(observer = null) {
     const mainContainer = document.getElementById('conv-layout-main');
     const alreadyInitialized = document.getElementById('tradeo-ai-copilot-zone');
 
-    // 1. Basic Checks: Sind wir am richtigen Ort und noch nicht gestartet?
     if (!replyBtn || !mainContainer || alreadyInitialized) return;
 
-    // 2. Content Check: Sind Threads vorhanden?
     const threadCount = mainContainer.querySelectorAll('.thread').length;
     if (threadCount === 0) return;
 
-    // 3. DEBOUNCE (Die Sicherheits-Magie):
-    // Wir haben Threads gefunden. Aber wir warten 50ms ab, ob noch mehr HTML "reinrieselt".
-    // Jede neue DOM-Änderung setzt diesen Timer zurück.
-    // Erst wenn 50ms lang "Ruhe" ist, starten wir. Das ist für das Auge sofort, garantiert aber Vollständigkeit.
-    
     if (bootTimer) clearTimeout(bootTimer);
 
     bootTimer = setTimeout(() => {
-        // Jetzt ist der DOM stabil -> Starten!
         if (observer) observer.disconnect();
         console.log(`Tradeo AI: Start trigger (${threadCount} threads detected).`);
         init();
     }, 50);
 }
 
-// Start-Trigger
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => tryStartApp());
 } else {
     tryStartApp();
 }
 
-// Observer für AJAX-Navigationen und dynamisches Nachladen
 const observer = new MutationObserver(() => tryStartApp(observer));
 observer.observe(document.body, { childList: true, subtree: true });
