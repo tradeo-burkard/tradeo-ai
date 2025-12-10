@@ -482,4 +482,45 @@ async function runAI(isInitial = false) {
     }
 }
 
-setTimeout(init, 1000);
+// --- BOOTSTRAP / LOADER LOGIC ---
+// Smart-Loader: Wartet auf DOM-Stabilisierung (Debounce) statt starrer Pause.
+
+let bootTimer = null;
+
+function tryStartApp(observer = null) {
+    const replyBtn = document.querySelector('.conv-reply');
+    const mainContainer = document.getElementById('conv-layout-main');
+    const alreadyInitialized = document.getElementById('tradeo-ai-copilot-zone');
+
+    // 1. Basic Checks: Sind wir am richtigen Ort und noch nicht gestartet?
+    if (!replyBtn || !mainContainer || alreadyInitialized) return;
+
+    // 2. Content Check: Sind Threads vorhanden?
+    const threadCount = mainContainer.querySelectorAll('.thread').length;
+    if (threadCount === 0) return;
+
+    // 3. DEBOUNCE (Die Sicherheits-Magie):
+    // Wir haben Threads gefunden. Aber wir warten 50ms ab, ob noch mehr HTML "reinrieselt".
+    // Jede neue DOM-Änderung setzt diesen Timer zurück.
+    // Erst wenn 50ms lang "Ruhe" ist, starten wir. Das ist für das Auge sofort, garantiert aber Vollständigkeit.
+    
+    if (bootTimer) clearTimeout(bootTimer);
+
+    bootTimer = setTimeout(() => {
+        // Jetzt ist der DOM stabil -> Starten!
+        if (observer) observer.disconnect();
+        console.log(`Tradeo AI: Start trigger (${threadCount} threads detected).`);
+        init();
+    }, 50);
+}
+
+// Start-Trigger
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => tryStartApp());
+} else {
+    tryStartApp();
+}
+
+// Observer für AJAX-Navigationen und dynamisches Nachladen
+const observer = new MutationObserver(() => tryStartApp(observer));
+observer.observe(document.body, { childList: true, subtree: true });
