@@ -457,10 +457,6 @@ async function fetchFullOrderDetails(orderId) {
     }
 }
 
-/**
- * Holt Artikeldetails (Variation) und Netto-Bestand.
- * Versucht zuerst die Suche über Variation-ID, dann über Artikelnummer.
- */
 async function fetchItemDetails(identifier) {
     try {
         let variationData = null;
