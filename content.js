@@ -1473,8 +1473,17 @@ function setupResizeHandler() {
 }
 
 // --- BOOTSTRAP ---
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startHeartbeat);
-else startHeartbeat();
+function bootstrapTradeo() {
+    startHeartbeat();                 // deine bestehende Logik (AI-UI etc.)
+    initPlentyItemSearchDebugButton(); // unser neuer Debug-Button
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootstrapTradeo);
+} else {
+    bootstrapTradeo();
+}
+
 
 // --- PLENTY BRIDGE ---
 async function callPlenty(endpoint, method = 'GET', body = null) {
@@ -1518,3 +1527,145 @@ window.testPlentyConnection = async function() {
         alert("Fehler bei Plenty Verbindung: " + e);
     }
 };
+
+// --- DEBUG: Vollständige Artikelsuche-Analyse ---
+window.debugPlentyItemSearch = async function(rawSearch) {
+    try {
+        const searchText = (typeof rawSearch === 'string' ? rawSearch : '').trim();
+        if (!searchText) {
+            alert("Bitte zuerst einen Suchtext eingeben.");
+            return;
+        }
+
+        const itemsPerPage = 30;
+        const lang = "de";
+
+        // Tokenisierung genau wie in searchItemsByText
+        const tokens = Array.from(
+            new Set(
+                searchText
+                    .split(/\s+/)
+                    .map(t => t.trim())
+                    .filter(t => t.length > 1)
+            )
+        );
+
+        console.group(`🔍 PLENTY DEBUG ITEM SEARCH: "${searchText}"`);
+        console.log("Tokens:", tokens);
+
+        const buildEndpoint = (params) => {
+            const qp = new URLSearchParams({
+                itemsPerPage: String(itemsPerPage),
+                lang,
+                ...params
+            });
+            return `/rest/items/variations?${qp.toString()}`;
+        };
+
+        // 1️⃣ Direkte Suche: itemName = kompletter String
+        try {
+            const endpoint = buildEndpoint({ itemName: searchText });
+            console.groupCollapsed("1️⃣ Direkte Suche: itemName = voller String");
+            console.log("GET", endpoint);
+            const res = await callPlenty(endpoint, "GET");
+            console.log("Antwort (raw):", res);
+            console.log(
+                "entries length:",
+                res && Array.isArray(res.entries) ? res.entries.length : "n/a"
+            );
+            console.groupEnd();
+        } catch (e) {
+            console.error("Fehler bei direkter itemName-Suche:", e);
+        }
+
+        // 2️⃣ Direkte Suche: itemDescription = kompletter String
+        try {
+            const endpoint = buildEndpoint({ itemDescription: searchText });
+            console.groupCollapsed("2️⃣ Direkte Suche: itemDescription = voller String");
+            console.log("GET", endpoint);
+            const res = await callPlenty(endpoint, "GET");
+            console.log("Antwort (raw):", res);
+            console.log(
+                "entries length:",
+                res && Array.isArray(res.entries) ? res.entries.length : "n/a"
+            );
+            console.groupEnd();
+        } catch (e) {
+            console.error("Fehler bei direkter itemDescription-Suche:", e);
+        }
+
+        // 3️⃣ Einzelwort-Suchen je Token (Name + Beschreibung)
+        for (const token of tokens) {
+            try {
+                console.groupCollapsed(`🔹 Token "${token}"`);
+
+                // itemName = Token
+                const endpointName = buildEndpoint({ itemName: token });
+                console.log("GET (itemName):", endpointName);
+                const resName = await callPlenty(endpointName, "GET");
+                console.log("Antwort itemName (raw):", resName);
+                console.log(
+                    "itemName entries length:",
+                    resName && Array.isArray(resName.entries) ? resName.entries.length : "n/a"
+                );
+
+                // itemDescription = Token
+                const endpointDesc = buildEndpoint({ itemDescription: token });
+                console.log("GET (itemDescription):", endpointDesc);
+                const resDesc = await callPlenty(endpointDesc, "GET");
+                console.log("Antwort itemDescription (raw):", resDesc);
+                console.log(
+                    "itemDescription entries length:",
+                    resDesc && Array.isArray(resDesc.entries) ? resDesc.entries.length : "n/a"
+                );
+
+                console.groupEnd();
+            } catch (e) {
+                console.error(`Fehler bei Token-Suche für "${token}":`, e);
+            }
+        }
+
+        console.groupEnd();
+        alert('Debug-Suche ausgeführt. Siehe Browser-Konsole (PLENTY DEBUG ITEM SEARCH).');
+    } catch (err) {
+        console.error("debugPlentyItemSearch Fehler:", err);
+        alert("Fehler in debugPlentyItemSearch: " + err);
+    }
+};
+
+function initPlentyItemSearchDebugButton() {
+    if (window.__plentyDebugBtnInit) return;
+    window.__plentyDebugBtnInit = true;
+
+    const btn = document.createElement("button");
+    btn.id = "tradeo-plenty-debug-btn";
+    btn.textContent = "🧪 Plenty Search Debug";
+    btn.style.cssText = `
+        position: fixed;
+        bottom: 10px;
+        right: 10px;
+        z-index: 99999;
+        padding: 6px 10px;
+        font-size: 11px;
+        background: #222;
+        color: #fff;
+        border-radius: 4px;
+        border: 1px solid #555;
+        cursor: pointer;
+        opacity: 0.7;
+        font-family: system-ui, sans-serif;
+    `;
+
+    btn.addEventListener("mouseenter", () => btn.style.opacity = "1");
+    btn.addEventListener("mouseleave", () => btn.style.opacity = "0.7");
+
+    btn.addEventListener("click", async () => {
+        const last = window.__lastPlentyDebugSearch || "";
+        const input = prompt("Plenty Artikelsuche Debug – Suchtext eingeben:", last);
+        if (!input) return;
+        window.__lastPlentyDebugSearch = input;
+        await window.debugPlentyItemSearch(input);
+    });
+
+    document.body.appendChild(btn);
+}
