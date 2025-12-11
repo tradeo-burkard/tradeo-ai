@@ -6,9 +6,69 @@
     margin-bottom: 20px;
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
     display: none;
+    position: relative;
 }
 
-/* Bereich 1: Der Dummy Draft (Vorschau) - JETZT UNBEGRENZT */
+/* --- COLLAPSED STATE LOGIC --- */
+
+/* Wenn eingeklappt: Begrenze Höhe des Drafts */
+#tradeo-ai-copilot-zone.tradeo-collapsed #tradeo-ai-dummy-draft {
+    min-height: 120px;
+    max-height: 300px; /* Höhe der Vorschau des Dummydrafts */
+    overflow: hidden;
+    border-bottom: none;
+    margin-bottom: 0;
+}
+
+/* Wenn eingeklappt: Verstecke den Rest */
+#tradeo-ai-copilot-zone.tradeo-collapsed #tradeo-ai-chat-history,
+#tradeo-ai-copilot-zone.tradeo-collapsed #tradeo-ai-resize-handle,
+#tradeo-ai-copilot-zone.tradeo-collapsed #tradeo-ai-input-area {
+    display: none !important;
+}
+
+/* Wenn eingeklappt: Zeige den Expand-Bereich */
+#tradeo-ai-copilot-zone.tradeo-collapsed #tradeo-ai-expand-overlay {
+    display: flex;
+}
+
+/* --- EXPAND OVERLAY (Fade & Button) --- */
+#tradeo-ai-expand-overlay {
+    display: none; /* Standardmäßig versteckt */
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 80px;
+    background: linear-gradient(to bottom, rgba(255, 243, 205, 0) 0%, rgba(255, 243, 205, 1) 70%);
+    z-index: 50;
+    justify-content: center;
+    align-items: flex-end;
+    padding-bottom: 10px;
+}
+
+#tradeo-ai-expand-btn {
+    background-color: #fff;
+    border: 1px solid #e0a800;
+    color: #bfa048;
+    font-size: 11px;
+    font-weight: bold;
+    padding: 5px 15px;
+    border-radius: 20px;
+    cursor: pointer;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    transition: all 0.2s;
+    text-transform: uppercase;
+}
+
+#tradeo-ai-expand-btn:hover {
+    background-color: #ffc107;
+    color: #fff;
+    border-color: #d39e00;
+}
+
+
+/* Bereich 1: Der Dummy Draft (Vorschau) */
 #tradeo-ai-dummy-draft {
     background-color: #fff3cd;
     border-left: 5px solid #ffc107;
@@ -17,11 +77,11 @@
     line-height: 1.5;
     color: #555;
     position: relative;
-    /* max-height und overflow entfernt für volle Höhe */
 }
 
+/* UPDATED: Neuer Titel */
 #tradeo-ai-dummy-draft::before {
-    content: "AKTUELLER ENTWURF";
+    content: "AKTUELLER AI ENTWURF";
     display: block;
     font-size: 10px;
     font-weight: bold;
@@ -38,7 +98,6 @@
     font-size: 13px;
     height: 200px; /* Standard Start-Höhe */
     min-height: 120px; /* Minimum */
-    /* max-height entfernt */
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -50,7 +109,7 @@
 #tradeo-ai-resize-handle {
     height: 8px;
     background-color: #e0e0e0;
-    cursor: ns-resize; /* Mauszeiger zeigt hoch/runter */
+    cursor: ns-resize;
     border-top: 1px solid #dcdcdc;
     border-bottom: 1px solid #dcdcdc;
     display: flex;
@@ -58,7 +117,6 @@
     align-items: center;
 }
 
-/* Kleines Icon/Linien auf dem Balken für Grip-Optik */
 #tradeo-ai-resize-handle::after {
     content: "";
     width: 30px;
@@ -220,7 +278,6 @@
 
 /* --- ANIMATIONEN --- */
 
-/* Standard Pulse (für den echten Editor - weißer Hintergrund) */
 @keyframes tradeo-flash-pulse {
     0% {
         box-shadow: 0 0 0 3px #4285f4, 0 0 15px rgba(66, 133, 244, 0.6);
@@ -231,10 +288,8 @@
     }
 }
 
-/* Starker Pulse (für den Dummy Draft - gelber Hintergrund braucht mehr Kontrast) */
 @keyframes tradeo-flash-pulse-strong {
     0% {
-        /* Deutlich dicker (6px) und deckkräftiger (0.8 opacity) */
         box-shadow: 0 0 0 6px #4285f4, 0 0 20px rgba(66, 133, 244, 0.8);
         z-index: 100;
     }
@@ -243,13 +298,11 @@
     }
 }
 
-/* Basis-Klasse für die Animation */
 .tradeo-flash-active {
     animation: tradeo-flash-pulse 1.2s ease-out forwards;
-    transform: translateZ(0); /* Hardware-Beschleunigung */
+    transform: translateZ(0); 
 }
 
-/* Spezifischer Override für den Dummy Draft */
 #tradeo-ai-dummy-draft.tradeo-flash-active {
     animation-name: tradeo-flash-pulse-strong;
 }
@@ -269,8 +322,8 @@
     cursor: pointer;
     font-size: 12px;
     font-weight: 600;
-    height: 100%; /* Passt sich der Input-Höhe an */
-    min-width: 120px; /* UPDATED: Von 100px auf 120px erhöht */
+    height: 100%;
+    min-width: 120px;
     white-space: nowrap;
 }
 
@@ -280,7 +333,7 @@
 
 #tradeo-ai-model-dropdown {
     position: absolute;
-    top: 100%; /* Klappt nach unten auf */
+    top: 100%;
     left: 0;
     margin-top: 5px;
     background: white;
@@ -288,8 +341,8 @@
     border-radius: 4px;
     box-shadow: 0 4px 10px rgba(0,0,0,0.1);
     z-index: 1000;
-    min-width: 350px; /* UPDATED: Verbreitert (war 250px), damit lange Texte passen */
-    white-space: nowrap; /* UPDATED: Verhindert Zeilenumbruch */
+    min-width: 350px;
+    white-space: nowrap;
     overflow: hidden;
 }
 
@@ -315,12 +368,11 @@
     font-weight: bold;
 }
 
-/* Neuer Reset Button im "Dummy Draft" Style */
 .tradeo-ai-reset-btn {
-    background-color: #fff3cd !important; /* Pastellgelb */
-    color: #856404 !important; /* Dunkelgelber/Brauner Text */
+    background-color: #fff3cd !important;
+    color: #856404 !important;
     border: 1px solid #ffeeba !important;
-    margin-left: 5px; /* Abstand zum AI Button */
+    margin-left: 5px;
     font-size: 12px;
     padding: 6px 10px;
     border-radius: 3px;
