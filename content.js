@@ -315,14 +315,12 @@ async function processTicket(id, contentHash) {
         const storageKey = `draft_${id}`;
         const storedData = await chrome.storage.local.get([storageKey]);
         
-        // FIX: Wir prüfen jetzt auch, ob 'chatHistory' existiert. 
-        // Wenn nicht (altes Format), verarbeiten wir neu, auch wenn der Hash gleich ist.
         if (storedData[storageKey] 
             && storedData[storageKey].contentHash === contentHash 
             && storedData[storageKey].chatHistory 
             && Array.isArray(storedData[storageKey].chatHistory)
         ) {
-            return; // Nichts zu tun, Daten sind aktuell und im neuen Format
+            return; // Nichts zu tun
         }
 
         console.log(`Tradeo AI: ⚡ Verarbeite Ticket ${id} im Hintergrund...`);
@@ -340,11 +338,20 @@ async function processTicket(id, contentHash) {
         const aiResult = await generateDraftHeadless(contextText, id);
 
         if (aiResult) {
-            // FIX: Initialer Verlauf mit Draft-Bubble UND Text
-            const initialHistory = [
-                { type: 'draft', content: aiResult.draft },
-                { type: 'ai', content: aiResult.feedback + " (Vorbereitet)" }
-            ];
+            // FIX START: Tool Logs in History integrieren
+            let initialHistory = [];
+
+            // 1. Wenn Tools genutzt wurden, füge sie als System-Nachrichten hinzu
+            if (aiResult.toolLogs && Array.isArray(aiResult.toolLogs)) {
+                aiResult.toolLogs.forEach(logText => {
+                    initialHistory.push({ type: 'system', content: logText });
+                });
+            }
+
+            // 2. Draft und Feedback hinzufügen
+            initialHistory.push({ type: 'draft', content: aiResult.draft });
+            initialHistory.push({ type: 'ai', content: aiResult.feedback + " (Vorbereitet)" });
+            // FIX END
 
             const data = {};
             data[storageKey] = {
@@ -398,6 +405,9 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     const model = window.aiState.currentModel || "gemini-2.5-pro"; // Nutze eingestelltes Modell
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
 
+    // NEU: Array zum Sammeln der ausgeführten Tools für die History
+    let executedTools = [];
+
     try {
         let finalResponse = null;
         let turnCount = 0;
@@ -420,7 +430,6 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
             const data = await response.json();
             if (!response.ok) throw new Error(data.error?.message || "Headless API Error");
 
-            // --- FIX START: Defensive Checks ---
             const candidate = data.candidates?.[0];
             
             // Fall 1: Keine Kandidaten oder Content wurde wegen Safety/Filter blockiert
@@ -428,19 +437,21 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
                 console.warn(`Tradeo AI Headless: ⚠️ Antwort blockiert oder leer. FinishReason: ${candidate?.finishReason}`);
                 return null; // Abbruch, da wir nichts verarbeiten können
             }
-            // --- FIX END ---
 
             const content = candidate.content;
             const parts = content.parts;
 
             // Hat die AI einen FUNCTION CALL?
-            // Da wir oben geprüft haben, ist 'parts' hier sicher ein Array
             const functionCallPart = parts.find(p => p.functionCall);
 
             if (functionCallPart) {
                 const fnName = functionCallPart.functionCall.name;
                 const fnArgs = functionCallPart.functionCall.args;
                 
+                // NEU: Log für die UI History speichern
+                const toolLogText = `⚙️ AI nutzt Tool: ${fnName}(${JSON.stringify(fnArgs)})`;
+                executedTools.push(toolLogText);
+
                 console.log(`Tradeo AI Headless: ⚙️ Rufe Tool ${fnName} mit`, fnArgs);
 
                 // Tool ausführen (via Background Script)
@@ -471,7 +482,6 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
                         functionResult = apiResult.data;
                         console.log(`Tradeo AI Headless [CID: ${ticketId}]: ✅ Tool ${fnName} erfolgreich.`);
                     } else {
-                        // HIER IST DAS LOGGING, DAS DU GESUCHT HAST:
                         console.warn(`Tradeo AI Headless [CID: ${ticketId}]: ❌ Tool ${fnName} fehlgeschlagen.`, apiResult);
                         functionResult = { error: apiResult ? apiResult.error : "Unknown Error" };
                     }
@@ -496,7 +506,7 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
             }
 
             // Keine Function Call -> Finale Text-Antwort
-            let rawText = parts[0].text || ""; // Safety Fallback falls text leer
+            let rawText = parts[0].text || ""; 
             rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
             
             try { 
@@ -509,10 +519,15 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
                         feedback: "Automatisch generiert (Formatierung evtl. abweichend)" 
                     }; 
                 } else {
-                    return null; // Wenn Text leer war
+                    return null;
                 }
             }
             break; // Loop beenden
+        }
+
+        // NEU: Logs an das Resultat anhängen, damit processTicket sie nutzen kann
+        if (finalResponse) {
+            finalResponse.toolLogs = executedTools;
         }
 
         return finalResponse;
