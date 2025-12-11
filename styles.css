@@ -384,3 +384,33 @@
     background-color: #ffe8a1 !important;
     border-color: #ffc107 !important;
 }
+
+/* --- SETTINGS PANEL --- */
+#tradeo-ai-settings-btn {
+    background: none;
+    border: none;
+    color: #999;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 5px;
+    margin-right: 5px;
+}
+#tradeo-ai-settings-btn:hover { color: #555; }
+
+#tradeo-ai-settings-panel {
+    display: none;
+    background: #f8f9fa;
+    border-bottom: 1px solid #dcdcdc;
+    padding: 15px;
+    font-size: 13px;
+}
+#tradeo-ai-settings-panel.visible { display: block; }
+
+.tradeo-setting-row { margin-bottom: 10px; }
+.tradeo-setting-row label { display: block; font-weight: bold; margin-bottom: 3px; color: #555; }
+.tradeo-setting-row input { width: 100%; padding: 6px; border: 1px solid #ccc; border-radius: 4px; }
+.tradeo-save-btn { width: 100%; background: #28a745; color: white; border: none; padding: 8px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+.tradeo-save-btn:hover { background: #218838; }
+
+/* Status Nachricht im Settings Panel */
+#tradeo-settings-status { margin-top: 8px; text-align: center; font-style: italic; color: #666; }
