@@ -39,7 +39,7 @@ window.aiState = {
     isRealMode: false,
     isGenerating: false,
     preventOverwrite: false,
-    chatHistory: [],
+    chatHistory: [], // Array von Objekten: { type: 'user'|'ai'|'draft', content: string }
     currentModel: "gemini-2.5-flash",
     // Cache management V3
     knownTickets: new Map(), // Map<TicketID, ContentHash>
@@ -126,7 +126,6 @@ function checkAndQueue(id, currentHash) {
     if (window.aiState.knownTickets.get(id) === currentHash) return;
 
     // Neu oder verändert
-    // console.log(`Tradeo AI: Ticket ${id} queueing...`);
     window.aiState.processingQueue.add(id);
     
     processTicket(id, currentHash).then(() => {
@@ -141,8 +140,14 @@ async function processTicket(id, contentHash) {
         const storageKey = `draft_${id}`;
         const storedData = await chrome.storage.local.get([storageKey]);
         
-        if (storedData[storageKey] && storedData[storageKey].contentHash === contentHash) {
-            return; // Nichts zu tun, Daten im Storage sind aktuell
+        // FIX: Wir prüfen jetzt auch, ob 'chatHistory' existiert. 
+        // Wenn nicht (altes Format), verarbeiten wir neu, auch wenn der Hash gleich ist.
+        if (storedData[storageKey] 
+            && storedData[storageKey].contentHash === contentHash 
+            && storedData[storageKey].chatHistory 
+            && Array.isArray(storedData[storageKey].chatHistory)
+        ) {
+            return; // Nichts zu tun, Daten sind aktuell und im neuen Format
         }
 
         console.log(`Tradeo AI: ⚡ Verarbeite Ticket ${id} im Hintergrund...`);
@@ -160,10 +165,17 @@ async function processTicket(id, contentHash) {
         const aiResult = await generateDraftHeadless(contextText);
 
         if (aiResult) {
+            // FIX: Initialer Verlauf mit Draft-Bubble UND Text
+            const initialHistory = [
+                { type: 'draft', content: aiResult.draft },
+                { type: 'ai', content: aiResult.feedback + " (Vorbereitet)" }
+            ];
+
             const data = {};
             data[storageKey] = {
                 draft: aiResult.draft,
                 feedback: aiResult.feedback,
+                chatHistory: initialHistory,
                 timestamp: Date.now(),
                 contentHash: contentHash
             };
@@ -262,8 +274,7 @@ function initConversationUI() {
     copilotContainer.style.display = 'block';
 
     // CACHE LOAD
-    const match = window.location.href.match(/conversation\/(\d+)/);
-    const ticketId = match ? match[1] : null;
+    const ticketId = getTicketIdFromUrl();
 
     if (ticketId) {
         const storageKey = `draft_${ticketId}`;
@@ -271,13 +282,47 @@ function initConversationUI() {
             const cached = result[storageKey];
             if (cached) {
                 const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
-                addDraftMessage(cached.draft);
-                addChatMessage('ai', cached.feedback + " (Vorbereitet)");
+                
+                // 1. Aktuellen Entwurf setzen (Preview Box)
                 window.aiState.lastDraft = cached.draft;
                 dummyDraft.innerHTML = cached.draft;
                 flashElement(dummyDraft);
+
+                // 2. Kompletten Chat Verlauf wiederherstellen
+                document.getElementById('tradeo-ai-chat-history').innerHTML = ''; 
+
+                if (cached.chatHistory && Array.isArray(cached.chatHistory)) {
+                    // NEUES FORMAT: Wir übernehmen das Array direkt
+                    window.aiState.chatHistory = cached.chatHistory;
+                    
+                    cached.chatHistory.forEach(msg => {
+                        if (msg.type === 'draft') {
+                            renderDraftMessage(msg.content);
+                        } else if (msg.type === 'user') {
+                            renderChatMessage('user', msg.content);
+                        } else if (msg.type === 'ai') {
+                            renderChatMessage('ai', msg.content);
+                        } else {
+                            // Fallback für alte Einträge
+                            const text = msg.text || msg.content;
+                            const role = msg.role === 'User' ? 'user' : 'ai';
+                            renderChatMessage(role, text);
+                        }
+                    });
+                } else {
+                    // FALLBACK (Altes Format ohne History Array): 
+                    // Wir bauen die History on-the-fly auf, damit sie beim nächsten Speichern da ist!
+                    const fallbackText = cached.feedback + " (Vorbereitet)";
+                    renderChatMessage('ai', fallbackText);
+                    
+                    // FIX: State initialisieren, damit er nicht leer ist
+                    window.aiState.chatHistory = [
+                        { type: 'ai', content: fallbackText }
+                    ];
+                }
+
             } else {
-                addChatMessage("system", "Kein Entwurf gefunden. Starte Live-Analyse...");
+                renderChatMessage("system", "Kein Entwurf gefunden. Starte Live-Analyse...");
                 runAI(true);
             }
         });
@@ -369,8 +414,19 @@ async function runAI(isInitial = false) {
     let userPrompt = input.value.trim();
     
     window.aiState.isGenerating = true;
-    if (isInitial) userPrompt = "Analysiere das Ticket und erstelle einen passenden Antwortentwurf.";
-    else { if (!userPrompt) return; addChatMessage('user', userPrompt); window.aiState.chatHistory.push({role: "User", text: userPrompt}); }
+    
+    // 1. User Input verarbeiten (außer bei Init)
+    if (isInitial) {
+        userPrompt = "Analysiere das Ticket und erstelle einen passenden Antwortentwurf.";
+    } else { 
+        if (!userPrompt) return; 
+        
+        // UI rendern
+        renderChatMessage('user', userPrompt); 
+        
+        // In State speichern
+        window.aiState.chatHistory.push({ type: "user", content: userPrompt }); 
+    }
 
     let apiKey = apiKeyInput.value.trim();
     if (!apiKey) {
@@ -382,7 +438,13 @@ async function runAI(isInitial = false) {
     btn.disabled = true; btn.innerText = "...";
     
     const contextText = extractContextFromDOM(document);
-    const historyString = window.aiState.chatHistory.map(e => `${e.role}: ${e.text}`).join("\n");
+    // Verlauf für Prompt aufbereiten (nur Text-Inhalt)
+    const historyString = window.aiState.chatHistory.map(e => {
+        if(e.type === 'draft') return ""; // Drafts nicht in den Prompt Kontext (zu lang/irrelevant)
+        const role = e.type === 'user' ? 'User' : 'AI';
+        return `${role}: ${e.content}`;
+    }).join("\n");
+    
     const currentDraft = window.aiState.isRealMode ? document.querySelector('.note-editable')?.innerHTML : dummyDraft.innerHTML;
 
     const finalPrompt = `
@@ -412,9 +474,15 @@ async function runAI(isInitial = false) {
         let jsonResponse;
         try { jsonResponse = JSON.parse(rawText); } catch(e) { jsonResponse = { draft: rawText, feedback: "Format Fehler" }; }
 
-        addDraftMessage(jsonResponse.draft);
-        addChatMessage('ai', jsonResponse.feedback);
-        window.aiState.chatHistory.push({role: "AI", text: jsonResponse.feedback});
+        // 2. Draft verarbeiten
+        renderDraftMessage(jsonResponse.draft);
+        window.aiState.chatHistory.push({ type: "draft", content: jsonResponse.draft });
+        
+        // 3. Feedback verarbeiten
+        renderChatMessage('ai', jsonResponse.feedback);
+        window.aiState.chatHistory.push({ type: "ai", content: jsonResponse.feedback });
+        
+        // Status Update
         window.aiState.lastDraft = jsonResponse.draft;
         
         if (window.aiState.isRealMode && !window.aiState.preventOverwrite) {
@@ -425,14 +493,84 @@ async function runAI(isInitial = false) {
             if(!window.aiState.preventOverwrite && !window.aiState.isRealMode) { dummyDraft.style.display = 'block'; flashElement(dummyDraft); }
         }
         if(!isInitial) input.value = '';
+
+        // --- PERSISTENZ SPEICHERN ---
+        // Speichert das komplette History Array inkl. Drafts
+        const ticketId = getTicketIdFromUrl();
+        if (ticketId) {
+            const storageKey = `draft_${ticketId}`;
+            // Alten Hash holen
+            chrome.storage.local.get([storageKey], function(res) {
+                const oldData = res[storageKey] || {};
+                const currentHash = oldData.contentHash || "modified_by_user";
+
+                const newData = {
+                    draft: jsonResponse.draft,
+                    feedback: jsonResponse.feedback,
+                    chatHistory: window.aiState.chatHistory, 
+                    timestamp: Date.now(),
+                    contentHash: currentHash
+                };
+                
+                const saveObj = {};
+                saveObj[storageKey] = newData;
+                chrome.storage.local.set(saveObj);
+            });
+        }
+        // ---------------------------------
+
     } catch(e) {
-        addChatMessage('system', "Error: " + e.message);
+        renderChatMessage('system', "Error: " + e.message);
     } finally {
         btn.disabled = false; btn.innerText = "Go"; window.aiState.isGenerating = false; window.aiState.preventOverwrite = false;
     }
 }
 
 // --- STANDARD UTILS ---
+
+// --- DEBUGGING / KONSOLE ---
+// Aufrufbar via Konsole mit: window.resetAI()
+window.resetAI = async function() {
+    console.log("💣 Tradeo AI: Starte kompletten Reset...");
+    
+    // 1. Storage bereinigen (Nur Ticket-Daten, API Key behalten)
+    try {
+        const allData = await chrome.storage.local.get(null);
+        const keysToRemove = Object.keys(allData).filter(key => key.startsWith('draft_'));
+        
+        if (keysToRemove.length > 0) {
+            await chrome.storage.local.remove(keysToRemove);
+            console.log(`🗑️ Storage: ${keysToRemove.length} Tickets/Entwürfe gelöscht.`);
+        } else {
+            console.log("ℹ️ Storage: War bereits sauber.");
+        }
+    } catch (e) {
+        console.error("Fehler beim Storage-Reset:", e);
+    }
+
+    // 2. RAM State resetten
+    if (window.aiState) {
+        window.aiState.knownTickets = new Map();
+        window.aiState.processingQueue = new Set();
+        window.aiState.chatHistory = [];
+        window.aiState.lastDraft = "";
+        console.log("🧠 RAM: State zurückgesetzt.");
+    }
+
+    // 3. UI Feedback
+    const historyDiv = document.getElementById('tradeo-ai-chat-history');
+    if (historyDiv) historyDiv.innerHTML = '<div style="padding:20px; text-align:center; color:#999;">♻️ Reset durchgeführt.<br>Bitte Seite neu laden.</div>';
+    
+    const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
+    if (dummyDraft) dummyDraft.innerHTML = '<em>Reset...</em>';
+
+    console.log("✅ Reset fertig. Bitte Seite neu laden (F5).");
+};
+
+function getTicketIdFromUrl() {
+    const match = window.location.href.match(/conversation\/(\d+)/);
+    return match ? match[1] : null;
+}
 
 function checkApiKeyUI() {
     chrome.storage.local.get(['geminiApiKey'], function(result) {
@@ -466,26 +604,31 @@ function setEditorContent(editableElement, htmlContent) {
     flashElement(flashTarget);
 }
 
-function addChatMessage(role, text) {
+// Render Funktion für Text (Blau/Weiß)
+function renderChatMessage(role, text) {
     const historyContainer = document.getElementById('tradeo-ai-chat-history');
     if(!historyContainer) return;
     const msgDiv = document.createElement('div');
-    if (role === 'user') { msgDiv.className = 'user-msg'; msgDiv.innerHTML = `<strong>DU</strong> ${text}`; }
-    else if (role === 'ai') { msgDiv.className = 'ai-msg'; msgDiv.innerHTML = `<strong>AI</strong> ${text}`; }
-    else { msgDiv.className = 'ai-msg'; msgDiv.style.fontStyle = 'italic'; msgDiv.innerHTML = text; }
+    
+    // role kann 'user', 'ai' oder 'system' sein
+    if (role === 'user') { 
+        msgDiv.className = 'user-msg'; 
+        msgDiv.innerHTML = `<strong>DU</strong> ${text}`; 
+    } else if (role === 'ai') { 
+        msgDiv.className = 'ai-msg'; 
+        msgDiv.innerHTML = `<strong>AI</strong> ${text}`; 
+    } else { 
+        msgDiv.className = 'ai-msg'; 
+        msgDiv.style.fontStyle = 'italic'; 
+        msgDiv.innerHTML = text; 
+    }
+    
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
 }
 
-function flashElement(element) {
-    if (!element) return;
-    element.classList.remove('tradeo-flash-active');
-    void element.offsetWidth;
-    element.classList.add('tradeo-flash-active');
-    setTimeout(() => { element.classList.remove('tradeo-flash-active'); }, 1200);
-}
-
-function addDraftMessage(htmlContent) {
+// Render Funktion für Draft (Gelbe Box)
+function renderDraftMessage(htmlContent) {
     const historyContainer = document.getElementById('tradeo-ai-chat-history');
     if(!historyContainer) return;
     const msgDiv = document.createElement('div');
@@ -498,6 +641,8 @@ function addDraftMessage(htmlContent) {
                 <button class="draft-btn primary btn-adopt">⚡ Übernehmen</button>
             </div>
         </div>`;
+    
+    // Event Listeners direkt anhängen
     msgDiv.querySelector('.draft-header').onclick = () => msgDiv.classList.toggle('expanded');
     msgDiv.querySelector('.btn-copy').onclick = (e) => {
         e.stopPropagation();
@@ -516,8 +661,17 @@ function addDraftMessage(htmlContent) {
             waitForSummernote((editable) => setEditorContent(editable, htmlContent));
         }
     };
+
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
+}
+
+function flashElement(element) {
+    if (!element) return;
+    element.classList.remove('tradeo-flash-active');
+    void element.offsetWidth;
+    element.classList.add('tradeo-flash-active');
+    setTimeout(() => { element.classList.remove('tradeo-flash-active'); }, 1200);
 }
 
 function setupResizeHandler() {
