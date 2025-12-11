@@ -11,20 +11,6 @@ const SYSTEM_PROMPT = `
 Du bist ein erfahrener Support-Mitarbeiter der Firma "Tradeo / Servershop24".
 Wir sind Spezialisten für professionelle, refurbished Enterprise-Hardware (Server, Storage, Netzwerk).
 
-VORGABEN:
-1. Tonalität: Professionell, freundlich, direkt. Wir Siezen ("Sie").
-2. Preis: Webshop-Preise sind fix. Rabatte erst bei größeren Mengen (B2B).
-3. Fehler/Probleme: Ehrlich zugeben, lösungsorientiert bleiben.
-4. Signatur: Weglassen (wird vom System automatisch angefügt).
-5. Formatierung: Achte auf regelmäßige Absatzbildung und verwende regelmäßig leere Zeilen für bessere Leserlichkeit
-6. Bitte Fokus auf Sachen auf den Punkt bringen, kurz fassen. Das machts für Kunden einfacher und auch für uns Support-Mitarbeiter, die deine Antwortentwürfe überblicken und überprüfen müssen.
-7. Sprache: Logischerweise immer in Kundensprache antworten.
-
-WICHTIG ZUM VERLAUF:
-Der übergebene Ticket-Verlauf ist UMGEKEHRT chronologisch sortiert. 
-- Die OBERSTE Nachricht ist die NEUESTE (die, auf die wir meistens reagieren).
-- Die UNTERSTE Nachricht ist der Ursprung (die älteste).
-
 WISSEN ÜBER SERVERSHOP24 & PRODUKTE:
 Geschäftsmodell:
    - Wir verkaufen "Refurbished" Hardware (Gebraucht, aber professionell aufbereitet und getestet). Bei Komponenten haben wir aber durchaus auch vereinzelt Neuware oder Renew-Ware (0h Betriebsstunden)
@@ -91,6 +77,25 @@ Zubehör:
    - Kunden vergessen oft: Rack-Schienen (Rails), Kabelmanagement-Arme, zusätzliche Netzteile (Redundanz), Lizenzen (Windows Server CALs/Cores).
    - Empfehle aktiv passendes Zubehör, wenn es im Kontext Sinn macht (z.B. "Benötigen Sie noch Rack-Schienen oder ein zweites Netzteil zur Absicherung?").
 
+DEINE FÄHIGKEITEN (TOOLS):
+Du hast Zugriff auf das Plentymarkets ERP-System.
+- Wenn eine Bestellnummer (z.B. 581769) im Gespräch vorkommt oder der Kunde nach dem Status fragt, NUTZE DAS TOOL 'getOrderDetails'.
+- Rate nicht! Nutze das Tool, um Fakten (Status, Tracking, Bestände) zu prüfen, bevor du antwortest.
+
+VORGABEN:
+1. Tonalität: Professionell, freundlich, direkt. Wir Siezen ("Sie").
+2. Preis: Webshop-Preise sind fix. Rabatte erst bei größeren Mengen (B2B).
+3. Fehler/Probleme: Ehrlich zugeben, lösungsorientiert bleiben.
+4. Signatur: Weglassen (wird vom System automatisch angefügt).
+5. Formatierung: Achte auf regelmäßige Absatzbildung und verwende regelmäßig leere Zeilen für bessere Leserlichkeit
+6. Bitte Fokus auf Sachen auf den Punkt bringen, kurz fassen. Das machts für Kunden einfacher und auch für uns Support-Mitarbeiter, die deine Antwortentwürfe überblicken und überprüfen müssen.
+7. Sprache: Logischerweise immer in Kundensprache antworten.
+
+WICHTIG ZUM VERLAUF:
+Der übergebene Ticket-Verlauf ist UMGEKEHRT chronologisch sortiert. 
+- Die OBERSTE Nachricht ist die NEUESTE (die, auf die wir meistens reagieren).
+- Die UNTERSTE Nachricht ist der Ursprung (die älteste).
+
 ANTWORT FORMAT:
 Antworte IMMER im validen JSON-Format.
 Struktur:
@@ -119,6 +124,24 @@ window.aiState = {
     knownTickets: new Map(), // Map<TicketID, ContentHash>
     processingQueue: new Set() // Set<TicketID>
 };
+
+// TOOL DEFINITION FÜR GEMINI
+const GEMINI_TOOLS = [
+    {
+        "name": "getOrderDetails",
+        "description": "Ruft vollständige Details einer Bestellung ab (Status, Artikel, Bestände, Tracking). Nutze dies, wenn eine Bestellnummer genannt wird.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "orderId": {
+                    "type": "STRING",
+                    "description": "Die ID der Bestellung, z.B. 581769"
+                }
+            },
+            "required": ["orderId"]
+        }
+    }
+];
 
 // --- CORE LOOPS (HEARTBEAT) ---
 
@@ -650,128 +673,198 @@ async function runAI(isInitial = false) {
     const input = document.getElementById('tradeo-ai-input');
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
     
-    // --- FIX: API Key Logik bereinigt ---
-    // Wir holen den Key jetzt immer frisch aus dem Storage, da er im Settings-Panel gespeichert wird.
     const storageData = await chrome.storage.local.get(['geminiApiKey']);
     const apiKey = storageData.geminiApiKey;
 
     let userPrompt = "";
 
-    // 1. User Input verarbeiten (außer bei Init)
     if (isInitial) {
-        userPrompt = "Analysiere das Ticket und erstelle einen passenden Antwortentwurf.";
+        userPrompt = "Analysiere das Ticket. Wenn eine Bestellnummer zu finden ist, prüfe deren Status. Erstelle dann einen Antwortentwurf.";
     } else { 
         userPrompt = input.value.trim();
         if (!userPrompt) return; 
         
-        // UI rendern
+        // 1. User Input sofort anzeigen & im RAM speichern
         renderChatMessage('user', userPrompt); 
-        
-        // In State speichern
         window.aiState.chatHistory.push({ type: "user", content: userPrompt }); 
     }
 
-    // Check: Haben wir einen Key?
     if (!apiKey) {
-        renderChatMessage('system', "⚠️ Kein API Key gefunden. Bitte oben auf das Zahnrad klicken und Key speichern.");
-        // Optional: Settings Panel automatisch öffnen
-        document.getElementById('tradeo-ai-settings-panel').classList.add('visible');
-        expandInterface();
-        window.aiState.isGenerating = false; 
+        renderChatMessage('system', "⚠️ Kein API Key gefunden.");
         return; 
     }
 
     window.aiState.isGenerating = true;
     if(btn) { btn.disabled = true; btn.innerText = "..."; }
     
+    // Kontext bauen
     const contextText = extractContextFromDOM(document);
-    // Verlauf für Prompt aufbereiten (nur Text-Inhalt)
     const historyString = window.aiState.chatHistory.map(e => {
-        if(e.type === 'draft') return ""; // Drafts nicht in den Prompt Kontext (zu lang/irrelevant)
+        if(e.type === 'draft') return ""; 
         const role = e.type === 'user' ? 'User' : 'AI';
         return `${role}: ${e.content}`;
     }).join("\n");
     
     const currentDraft = window.aiState.isRealMode ? document.querySelector('.note-editable')?.innerHTML : dummyDraft.innerHTML;
 
-    const finalPrompt = `
-    ${SYSTEM_PROMPT}
-    === HINTERGRUND ===
-    TICKET VERLAUF:
-    ${contextText}
-    === AKTUELLER STATUS ===
-    DERZEITIGER ENTWURF: "${currentDraft}"
-    === HISTORIE ===
-    ${historyString}
-    === NEUE ANWEISUNG ===
-    User: ${userPrompt}
-    `;
+    // Initialer Prompt-Content
+    let contents = [
+        {
+            role: "user",
+            parts: [{ text: `
+                ${SYSTEM_PROMPT}
+                === TICKET VERLAUF ===
+                ${contextText}
+                === AKTUELLER ENTWURF ===
+                "${currentDraft}"
+                === CHAT HISTORIE ===
+                ${historyString}
+                === ANWEISUNG ===
+                ${userPrompt}
+            `}]
+        }
+    ];
 
     const model = window.aiState.currentModel || "gemini-2.5-flash";
+    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
 
     try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: [{ text: finalPrompt }] }] })
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error?.message || "API Error");
+        // --- SCHLEIFE FÜR MULTI-TURN (Tool Use) ---
+        let finalResponse = null;
+        let turnCount = 0;
+        const maxTurns = 3; // Sicherheitslimit
 
-        let rawText = data.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim();
-        let jsonResponse;
-        try { jsonResponse = JSON.parse(rawText); } catch(e) { jsonResponse = { draft: rawText, feedback: "Format Fehler" }; }
+        while (turnCount < maxTurns) {
+            
+            // Payload mit Tools
+            const payload = {
+                contents: contents,
+                tools: [{ function_declarations: GEMINI_TOOLS }]
+            };
 
-        // 2. Draft verarbeiten
-        renderDraftMessage(jsonResponse.draft);
-        window.aiState.chatHistory.push({ type: "draft", content: jsonResponse.draft });
-        
-        // 3. Feedback verarbeiten
-        renderChatMessage('ai', jsonResponse.feedback);
-        window.aiState.chatHistory.push({ type: "ai", content: jsonResponse.feedback });
-        
-        // Status Update
-        window.aiState.lastDraft = jsonResponse.draft;
-        
-        if (window.aiState.isRealMode && !window.aiState.preventOverwrite) {
-            const editable = document.querySelector('.note-editable');
-            if (editable) setEditorContent(editable, jsonResponse.draft);
-        } else {
-            dummyDraft.innerHTML = jsonResponse.draft;
-            if(!window.aiState.preventOverwrite && !window.aiState.isRealMode) { dummyDraft.style.display = 'block'; flashElement(dummyDraft); }
-        }
-        if(!isInitial && input) input.value = '';
-
-        // --- PERSISTENZ SPEICHERN ---
-        // Speichert das komplette History Array inkl. Drafts
-        const ticketId = getTicketIdFromUrl();
-        if (ticketId) {
-            const storageKey = `draft_${ticketId}`;
-            // Alten Hash holen
-            chrome.storage.local.get([storageKey], function(res) {
-                const oldData = res[storageKey] || {};
-                const currentHash = oldData.contentHash || "modified_by_user";
-
-                const newData = {
-                    draft: jsonResponse.draft,
-                    feedback: jsonResponse.feedback,
-                    chatHistory: window.aiState.chatHistory, 
-                    timestamp: Date.now(),
-                    contentHash: currentHash
-                };
-                
-                const saveObj = {};
-                saveObj[storageKey] = newData;
-                chrome.storage.local.set(saveObj);
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
             });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error?.message || "API Error");
+
+            const candidate = data.candidates[0];
+            const content = candidate.content;
+            const parts = content.parts;
+
+            // Hat die AI einen FUNCTION CALL?
+            const functionCallPart = parts.find(p => p.functionCall);
+
+            if (functionCallPart) {
+                const fnName = functionCallPart.functionCall.name;
+                const fnArgs = functionCallPart.functionCall.args;
+                
+                renderChatMessage('system', `⚙️ AI ruft Tool: ${fnName}(${JSON.stringify(fnArgs)})`);
+                console.log("Tradeo AI: Function Call detected:", fnName, fnArgs);
+
+                // Tool ausführen
+                let functionResult = null;
+                if (fnName === 'getOrderDetails') {
+                    const apiResult = await new Promise(resolve => {
+                        chrome.runtime.sendMessage({ action: 'GET_ORDER_FULL', orderId: fnArgs.orderId }, (response) => {
+                             resolve(response);
+                        });
+                    });
+                    
+                    if(apiResult.success) {
+                        functionResult = apiResult.data;
+                    } else {
+                        functionResult = { error: apiResult.error };
+                    }
+                }
+
+                // Verlauf aktualisieren
+                contents.push(content); 
+                contents.push({
+                    role: "function",
+                    parts: [{
+                        functionResponse: {
+                            name: fnName,
+                            response: { name: fnName, content: functionResult }
+                        }
+                    }]
+                });
+
+                turnCount++;
+                continue; 
+            }
+
+            // Keine Function Call -> Finale Antwort
+            let rawText = parts[0].text;
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            
+            try { 
+                finalResponse = JSON.parse(rawText); 
+            } catch(e) { 
+                finalResponse = { draft: rawText, feedback: "Formatierung korrigiert (AI gab kein reines JSON)" }; 
+            }
+            break; // Loop beenden
         }
-        // ---------------------------------
+
+        if (finalResponse) {
+            // UI Updates
+            renderDraftMessage(finalResponse.draft);
+            window.aiState.chatHistory.push({ type: "draft", content: finalResponse.draft });
+            
+            renderChatMessage('ai', finalResponse.feedback);
+            window.aiState.chatHistory.push({ type: "ai", content: finalResponse.feedback });
+            
+            window.aiState.lastDraft = finalResponse.draft;
+            
+            if (window.aiState.isRealMode && !window.aiState.preventOverwrite) {
+                const editable = document.querySelector('.note-editable');
+                if (editable) setEditorContent(editable, finalResponse.draft);
+            } else {
+                dummyDraft.innerHTML = finalResponse.draft;
+                if(!window.aiState.preventOverwrite && !window.aiState.isRealMode) { 
+                    dummyDraft.style.display = 'block'; 
+                    flashElement(dummyDraft); 
+                }
+            }
+            if(!isInitial && input) input.value = '';
+
+            // --- PERSISTENZ SPEICHERN (FIX) ---
+            // Wir speichern JETZT den neuen Verlauf (inkl. User Prompt und neuer AI Antwort)
+            const ticketId = getTicketIdFromUrl();
+            if (ticketId) {
+                const storageKey = `draft_${ticketId}`;
+                // Alten Hash holen um ihn beizubehalten
+                chrome.storage.local.get([storageKey], function(res) {
+                    const oldData = res[storageKey] || {};
+                    const currentHash = oldData.contentHash || "modified_by_user";
+
+                    const newData = {
+                        draft: finalResponse.draft,
+                        feedback: finalResponse.feedback,
+                        chatHistory: window.aiState.chatHistory, // Hier ist jetzt alles drin
+                        timestamp: Date.now(),
+                        contentHash: currentHash
+                    };
+                    
+                    const saveObj = {};
+                    saveObj[storageKey] = newData;
+                    chrome.storage.local.set(saveObj, () => {
+                        console.log("Tradeo AI: Verlauf gespeichert.");
+                    });
+                });
+            }
+            // ------------------------------------
+        }
 
     } catch(e) {
         renderChatMessage('system', "Error: " + e.message);
+        console.error(e);
     } finally {
         if(btn) { btn.disabled = false; btn.innerText = "Go"; }
         window.aiState.isGenerating = false; 
-        window.aiState.preventOverwrite = false;
     }
 }
 

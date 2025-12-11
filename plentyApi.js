@@ -90,3 +90,69 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
         throw error;
     }
 }
+
+/**
+ * Holt komplexe Order-Details inkl. Items, Bestand UND ADRESSEN.
+ */
+async function fetchFullOrderDetails(orderId) {
+    try {
+        // 1. Hole Order mit Basis-Relationen
+        const orderData = await makePlentyCall(`/rest/orders/${orderId}?with[]=orderItems&with[]=relations&with[]=amounts&with[]=dates&with[]=addressRelations`);
+        
+        if (!orderData) throw new Error("Order not found");
+
+        const result = {
+            meta: { type: "PLENTY_ORDER_FULL_EXPORT", orderId: orderId, timestamp: new Date().toISOString() },
+            order: orderData,
+            stocks: [],
+            addresses: [] // Hier kommen die Klartext-Adressen rein
+        };
+
+        // 2. Adressen auflösen (NEU)
+        // Wir schauen in die addressRelations (Rechnung=1, Lieferung=2) und holen die Details
+        if (orderData.addressRelations && orderData.addressRelations.length > 0) {
+            const addressPromises = orderData.addressRelations.map(async (rel) => {
+                try {
+                    // API Call für die echte Adresse
+                    const addrDetail = await makePlentyCall(`/rest/accounts/addresses/${rel.addressId}`);
+                    // Wir fügen den Typ (Rechnung/Lieferung) hinzu, damit die AI es unterscheiden kann
+                    return { 
+                        relationType: rel.typeId === 1 ? "Billing/Rechnung" : (rel.typeId === 2 ? "Shipping/Lieferung" : "Other"),
+                        ...addrDetail 
+                    };
+                } catch (e) {
+                    console.warn(`Konnte Adresse ${rel.addressId} nicht laden`, e);
+                    return null;
+                }
+            });
+            
+            // Warten bis alle Adressen geladen sind und null-Werte filtern
+            const loadedAddresses = await Promise.all(addressPromises);
+            result.addresses = loadedAddresses.filter(a => a !== null);
+        }
+
+        // 3. Bestände holen (wie gehabt)
+        const variationIds = orderData.orderItems
+            .filter(item => item.typeId === 3 || item.typeId === 1)
+            .map(item => item.itemVariationId);
+
+        const uniqueVarIds = [...new Set(variationIds)];
+
+        const stockPromises = uniqueVarIds.map(async (vid) => {
+            try {
+                const stockData = await makePlentyCall(`/rest/stockmanagement/stock?variationId=${vid}&warehouseId=1`);
+                return { variationId: vid, data: stockData };
+            } catch (e) {
+                return { variationId: vid, error: "Could not fetch stock" };
+            }
+        });
+
+        result.stocks = await Promise.all(stockPromises);
+
+        return result;
+
+    } catch (error) {
+        console.error("Fehler beim Holen der Full Order Details:", error);
+        throw error;
+    }
+}
