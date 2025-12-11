@@ -8,27 +8,94 @@ const DASHBOARD_FOLDERS_TO_SCAN = [
 
 // SYSTEM PROMPT
 const SYSTEM_PROMPT = `
-Du bist ein erfahrener Support-Mitarbeiter der Firma "Tradeo / Servershop24" (servershop24.de).
-Wir verkaufen Serverhardware, RAM und Storage.
+Du bist ein erfahrener Support-Mitarbeiter der Firma "Tradeo / Servershop24".
+Wir sind Spezialisten für professionelle, refurbished Enterprise-Hardware (Server, Storage, Netzwerk).
 
 VORGABEN:
-1. Tonalität: Professionell, freundlich, direkt. Wir Siezen.
-2. Preis: Webshop-Preise sind fix. Rabatte erst bei großen Mengen.
-3. Fehler: Ehrlich zugeben.
-4. Signatur: Weglassen (macht das System). Also kein MfG, keinen Namen vom Absender etc.
-5. Du darfst, wenn deiner Meinung nach in Aussicht steht, dass die Konversation mit deiner Antwort ein Ende finden könnte, gern noch ein zeitabhängiges "schönen Abend/Tag/Wochenende/Weihnachten" etc. als Abschied dranhängen.
+1. Tonalität: Professionell, freundlich, direkt. Wir Siezen ("Sie").
+2. Preis: Webshop-Preise sind fix. Rabatte erst bei größeren Mengen (B2B).
+3. Fehler/Probleme: Ehrlich zugeben, lösungsorientiert bleiben.
+4. Signatur: Weglassen (wird vom System automatisch angefügt).
+5. Formatierung: Achte auf regelmäßige Absatzbildung und verwende regelmäßig leere Zeilen für bessere Leserlichkeit
+6. Bitte Fokus auf Sachen auf den Punkt bringen, kurz fassen. Das machts für Kunden einfacher und auch für uns Support-Mitarbeiter, die deine Antwortentwürfe überblicken und überprüfen müssen.
 
 WICHTIG ZUM VERLAUF:
 Der übergebene Ticket-Verlauf ist UMGEKEHRT chronologisch sortiert. 
 - Die OBERSTE Nachricht ist die NEUESTE (die, auf die wir meistens reagieren).
 - Die UNTERSTE Nachricht ist der Ursprung (die älteste).
 
+WISSEN ÜBER SERVERSHOP24 & PRODUKTE:
+Geschäftsmodell:
+   - Wir verkaufen "Refurbished" Hardware (Gebraucht, aber professionell aufbereitet und getestet). Bei Komponenten haben wir aber durchaus auch vereinzelt Neuware oder Renew-Ware (0h Betriebsstunden)
+   - Slogan: "Gebraucht. Geprüft. Geliefert."
+   - Zielgruppe: B2B, Admins, Rechenzentren, aber auch ambitionierte Homelab-Nutzer.
+
+Artikelzustände:
+   - vereinzelt Neuware verfügbar (v.A. Komponenten), aber selten bei Geräten und nie bei Servern. Aber es kann sein, dass wir mal nen Switch z.B. als Gerät als Neuware da haben.
+   - Renew-Ware (0h Betriebsstunden) ohne OVP, unbenutzt
+   - die meisten Komponenten sind gebraucht, die Server sind alle refurbished.
+
+Zustand HDDs/SSDs:
+   - Kunden fragen oft nach, wie viele Betriebsstunden und wie der Verschleiß ist und SMART Werte. Dazu können wir grundsätzlich keine Auskunft geben.
+   - Ausnahme bei SSDs:
+   - Renew / Neuware: 100% TBW verbleibend
+   - gebraucht, neuwertig: >90% TBW verbleibend
+   - gebraucht, sehr gut: 75-90% TBW verbleibend
+   - gebraucht, gut: 50-75% TBW verbleibend
+
+Gewährleistung:
+   - 6 Monate für gewerbliche Kunden
+   - 12 Monate für private Kunden
+   - Wir bieten als Upgrade-Optionen auf die meisten Geräte Hardware Care Packs von unserem Servicepartner TechCare Solutions GmbH an, siehe nächsten Abschnitt.
+
+Hardware Care Packs:
+   - 1, 2, 3, 5 Jahre sind die Laufzeiten
+   - Pickup & Return (weltweit verfügbar), Next Business Day (EU-Festland kein Problem, ansonsten auf Anfrage mit PLZ und Land Angabe), 24/7 Support (in Deutschland kein Problem, ansonsten auf Anfrage mit PLZ und Land Angabe) sind die Servicelevels
+   - für Fremdgeräte fallen 10% Fremdgeräteaufschlag an.
+   - Für Geräte von uns gilt normaler Preis im Webshop.
+   - Verlängerungen von auslaufenden Care Packs, die bei uns gekauft wurden, bieten wir individuell mit 5% Rabatt an.
+
+Widerrufsrecht:
+   - nur für Privatkunden bis 14 Tage ab Zustelldatum
+   - für Geschäftskunden ist im Normalfall eine Kulanzrücknahme möglich, wenn in gleicher Höhe anderweitig bestellt wird oder eine adäquate Alternative bestellt wird (bis zu 3 Monaten nach Zustellung).
+   - falls wir keinen kompatiblen bzw. alternativen Ersatz im Sortiment haben, nehmen wir ggf. auch auf Kulanz zurück, ohne weitere Bestellung. Das aber im Normalfall nur im ersten Monat ab Zustellung.
+
+Bestellen auf Rechnung:
+   - Bei Erstbestellung nur mit ordentlicher Bestell-PDF
+   - Nur für Firmenkunden
+   - Es wird grundsätzlich auftragseinzeln eine mögliche Rechnungsfreigabe geprüft, ggf. unter Abklärung mit unserem Kreditversicherer Atradius.
+   - Abweichende Lieferanschriften werden im Regelfall nicht akzeptiert und führen zu einer Ablehnung.
+   - Bei Ablehnung geht eine neue Bestellbestätigung mit Zahlungsinformationen für die Zahlung via Vorkasse
+
+Typische Kundenanfragen
+   - Kunden bitten oft um das Schicken eines Tracking Links sobald verfügbar. Das geht automatisch per E-Mail raus (Versandbestätigung mit Rechnung) ab Versand.
+
+Artikel & Bundles (am Beispiel HPE DL380 Gen10):
+   - "Base"-Server sind oft konfigurierbar.
+   - Wichtige technische Details in der Beschreibung beachten:
+     * Chassis-Typ: SFF (2.5") vs. LFF (3.5"). Nicht mischbar ohne Umbau!
+     * Controller: "AROC" (Modular) vs. "Embedded" (S100i - nur SATA!). Raid-Controller sind essenziell für SAS-Platten.
+     * Riser-Cages: Bestimmen, wie viele PCIe-Karten passen.
+   - Lieferumfang: Standardmäßig OHNE Betriebssystem/Software, ohne Blindblenden, ohne Kabelarm, sofern nicht anders angegeben.
+
+Upgrade-Struktur:
+   - RAM: DDR4 ECC (Registered vs. Load Reduced beachten - nicht mischbar!).
+   - HDD/SSD: Wir verkaufen Platten meist inkl. passendem Einbaurahmen (Tray/Caddy).
+   - WICHTIG - RAM Upgrades ersetzen den Basis-RAM. Es steht immer da "RAM Upgrade auf 64GB" das heißt, insgesamt werden dann im Gerät eben 64GB sein.
+   - WICHTIG - SSD- und HDD-Upgrades ersetzen die Basisfestplatten/Rahmen/Converter, falls vorhanden.
+   - WICHTIG - es ist nur ein SSD- ODER HDD-Upgrade möglich, da der Wegfall der Basisfestplatten/Rahmen/Converter enthalten ist. Zwei Upgrades dieser Art würden also doppelten Rabatt bedeuten -> ungültige Upgrade-Konstellation
+   - Care Packs: Wir bieten eigene "Hardware Care Packs" an (Service-Erweiterungen, z.B. Next Business Day, 24/7).
+
+Zubehör:
+   - Kunden vergessen oft: Rack-Schienen (Rails), Kabelmanagement-Arme, zusätzliche Netzteile (Redundanz), Lizenzen (Windows Server CALs/Cores).
+   - Empfehle aktiv passendes Zubehör, wenn es im Kontext Sinn macht (z.B. "Benötigen Sie noch Rack-Schienen oder ein zweites Netzteil zur Absicherung?").
+
 ANTWORT FORMAT:
 Antworte IMMER im validen JSON-Format.
 Struktur:
 {
   "draft": "Der Text für die E-Mail (HTML erlaubt)",
-  "feedback": "Kurze Info an den Agent (z.B. 'Habe Rabatt abgelehnt')"
+  "feedback": "Kurze Info an den Agent (z.B. 'Habe auf fehlende Rails hingewiesen')"
 }
 `;
 
@@ -297,21 +364,39 @@ function initConversationUI() {
 
     const copilotContainer = document.createElement('div');
     copilotContainer.id = 'tradeo-ai-copilot-zone';
-    
-    // Default: Collapsed Class hinzufügen!
     copilotContainer.classList.add('tradeo-collapsed');
 
-    // HTML Structure mit neuem Overlay
+    // Neues HTML Layout mit Settings Panel
     copilotContainer.innerHTML = `
         <div id="tradeo-ai-dummy-draft"><em>🤖 Bereite Antwortentwurf vor...</em></div>
         
+        <div id="tradeo-ai-settings-panel">
+            <div class="tradeo-setting-row">
+                <label>Gemini API Key</label>
+                <input type="password" id="setting-gemini-key" placeholder="AI Key hier...">
+            </div>
+            <div class="tradeo-setting-row">
+                <label>Plenty Username</label>
+                <input type="text" id="setting-plenty-user" placeholder="Dein Plenty Login">
+            </div>
+            <div class="tradeo-setting-row">
+                <label>Plenty Password</label>
+                <input type="password" id="setting-plenty-pass" placeholder="Dein Plenty Passwort">
+            </div>
+            <button id="tradeo-save-settings-btn" class="tradeo-save-btn">Speichern & Verbinden</button>
+            <div id="tradeo-settings-status"></div>
+        </div>
+
         <div id="tradeo-ai-expand-overlay">
             <button id="tradeo-ai-expand-btn">Ganzen Entwurf & AI Dialog anzeigen</button>
         </div>
 
         <div id="tradeo-ai-chat-history"></div>
         <div id="tradeo-ai-resize-handle" title="Höhe anpassen"></div>
+        
         <div id="tradeo-ai-input-area">
+            <button id="tradeo-ai-settings-btn" title="Einstellungen (API Keys)"><i class="glyphicon glyphicon-cog"></i></button>
+            
             <div class="tradeo-ai-model-wrapper">
                 <button id="tradeo-ai-model-btn" type="button">2.5 Flash</button>
                 <div id="tradeo-ai-model-dropdown" class="hidden"></div>
@@ -322,17 +407,12 @@ function initConversationUI() {
     `;
     mainContainer.prepend(copilotContainer);
     
-    const keyInput = document.createElement('input');
-    keyInput.type = 'password'; keyInput.id = 'tradeo-apikey-input';
-    keyInput.style.display = 'none'; keyInput.style.margin = '10px'; keyInput.style.width = '95%';
-    keyInput.placeholder = 'API Key eingeben...';
-    copilotContainer.prepend(keyInput);
-    checkApiKeyUI();
-
+    // UI Event Listener laden
+    setupSettingsLogic(); // <--- NEU
+    
     const originalReplyBtn = document.querySelector('.conv-reply');
     if(originalReplyBtn) setupButtons(originalReplyBtn);
     
-    // Expand Button Listener
     document.getElementById('tradeo-ai-expand-btn').addEventListener('click', expandInterface);
 
     setupModelSelector();
@@ -340,22 +420,18 @@ function initConversationUI() {
     setupResizeHandler();
     copilotContainer.style.display = 'block';
 
-    // CACHE LOAD logic (unverändert, nur dass UI collapsed bleibt)
+    // Cache laden (Unverändert)
     const ticketId = getTicketIdFromUrl();
-
     if (ticketId) {
         const storageKey = `draft_${ticketId}`;
         chrome.storage.local.get([storageKey], function(result) {
             const cached = result[storageKey];
             if (cached) {
                 const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
-                
                 window.aiState.lastDraft = cached.draft;
                 dummyDraft.innerHTML = cached.draft;
-                // KEIN FLASH beim Laden, wirkt ruhiger wenn collapsed
                 
                 document.getElementById('tradeo-ai-chat-history').innerHTML = ''; 
-
                 if (cached.chatHistory && Array.isArray(cached.chatHistory)) {
                     window.aiState.chatHistory = cached.chatHistory;
                     cached.chatHistory.forEach(msg => {
@@ -369,7 +445,6 @@ function initConversationUI() {
                     renderChatMessage('ai', fallbackText);
                     window.aiState.chatHistory = [{ type: 'ai', content: fallbackText }];
                 }
-
             } else {
                 renderChatMessage("system", "Kein Entwurf gefunden. Starte Live-Analyse...");
                 runAI(true);
@@ -378,6 +453,61 @@ function initConversationUI() {
     } else {
         runAI(true);
     }
+}
+
+function setupSettingsLogic() {
+    const panel = document.getElementById('tradeo-ai-settings-panel');
+    const btn = document.getElementById('tradeo-ai-settings-btn');
+    const saveBtn = document.getElementById('tradeo-save-settings-btn');
+    const statusDiv = document.getElementById('tradeo-settings-status');
+
+    // Toggle Panel
+    btn.addEventListener('click', () => {
+        panel.classList.toggle('visible');
+        if (panel.classList.contains('visible')) {
+            // Beim Öffnen Werte laden
+            chrome.storage.local.get(['geminiApiKey', 'plentyUser', 'plentyPass'], (res) => {
+                document.getElementById('setting-gemini-key').value = res.geminiApiKey || '';
+                document.getElementById('setting-plenty-user').value = res.plentyUser || '';
+                document.getElementById('setting-plenty-pass').value = res.plentyPass || '';
+            });
+        }
+    });
+
+    // Save Action
+    saveBtn.addEventListener('click', async () => {
+        const geminiKey = document.getElementById('setting-gemini-key').value.trim();
+        const pUser = document.getElementById('setting-plenty-user').value.trim();
+        const pPass = document.getElementById('setting-plenty-pass').value.trim();
+
+        statusDiv.innerText = "Speichere...";
+        
+        // Speichern
+        await chrome.storage.local.set({
+            geminiApiKey: geminiKey,
+            plentyUser: pUser,
+            plentyPass: pPass,
+            plentyToken: null // Token resetten bei neuen Daten
+        });
+
+        // Test der Verbindung (optional)
+        if (pUser && pPass) {
+             statusDiv.innerText = "Teste Plenty Verbindung...";
+             try {
+                 // Einfacher Test-Call (z.B. Login erzwingen)
+                 await callPlenty('/rest/login', 'POST', { username: pUser, password: pPass });
+                 statusDiv.innerText = "✅ Gespeichert & Verbunden!";
+                 statusDiv.style.color = "green";
+                 setTimeout(() => panel.classList.remove('visible'), 1500);
+             } catch (e) {
+                 statusDiv.innerText = "❌ Fehler: " + e;
+                 statusDiv.style.color = "red";
+             }
+        } else {
+            statusDiv.innerText = "✅ Gespeichert (Nur Gemini)";
+            setTimeout(() => panel.classList.remove('visible'), 1000);
+        }
+    });
 }
 
 // Neue Funktion zum Ausklappen
@@ -790,3 +920,96 @@ function setupResizeHandler() {
 // --- BOOTSTRAP ---
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startHeartbeat);
 else startHeartbeat();
+
+// --- PLENTY BRIDGE ---
+async function callPlenty(endpoint, method = 'GET', body = null) {
+    return new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+            action: 'PLENTY_API_CALL',
+            endpoint: endpoint,
+            method: method,
+            body: body
+        }, (response) => {
+            if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+            if (response && response.success) {
+                resolve(response.data);
+            } else {
+                // Wenn Auth fehlt -> Settings öffnen
+                if (response && response.authRequired) {
+                    const panel = document.getElementById('tradeo-ai-settings-panel');
+                    if(panel) {
+                        panel.classList.add('visible');
+                        document.getElementById('tradeo-settings-status').innerText = "⚠️ Bitte Plenty Zugangsdaten eingeben!";
+                        document.getElementById('tradeo-settings-status').style.color = "red";
+                        expandInterface(); // Aufklappen damit man es sieht
+                    }
+                }
+                reject(response ? response.error : "Unknown Error");
+            }
+        });
+    });
+}
+
+// Test-Funktion für die Konsole (damit du siehst, ob es klappt)
+window.testPlentyConnection = async function() {
+    console.log("Test: Rufe Auftragsstatus ab...");
+    try {
+        // Beispiel: Hole die erste Seite der Aufträge (nur zum Test)
+        const data = await callPlenty('/rest/orders?itemsPerPage=1');
+        console.log("✅ Plentymarkets Verbindung erfolgreich!", data);
+        alert("Verbindung zu Plentymarkets steht! Check Konsole für Daten.");
+    } catch (e) {
+        console.error("❌ Verbindung fehlgeschlagen:", e);
+        alert("Fehler bei Plenty Verbindung: " + e);
+    }
+};
+
+/**
+ * TEST: Holt Order Item Properties (aus deinem Screenshot)
+ * Endpoint: /rest/orders/items/{orderItemId}/properties
+ * * Nutzung: window.testItemProperties() in der Konsole eingeben.
+ * (Sucht sich automatisch eine gültige Item-ID aus dem letzten Auftrag, damit du nicht suchen musst)
+ */
+window.testItemProperties = async function(manualItemId = null) {
+    console.log("🕵️ Starte Test für Order Item Properties...");
+
+    try {
+        let itemId = manualItemId;
+
+        // 1. Wenn keine ID übergeben wurde, holen wir uns schnell eine echte aus dem letzten Auftrag
+        if (!itemId) {
+            console.log("Keine ID angegeben. Suche nach dem neuesten Auftrag...");
+            // Wir laden den letzten Auftrag inkl. OrderItems
+            const orders = await callPlenty('/rest/orders?itemsPerPage=1&with[]=orderItems');
+            
+            if (orders.entries && orders.entries.length > 0 && orders.entries[0].orderItems.length > 0) {
+                const order = orders.entries[0];
+                itemId = order.orderItems[0].id; // Nimm das erste Item
+                console.log(`💡 Gefunden: Auftrag ID ${order.id}, nutze Item ID ${itemId}`);
+            } else {
+                console.warn("❌ Keine Aufträge oder Items im System gefunden.");
+                alert("Konnte keine Test-ID finden (System leer?).");
+                return;
+            }
+        }
+
+        // 2. Der eigentliche Call aus deinem Screenshot
+        console.log(`🚀 Rufe Properties für Item ${itemId} ab...`);
+        const endpoint = `/rest/orders/items/${itemId}/properties`;
+        
+        const data = await callPlenty(endpoint);
+
+        // 3. Ergebnis
+        console.log("✅ ERGEBNIS (Properties):", data);
+        
+        if (Array.isArray(data) && data.length === 0) {
+            alert(`Abruf erfolgreich für Item ${itemId}, aber Liste war leer ( [] ).`);
+        } else {
+            alert(`Erfolg! Daten für Item ${itemId} geladen. Siehe Konsole (F12).`);
+        }
+
+    } catch (e) {
+        console.error("❌ Fehler beim Test:", e);
+        alert("Fehler: " + e);
+    }
+};
