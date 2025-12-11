@@ -718,51 +718,105 @@ async function fetchItemDetails(identifierRaw) {
     }
 }
 
+// --- plentyApi.js ---
 
 /**
- * Freitext-Suche nach Artikeln / Variationen.
- *
- * - Sucht zuerst direkt nach dem kompletten String in den Artikelnamen (itemName).
- * - Wenn nichts gefunden wird, wird nach allen "Bausteinen" (Tokens) gesucht,
- *   d.h. alle Treffer müssen alle Wörter enthalten (Reihenfolge egal).
- * - Zwei Modi:
- *   mode: "name"                => nur Artikelnamen (itemName)
- *   mode: "nameAndDescription"  => Artikelnamen + Artikelbeschreibung (itemDescription)
- *
- * Ergebnisse:
- * {
- *   meta: {...},
- *   salesPriceInfo: [ SalesPrice... ],   // Metadaten zu allen verwendeten salesPriceIds
- *   results: [
- *     {
- *       itemId,
- *       variationId,
- *       name,                 // zusammengesetzter Name (name1/2/3 DE)
- *       description,          // Beschreibung (DE, falls vorhanden)
- *       variation,            // komplettes Variation-Objekt
- *       item,                 // komplettes Item-Objekt
- *       stock,                // /rest/items/{itemId}/variations/{variationId}/stock
- *       variationSalesPrices  // /rest/items/{itemId}/variations/{variationId}/variation_sales_prices
- *     },
- *     ...
- *   ]
- * }
+ * Hilfsfunktion: Führt einen "Pre-Flight" Check für Tokens durch, um die Trefferanzahl zu ermitteln.
  */
+async function getTokenStats(tokens, searchInDescription) {
+    const stats = [];
+    
+    const checks = tokens.map(async (token) => {
+        try {
+            // Wir fragen nur 1 Item ab, uns interessiert nur 'totalsCount' im Response
+            const p1 = makePlentyCall(`/rest/items/variations?itemsPerPage=1&lang=de&itemName=${encodeURIComponent(token)}`);
+            let p2 = Promise.resolve({ totalsCount: 0 });
+            
+            if (searchInDescription) {
+                p2 = makePlentyCall(`/rest/items/variations?itemsPerPage=1&lang=de&itemDescription=${encodeURIComponent(token)}`);
+            }
+            
+            const [resName, resDesc] = await Promise.all([p1, p2]);
+            
+            const countName = resName ? resName.totalsCount : 0;
+            const countDesc = resDesc ? resDesc.totalsCount : 0;
+            
+            // Wir addieren die Counts als Schätzwert (es könnte Überlappungen geben, aber für die Heuristik reicht es)
+            return { 
+                token, 
+                count: countName + countDesc,
+                details: { name: countName, desc: countDesc }
+            };
+        } catch (e) {
+            console.warn(`Token Check failed for '${token}':`, e);
+            return { token, count: Infinity }; // Fehlerhafte Tokens bestrafen
+        }
+    });
+
+    return Promise.all(checks);
+}
+
+/**
+ * Hilfsfunktion: Lädt ALLE Ergebnisse für ein bestimmtes Kriterium via Pagination.
+ */
+async function fetchAllVariations(params) {
+    let allEntries = [];
+    let page = 1;
+    const itemsPerPage = 50; // Plenty Standard-Limit ist oft 50 oder 100
+    let hasMore = true;
+
+    while (hasMore) {
+        const qp = new URLSearchParams({
+            itemsPerPage: String(itemsPerPage),
+            page: String(page),
+            lang: 'de',
+            ...params
+        });
+
+        try {
+            const res = await makePlentyCall(`/rest/items/variations?${qp.toString()}`);
+            if (res && Array.isArray(res.entries)) {
+                allEntries.push(...res.entries);
+                
+                // Check ob wir am Ende sind
+                if (res.isLastPage || res.entries.length < itemsPerPage) {
+                    hasMore = false;
+                } else {
+                    page++;
+                }
+            } else {
+                hasMore = false;
+            }
+            
+            // Safety Break: Verhindere Endlosschleifen bei extrem vielen Artikeln (> 2000)
+            // Das kann man anpassen, wenn man wirklich ALLES will.
+            if (page > 40) { 
+                console.warn("Tradeo AI: Fetch Limit erreicht (2000 Items). Breche ab.");
+                hasMore = false; 
+            }
+
+        } catch (e) {
+            console.warn(`Fetch Page ${page} failed:`, e);
+            hasMore = false;
+        }
+    }
+    
+    return allEntries;
+}
+
+// --- plentyApi.js ---
+// (Ersetze die gesamte searchItemsByText Funktion mit dieser Version)
+
 async function searchItemsByText(searchText, options = {}) {
     // ---- Optionen / Modi parsen ----
     let mode = "name";
-    let maxResults = 30;
+    let maxResults = 50; 
 
     if (typeof options === "string") {
-        // Rückwärtskompatibilität, falls du mal "nameAndDescription" direkt als String übergibst
         mode = options === "nameAndDescription" ? "nameAndDescription" : "name";
     } else if (options && typeof options === "object") {
-        if (options.mode === "nameAndDescription") {
-            mode = "nameAndDescription";
-        }
-        if (typeof options.maxResults === "number") {
-            maxResults = options.maxResults;
-        }
+        if (options.mode === "nameAndDescription") mode = "nameAndDescription";
+        if (typeof options.maxResults === "number") maxResults = options.maxResults;
     }
 
     const searchInDescription = mode === "nameAndDescription";
@@ -772,161 +826,89 @@ async function searchItemsByText(searchText, options = {}) {
         throw new Error("searchItemsByText: Suchstring fehlt oder ist leer.");
     }
 
-    const search = searchText.trim();
-    const tokens = Array.from(
-        new Set(
-            search
-                .split(/\s+/)
-                .map(t => t.trim())
-                .filter(t => t.length > 1)
-        )
-    );
+    const searchRaw = searchText.trim();
+    const tokens = Array.from(new Set(searchRaw.split(/\s+/).map(t => t.trim()).filter(t => t.length > 1)));
 
-    const bannedRegex = /(hardware\s*care\s*pack|upgrade\s+auf)/i;
-    const lang = "de";
+    if (tokens.length === 0) return { meta: { type: "EMPTY" }, results: [] };
 
-    // Hilfsfunktion: Variationen per /rest/items/variations holen
-    const searchVariations = async (params) => {
-        const qp = new URLSearchParams({
-            itemsPerPage: String(maxResults),
-            lang,
-            ...params
-        });
+    console.log(`Tradeo AI SmartSearch: Analysiere Tokens: ${JSON.stringify(tokens)}`);
 
-        const res = await makePlentyCall(`/rest/items/variations?${qp.toString()}`);
-        return (res && Array.isArray(res.entries)) ? res.entries : [];
-    };
+    // 1. STATS: Welches Token liefert die wenigsten Ergebnisse?
+    const stats = await getTokenStats(tokens, searchInDescription);
+    const validStats = stats.filter(s => s.count > 0).sort((a, b) => a.count - b.count);
 
-    // Hilfsfunktion: Deduplizieren nach variation.id
-    const dedupeVariations = (list) => {
-        const map = new Map();
-        for (const v of list || []) {
-            if (!v || typeof v.id === "undefined") continue;
-            if (!map.has(v.id)) map.set(v.id, v);
-        }
-        return Array.from(map.values());
-    };
-
-    // ---- 1. Direkte Suche mit komplettem String ----
-    let variations = [];
-    try {
-        const nameMatches = await searchVariations({ itemName: search });
-        let descMatches = [];
-        if (searchInDescription) {
-            descMatches = await searchVariations({ itemDescription: search });
-        }
-        variations = dedupeVariations([...nameMatches, ...descMatches]);
-    } catch (e) {
-        console.warn("searchItemsByText: direkte Suche fehlgeschlagen:", e);
+    if (validStats.length === 0) {
+        return { meta: { type: "NO_MATCH_ANY_TOKEN", searchText: searchRaw }, results: [] };
     }
 
-    // ---- 2. Fallback: Bausteine (alle Tokens müssen matchen) ----
-    if (variations.length === 0 && tokens.length > 0) {
-        console.log("searchItemsByText: keine direkten Treffer, starte Token-basierte Suche mit:", tokens);
+    const winner = validStats[0];
+    console.log(`Tradeo AI SmartSearch: Gewinner ist '${winner.token}' mit ca. ${winner.count} Treffern.`);
 
-        let currentMatches = null;
-
-        for (let i = 0; i < tokens.length; i++) {
-            const term = tokens[i];
-            try {
-                const nameMatches = await searchVariations({ itemName: term });
-                let descMatches = [];
-                if (searchInDescription) {
-                    descMatches = await searchVariations({ itemDescription: term });
-                }
-                const combined = dedupeVariations([...nameMatches, ...descMatches]);
-                const idSet = new Set(combined.map(v => v.id));
-
-                if (i === 0) {
-                    currentMatches = combined;
-                } else if (currentMatches) {
-                    currentMatches = currentMatches.filter(v => idSet.has(v.id));
-                }
-
-                if (!currentMatches || currentMatches.length === 0) {
-                    break; // Kein Artikel erfüllt alle Tokens
-                }
-            } catch (e) {
-                console.warn(`searchItemsByText: Token-Suche für '${term}' fehlgeschlagen:`, e);
-            }
-        }
-
-        if (currentMatches && currentMatches.length > 0) {
-            variations = currentMatches;
-        }
+    // 2. FETCH ALL: Wir laden alles für den Gewinner
+    const pName = fetchAllVariations({ itemName: winner.token });
+    let pDesc = Promise.resolve([]);
+    if (searchInDescription) {
+        pDesc = fetchAllVariations({ itemDescription: winner.token });
     }
 
-    if (!variations || variations.length === 0) {
-        return {
-            meta: {
-                type: "PLENTY_ITEM_TEXT_SEARCH_RESULTS",
-                searchText,
-                mode,
-                timestamp: new Date().toISOString(),
-                resultCount: 0
-            },
-            salesPriceInfo: [],
-            results: []
-        };
-    }
+    const [hitsName, hitsDesc] = await Promise.all([pName, pDesc]);
+    
+    // Deduplizieren
+    const candidateMap = new Map();
+    [...hitsName, ...hitsDesc].forEach(v => {
+        if(v && v.id) candidateMap.set(v.id, v);
+    });
 
-    // ggf. harte Obergrenze
-    if (variations.length > maxResults) {
-        variations = variations.slice(0, maxResults);
-    }
+    const candidates = Array.from(candidateMap.values());
+    console.log(`Tradeo AI SmartSearch: ${candidates.length} Kandidaten geladen. Starte Filterung...`);
 
-    // ---- 3. Items + Namen + Beschreibungen + Stock + Preise holen ----
-    const itemCache = new Map();  // itemId -> item
+    // 3. FILTERING: Jetzt prüfen wir die restlichen Tokens
+    const itemCache = new Map();
     const enrichedResults = [];
     const allSalesPriceIds = new Set();
+    const bannedRegex = /(hardware\s*care\s*pack|upgrade\s+auf)/i;
 
-    // kleine Helper-Funktion für Namen/Beschreibung aus Item
     const extractNameAndDescription = (item) => {
         let name = "";
         let description = "";
-
         if (item && Array.isArray(item.texts) && item.texts.length > 0) {
-            const textDe =
-                item.texts.find(t => t.lang === "de") ||
-                item.texts[0];
-
+            const textDe = item.texts.find(t => t.lang === "de") || item.texts[0];
             if (textDe) {
                 const parts = [textDe.name1, textDe.name2, textDe.name3].filter(Boolean);
                 name = parts.join(" ").trim();
                 description = (textDe.description || "").trim();
             }
         }
-
         return { name, description };
     };
 
-    for (const variation of variations) {
-        if (!variation || typeof variation.id === "undefined") continue;
+    const tokenRegexes = tokens.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
 
+    for (const variation of candidates) {
         const itemId = variation.itemId;
         const variationId = variation.id;
 
-        // Item aus Cache oder API holen
+        // Item laden (Cache nutzen)
         let item = itemCache.get(itemId);
         if (!item) {
             try {
                 item = await makePlentyCall(`/rest/items/${itemId}`);
                 itemCache.set(itemId, item);
-            } catch (e) {
-                console.warn(`searchItemsByText: Item ${itemId} konnte nicht geladen werden:`, e);
-                continue;
-            }
+            } catch (e) { continue; }
         }
 
         const { name, description } = extractNameAndDescription(item);
+        const fullText = (name + " " + (searchInDescription ? description : "")).toLowerCase();
 
-        // "Hardware Care Pack" / "Upgrade auf" rausfiltern
-        const haystack = (name + " " + description).toLowerCase();
-        if (bannedRegex.test(haystack)) {
-            continue;
-        }
+        // Ban-Check
+        if (bannedRegex.test(fullText)) continue;
 
-        // Stock + Variation-Sales-Prices parallel holen
+        // TOKEN CHECK: Sind ALLE Tokens enthalten?
+        const allTokensMatch = tokenRegexes.every(rx => rx.test(name) || (searchInDescription && rx.test(description)));
+
+        if (!allTokensMatch) continue;
+
+        // Treffer! Daten anreichern.
         let stock = [];
         let variationSalesPrices = [];
 
@@ -935,75 +917,59 @@ async function searchItemsByText(searchText, options = {}) {
                 makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
                 makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
             ]);
-
-            if (Array.isArray(stockRes)) {
-                stock = stockRes;
-            }
-
+            stock = Array.isArray(stockRes) ? stockRes : [];
             if (Array.isArray(vspRes)) {
                 variationSalesPrices = vspRes;
-                vspRes.forEach(sp => {
-                    if (sp && typeof sp.salesPriceId !== "undefined") {
-                        allSalesPriceIds.add(sp.salesPriceId);
-                    }
-                });
+                vspRes.forEach(sp => { if (sp?.salesPriceId) allSalesPriceIds.add(sp.salesPriceId); });
             }
-        } catch (e) {
-            console.warn(`searchItemsByText: Stock/Prices für Variation ${variationId} konnten nicht geladen werden:`, e);
-        }
+        } catch (e) { /* ignore */ }
 
         enrichedResults.push({
+            // WICHTIG: Wir zwingen die AI, itemId als Artikelnummer zu sehen
+            articleNumber: String(itemId), 
             itemId,
             variationId,
+            variationNumber: variation.number, // Umbenannt, damit AI nicht verwirrt ist
+            model: variation.model,
             name,
             description,
-            variation,
+            variation, // Original behalten wir für Attribute etc.
             item,
             stock,
             variationSalesPrices
         });
     }
 
-    // ---- 4. SalesPrice-Metadaten für alle verwendeten salesPriceIds holen ----
+    // SalesPrice Metadaten laden
     let salesPriceInfo = [];
     if (allSalesPriceIds.size > 0) {
         try {
             const idsParam = Array.from(allSalesPriceIds).join(",");
-            const qp = new URLSearchParams({
-                ids: idsParam,
-                with: "names,countries,currencies,clients,customerClasses"
-            });
-
+            const qp = new URLSearchParams({ ids: idsParam, with: "names,countries,currencies,clients,customerClasses" });
             const spiRes = await makePlentyCall(`/rest/items/sales_prices?${qp.toString()}`);
-            if (spiRes && Array.isArray(spiRes.entries)) {
-                salesPriceInfo = spiRes.entries;
-            }
-        } catch (e) {
-            console.warn("searchItemsByText: Laden der SalesPrice-Metadaten fehlgeschlagen:", e);
-        }
+            if (spiRes?.entries) salesPriceInfo = spiRes.entries;
+        } catch (e) { console.warn("Meta-Price Load Error", e); }
     }
+
+    const finalResults = enrichedResults.slice(0, maxResults);
 
     return {
         meta: {
-            type: "PLENTY_ITEM_TEXT_SEARCH_RESULTS",
-            searchText,
-            mode,
-            timestamp: new Date().toISOString(),
-            resultCount: enrichedResults.length,
-            maxResults
+            type: "PLENTY_ITEM_SMART_SEARCH",
+            searchText: searchRaw,
+            strategy: `WinnerToken: ${winner.token} (${winner.count} Hits)`,
+            matchesFound: enrichedResults.length,
+            timestamp: new Date().toISOString()
         },
         salesPriceInfo,
-        results: enrichedResults
+        results: finalResults
     };
 }
 
-
-// Nur Artikelnamen
 async function searchItemsByNameText(searchString) {
-    return searchItemsByText(searchString, { includeDescription: false });
+    return searchItemsByText(searchString, { mode: "name" });
 }
 
-// Artikelnamen + Artikelbeschreibung
 async function searchItemsByNameAndDescriptionText(searchString) {
-    return searchItemsByText(searchString, { includeDescription: true });
+    return searchItemsByText(searchString, { mode: "nameAndDescription" });
 }
