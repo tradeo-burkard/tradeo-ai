@@ -6,11 +6,12 @@ const PLENTY_BASE_URL = "https://p7843.my.plentysystems.com";
  * Holt Credentials aus dem Speicher, loggt sich ein und gibt den Token zurück.
  */
 async function getPlentyToken() {
-    // 1. Credentials und gecachten Token aus Storage holen
-    const storage = await chrome.storage.local.get(['plentyUser', 'plentyPass', 'plentyToken', 'plentyTokenExpires']);
+    // 1. Credentials und gecachten Token holen (FIX: Name korrigiert auf 'plentyTokenExpiresAt')
+    const storage = await chrome.storage.local.get(['plentyUser', 'plentyPass', 'plentyToken', 'plentyTokenExpiresAt']);
     
     // Check: Token noch gültig? (Puffer 5 Min)
-    if (storage.plentyToken && storage.plentyTokenExpires && Date.now() < (storage.plentyTokenExpires - 300000)) {
+    if (storage.plentyToken && storage.plentyTokenExpiresAt && Date.now() < (storage.plentyTokenExpiresAt - 300000)) {
+        console.log("Tradeo AI: Nutze gecachten Plenty Token.");
         return storage.plentyToken;
     }
 

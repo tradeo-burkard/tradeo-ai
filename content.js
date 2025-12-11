@@ -18,6 +18,7 @@ VORGABEN:
 4. Signatur: Weglassen (wird vom System automatisch angefügt).
 5. Formatierung: Achte auf regelmäßige Absatzbildung und verwende regelmäßig leere Zeilen für bessere Leserlichkeit
 6. Bitte Fokus auf Sachen auf den Punkt bringen, kurz fassen. Das machts für Kunden einfacher und auch für uns Support-Mitarbeiter, die deine Antwortentwürfe überblicken und überprüfen müssen.
+7. Sprache: Logischerweise immer in Kundensprache antworten.
 
 WICHTIG ZUM VERLAUF:
 Der übergebene Ticket-Verlauf ist UMGEKEHRT chronologisch sortiert. 
@@ -348,12 +349,25 @@ async function generateDraftHeadless(contextText) {
 function extractContextFromDOM(docRoot) {
     const mainContainer = docRoot.querySelector('#conv-layout-main');
     if (!mainContainer) return "";
+    
     const clone = mainContainer.cloneNode(true);
+    
+    // 1. Entferne unsere eigene AI Zone
     const myZone = clone.querySelector('#tradeo-ai-copilot-zone');
     if (myZone) myZone.remove();
+    
+    // 2. Entferne den Editor-Block (falls sichtbar)
     const editorBlock = clone.querySelector('.conv-reply-block');
     if(editorBlock) editorBlock.remove();
-    return clone.innerText;
+
+    // 3. NEU: Entferne Dropdown-Menüs und UI-Buttons aus den Nachrichten
+    clone.querySelectorAll('.dropdown-menu, .thread-options, .conv-action-wrapper').forEach(el => el.remove());
+
+    // 4. NEU: Formatierung bereinigen (Mehrfache Leerzeilen reduzieren)
+    let cleanText = clone.innerText;
+    cleanText = cleanText.replace(/\n\s*\n/g, '\n\n').trim();
+
+    return cleanText;
 }
 
 // --- UI LOGIC (TICKET VIEW) ---
@@ -627,15 +641,19 @@ async function runAI(isInitial = false) {
     const btn = document.getElementById('tradeo-ai-send-btn');
     const input = document.getElementById('tradeo-ai-input');
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
-    const apiKeyInput = document.getElementById('tradeo-apikey-input');
-    let userPrompt = input.value.trim();
     
-    window.aiState.isGenerating = true;
-    
+    // --- FIX: API Key Logik bereinigt ---
+    // Wir holen den Key jetzt immer frisch aus dem Storage, da er im Settings-Panel gespeichert wird.
+    const storageData = await chrome.storage.local.get(['geminiApiKey']);
+    const apiKey = storageData.geminiApiKey;
+
+    let userPrompt = "";
+
     // 1. User Input verarbeiten (außer bei Init)
     if (isInitial) {
         userPrompt = "Analysiere das Ticket und erstelle einen passenden Antwortentwurf.";
     } else { 
+        userPrompt = input.value.trim();
         if (!userPrompt) return; 
         
         // UI rendern
@@ -645,14 +663,18 @@ async function runAI(isInitial = false) {
         window.aiState.chatHistory.push({ type: "user", content: userPrompt }); 
     }
 
-    let apiKey = apiKeyInput.value.trim();
+    // Check: Haben wir einen Key?
     if (!apiKey) {
-        const stored = await chrome.storage.local.get(['geminiApiKey']);
-        apiKey = stored.geminiApiKey;
+        renderChatMessage('system', "⚠️ Kein API Key gefunden. Bitte oben auf das Zahnrad klicken und Key speichern.");
+        // Optional: Settings Panel automatisch öffnen
+        document.getElementById('tradeo-ai-settings-panel').classList.add('visible');
+        expandInterface();
+        window.aiState.isGenerating = false; 
+        return; 
     }
-    if (!apiKey) { window.aiState.isGenerating = false; return; }
 
-    btn.disabled = true; btn.innerText = "...";
+    window.aiState.isGenerating = true;
+    if(btn) { btn.disabled = true; btn.innerText = "..."; }
     
     const contextText = extractContextFromDOM(document);
     // Verlauf für Prompt aufbereiten (nur Text-Inhalt)
@@ -709,7 +731,7 @@ async function runAI(isInitial = false) {
             dummyDraft.innerHTML = jsonResponse.draft;
             if(!window.aiState.preventOverwrite && !window.aiState.isRealMode) { dummyDraft.style.display = 'block'; flashElement(dummyDraft); }
         }
-        if(!isInitial) input.value = '';
+        if(!isInitial && input) input.value = '';
 
         // --- PERSISTENZ SPEICHERN ---
         // Speichert das komplette History Array inkl. Drafts
@@ -739,7 +761,9 @@ async function runAI(isInitial = false) {
     } catch(e) {
         renderChatMessage('system', "Error: " + e.message);
     } finally {
-        btn.disabled = false; btn.innerText = "Go"; window.aiState.isGenerating = false; window.aiState.preventOverwrite = false;
+        if(btn) { btn.disabled = false; btn.innerText = "Go"; }
+        window.aiState.isGenerating = false; 
+        window.aiState.preventOverwrite = false;
     }
 }
 
@@ -791,13 +815,6 @@ async function performFullReset() {
 function getTicketIdFromUrl() {
     const match = window.location.href.match(/conversation\/(\d+)/);
     return match ? match[1] : null;
-}
-
-function checkApiKeyUI() {
-    chrome.storage.local.get(['geminiApiKey'], function(result) {
-        const input = document.getElementById('tradeo-apikey-input');
-        if (input) input.style.display = !result.geminiApiKey ? 'block' : 'none';
-    });
 }
 
 function waitForSummernote(callback) {
