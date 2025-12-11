@@ -722,11 +722,11 @@ async function fetchItemDetails(identifierRaw) {
 /**
  * Freitext-Suche nach Artikeln / Variationen.
  *
- * - Sucht zuerst direkt nach dem kompletten String in den Artikelnamen (itemNames).
+ * - Sucht zuerst direkt nach dem kompletten String in den Artikelnamen (itemName).
  * - Wenn nichts gefunden wird, wird nach allen "Bausteinen" (Tokens) gesucht,
  *   d.h. alle Treffer müssen alle Wörter enthalten (Reihenfolge egal).
  * - Zwei Modi:
- *   mode: "name"                => nur Artikelnamen (itemNames)
+ *   mode: "name"                => nur Artikelnamen (itemName)
  *   mode: "nameAndDescription"  => Artikelnamen + Artikelbeschreibung (itemDescription)
  *
  * Ergebnisse:
@@ -810,7 +810,7 @@ async function searchItemsByText(searchText, options = {}) {
     // ---- 1. Direkte Suche mit komplettem String ----
     let variations = [];
     try {
-        const nameMatches = await searchVariations({ itemNames: search });
+        const nameMatches = await searchVariations({ itemName: search });
         let descMatches = [];
         if (searchInDescription) {
             descMatches = await searchVariations({ itemDescription: search });
@@ -829,7 +829,7 @@ async function searchItemsByText(searchText, options = {}) {
         for (let i = 0; i < tokens.length; i++) {
             const term = tokens[i];
             try {
-                const nameMatches = await searchVariations({ itemNames: term });
+                const nameMatches = await searchVariations({ itemName: term });
                 let descMatches = [];
                 if (searchInDescription) {
                     descMatches = await searchVariations({ itemDescription: term });
