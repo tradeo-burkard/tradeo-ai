@@ -314,3 +314,21 @@
     color: #1a73e8;
     font-weight: bold;
 }
+
+/* Neuer Reset Button im "Dummy Draft" Style */
+.tradeo-ai-reset-btn {
+    background-color: #fff3cd !important; /* Pastellgelb */
+    color: #856404 !important; /* Dunkelgelber/Brauner Text */
+    border: 1px solid #ffeeba !important;
+    margin-left: 5px; /* Abstand zum AI Button */
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.tradeo-ai-reset-btn:hover {
+    background-color: #ffe8a1 !important;
+    border-color: #ffc107 !important;
+}
