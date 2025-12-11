@@ -43,22 +43,31 @@ Deine Aufgabe ist es, den Nachrichtenverlauf zu analysieren und einen perfekten,
 
 ---
 
-### INTERPRETATION VON BESTELLDATEN (TOOL USE):
+### INTERPRETATION VON DATEN (TOOL USE):
 
-Wenn du das Tool 'getOrderDetails' nutzt, beachte folgende Regeln bei der Analyse der JSON-Daten:
+Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere keine JSON-Werte 1:1, sondern formuliere Sätze.
 
-1. **STATUS-CODES & AUSSAGEN:**
-   - **Status 7 (Warenausgang/Versand):**
-     - Das bedeutet: Das Paket wurde an DHL/UPS/Spedition übergeben.
-     - **WICHTIGE REGEL:** Sage NIEMALS "wurde zugestellt" oder "ist angekommen".
-     - Sage STATTDESSEN: "wurde am [Datum] versandt" oder "an den Versanddienstleister übergeben".
-     - Wir wissen nicht, ob es beim Kunden schon angekommen ist, nur dass es unser Haus verlassen hat.
+**A. BEI BESTELLUNGEN (getOrderDetails):**
+1. **Status 7 (Warenausgang):**
+   - Das Paket wurde an DHL/UPS übergeben.
+   - REGEL: Sage "wurde am [Datum] versandt". Sage NIEMALS "ist zugestellt", außer das Tracking bestätigt dies explizit.
+2. **Datums-Felder:** Nutze 'doneAt' oder 'exitDate' für das Versanddatum.
+3. **Tracking:** Nenne vorhandene Tracking-Codes.
 
-2. **DATUMS-FELDER:**
-   - Suche nach 'doneAt' oder 'exitDate' im 'dates'-Array für das Versanddatum.
+**B. BEI ARTIKELN (getItemDetails):**
+1. **Verfügbarkeit:**
+   - Prüfe das Feld 'stock' -> 'net' (Netto-Bestand).
+   - Netto > 0: "Sofort lieferbar" / "Auf Lager".
+   - Netto <= 0: "Aktuell nicht lagernd". Prüfe, ob ein Liefertermin genannt ist.
+2. **Zustand:**
+   - Achte auf Hinweise wie "Renew", "Refurbished" oder "Neu" im Artikelnamen, um die Gewährleistungsregeln anzuwenden.
 
-3. **TRACKING:**
-   - Wenn Tracking-Codes im Objekt 'packageNumbers' vorhanden sind, nenne diese dem Kunden.
+**C. BEI KUNDEN (getCustomerDetails):**
+1. **Kontext:**
+   - Wenn der Kunde fragt "Wo ist meine Bestellung?", aber die letzte Order in der 'recentOrders'-Liste Monate her ist: Frage höflich nach der aktuellen Bestellnummer.
+   - Wenn die letzte Order vor 1-3 Tagen war und Status < 7 hat: Informiere, dass sie noch in Bearbeitung ist.
+2. **Adresse:**
+   - Abgleich Rechnungs- vs. Lieferadresse nur erwähnen, wenn explizit danach gefragt wird oder Unstimmigkeiten erkennbar sind.
 
 ---
 
@@ -82,9 +91,9 @@ Wenn du das Tool 'getOrderDetails' nutzt, beachte folgende Regeln bei der Analys
 ### OUTPUT FORMAT (JSON ONLY):
 {
   "detected_language": "DE" oder "EN",
-  "reasoning": "Warum so entschieden? (z.B. 'Status 7 gefunden -> sage versandt am...')",
+  "reasoning": "Warum so entschieden? (z.B. 'Lagerbestand ist 0 -> informiere Kunde')",
   "draft": "HTML Antworttext (<p>...</p>)",
-  "feedback": "Info an Agent"
+  "feedback": "Kurze Info an Agent (z.B. 'Habe Lagerbestand geprüft: 5 Stück verfügbar')"
 }
 `;
 
@@ -122,6 +131,34 @@ const GEMINI_TOOLS = [
                 }
             },
             "required": ["orderId"]
+        }
+    },
+    {
+        "name": "getItemDetails",
+        "description": "Ruft Artikelinformationen ab, inklusive Name, Variationen und aktuellem Lagerbestand (Netto). Nutze dies bei Fragen zu Artikelnummern oder Verfügbarkeit.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "identifier": {
+                    "type": "STRING",
+                    "description": "Die Artikelnummer (Variation Number) oder die Variations-ID."
+                }
+            },
+            "required": ["identifier"]
+        }
+    },
+    {
+        "name": "getCustomerDetails",
+        "description": "Ruft Kundenstammdaten (Klasse, Adresse etc.) und die letzten Bestellungen dieses Kunden ab. Nutze dies, wenn eine Kundennummer (Contact ID) genannt wird.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "contactId": {
+                    "type": "STRING",
+                    "description": "Die ID des Kunden (Contact ID)."
+                }
+            },
+            "required": ["contactId"]
         }
     }
 ];
@@ -750,18 +787,35 @@ async function runAI(isInitial = false) {
 
                 // Tool ausführen
                 let functionResult = null;
+                let actionName = '';
+                let actionPayload = {};
+
+                // Mapping der Tools auf Background Actions
                 if (fnName === 'getOrderDetails') {
+                    actionName = 'GET_ORDER_FULL';
+                    actionPayload = { orderId: fnArgs.orderId };
+                } else if (fnName === 'getItemDetails') {
+                    actionName = 'GET_ITEM_DETAILS';
+                    actionPayload = { identifier: fnArgs.identifier };
+                } else if (fnName === 'getCustomerDetails') {
+                    actionName = 'GET_CUSTOMER_DETAILS';
+                    actionPayload = { contactId: fnArgs.contactId };
+                }
+
+                if (actionName) {
                     const apiResult = await new Promise(resolve => {
-                        chrome.runtime.sendMessage({ action: 'GET_ORDER_FULL', orderId: fnArgs.orderId }, (response) => {
+                        chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => {
                              resolve(response);
                         });
                     });
                     
-                    if(apiResult.success) {
+                    if(apiResult && apiResult.success) {
                         functionResult = apiResult.data;
                     } else {
-                        functionResult = { error: apiResult.error };
+                        functionResult = { error: apiResult ? apiResult.error : "Unknown Error" };
                     }
+                } else {
+                    functionResult = { error: "Tool not implemented in frontend" };
                 }
 
                 // Verlauf aktualisieren
