@@ -457,182 +457,233 @@ async function fetchFullOrderDetails(orderId) {
     }
 }
 
-// DATEI: tradeo-burkard/tradeo-ai/tradeo-ai-main/plentyApi.js
-// (Ersetze die bestehende fetchItemDetails Funktion mit dieser Version)
-
-// DATEI: tradeo-burkard/tradeo-ai/tradeo-ai-main/plentyApi.js
-
-async function fetchItemDetails(identifier) {
+async function fetchItemDetails(identifierRaw) {
     try {
+        const identifier = String(identifierRaw).trim();
         let candidates = [];
         let searchMethod = "unknown";
         const seenIds = new Set(); // Duplikate vermeiden
 
-        // Helper: Lädt vollständige Daten für eine einzelne Variation
+        // --- Helper: Response normalisieren (Array ODER { entries: [...] }) ---
+        const extractEntries = (res) => {
+            if (!res) return [];
+            if (Array.isArray(res)) return res;
+            if (Array.isArray(res.entries)) return res.entries;
+            if (Array.isArray(res.variations)) return res.variations;
+            return [];
+        };
+
+        // --- Helper: Kandidaten hinzufügen ---
+        const addCandidates = (entries) => {
+            for (const entry of entries || []) {
+                if (!entry || typeof entry.id === "undefined") continue;
+                if (!seenIds.has(entry.id)) {
+                    seenIds.add(entry.id);
+                    candidates.push(entry);
+                }
+            }
+        };
+
+        // --- Helper: /rest/items/variations Suche ---
+        const searchVariations = async (params, label) => {
+            const qs = new URLSearchParams({
+                itemsPerPage: "50",
+                ...params
+            }).toString();
+
+            const url = `/rest/items/variations?${qs}`;
+            console.log(`Tradeo AI: Suche '${label}' → ${url}`);
+
+            try {
+                const res = await makePlentyCall(url);
+                const entries = extractEntries(res);
+                console.log(`Tradeo AI: Suche '${label}' → ${entries.length} Treffer`);
+                addCandidates(entries);
+            } catch (e) {
+                console.warn(`Tradeo AI: Suche '${label}' fehlgeschlagen:`, e);
+            }
+        };
+
+        // --- Helper: Vollständige Daten für eine Variation laden ---
         const loadFullData = async (variation) => {
-             const itemId = variation.itemId;
-             const variationId = variation.id;
-             
-             const [stockData, itemBaseData] = await Promise.all([
-                makePlentyCall(`/rest/stockmanagement/stock?variationId=${variationId}&warehouseId=1`), 
+            const itemId = variation.itemId;
+            const variationId = variation.id;
+
+            const [stockData, itemBaseData] = await Promise.all([
+                makePlentyCall(`/rest/stockmanagement/stock?variationId=${variationId}&warehouseId=1`),
                 makePlentyCall(`/rest/items/${itemId}`)
             ]);
-            
+
+            const stockEntries = extractEntries(stockData);
+
             return {
-                meta: { type: "PLENTY_ITEM_EXPORT", timestamp: new Date().toISOString(), searchMethod },
-                variation: variation,
-                item: itemBaseData, 
-                stock: stockData
+                meta: {
+                    type: "PLENTY_ITEM_EXPORT",
+                    timestamp: new Date().toISOString(),
+                    searchMethod
+                },
+                variation,
+                item: itemBaseData,
+                stock: stockEntries
             };
         };
 
-        // --- HEURISTIK: Interne ID/Nummer (6-stellig, beginnt mit 1) ---
-        // Z.B. 104250. Wenn das zutrifft, suchen wir primär danach.
-        const isInternalNumberFormat = /^1\d{5}$/.test(identifier);
+        const isNumeric = /^\d+$/.test(identifier);
+        const isInternalNumberFormat = /^1\d{5}$/.test(identifier); // 6-stellig, beginnt mit 1
 
-        if (isInternalNumberFormat) {
-            console.log(`Tradeo AI: '${identifier}' entspricht internem ID-Schema (6-stellig, beginnt mit 1). Prüfe priorisiert...`);
-            
-            // Priorisierter Check: Nur ID und NumberExact
-            const priorityChecks = [
-                makePlentyCall(`/rest/items/variations?id=${identifier}`).then(res => res.entries || []).catch(() => []),
-                makePlentyCall(`/rest/items/variations?numberExact=${encodeURIComponent(identifier)}`).then(res => res.entries || []).catch(() => [])
-            ];
+        // =====================================================================
+        // 1. PRIORISIERTE SUCHE: Variation-ID / Item-ID / numberExact
+        // =====================================================================
+        if (isNumeric) {
+            console.log(`Tradeo AI: Numerischer Identifier '${identifier}' – prüfe ID-Varianten...`);
 
-            const priorityResults = await Promise.all(priorityChecks);
-            
-            // Ergebnisse sammeln
-            for (const entries of priorityResults) {
-                for (const entry of entries) {
-                    if (!seenIds.has(entry.id)) {
-                        candidates.push(entry);
-                        seenIds.add(entry.id);
+            // a) Variation-ID direkt
+            await searchVariations({ id: identifier }, "priority:variationId");
+
+            // b) Item-ID (Artikel-ID → alle Variationen zu diesem Artikel)
+            if (candidates.length === 0) {
+                await searchVariations({ itemId: identifier }, "priority:itemId");
+            }
+
+            // c) exakte Variationsnummer (numberExact)
+            if (candidates.length === 0) {
+                await searchVariations({ numberExact: identifier }, "priority:numberExact");
+            }
+
+            // d) HARDCODED-FALLBACK: /rest/items/{itemId}/variations → Item-ID aus UI
+            if (candidates.length === 0) {
+                try {
+                    console.log(`Tradeo AI: Fallback: /rest/items/${identifier}/variations ...`);
+                    const res = await makePlentyCall(`/rest/items/${identifier}/variations`);
+                    const entries = extractEntries(res);
+                    console.log(`Tradeo AI: /rest/items/${identifier}/variations → ${entries.length} Treffer`);
+                    addCandidates(entries);
+                    if (entries.length > 0) {
+                        searchMethod = "itemId_path";
                     }
+                } catch (e) {
+                    console.warn("Tradeo AI: Fallback /rest/items/{itemId}/variations fehlgeschlagen:", e);
                 }
             }
 
-            if (candidates.length > 0) {
-                 console.log("Treffer via ID/Nummer-Priorisierung gefunden.");
-                 searchMethod = "priority_id_match";
-            } else {
-                console.log("Kein Treffer trotz ID-Format. Falle zurück auf breite Suche...");
+            if (candidates.length > 0 && searchMethod === "unknown") {
+                searchMethod = isInternalNumberFormat ? "priority_internal_numeric" : "priority_numeric";
             }
         }
 
-        // --- FALLBACK: Breite Suche (Barcode, Model, ID, Nummer) ---
-        // Läuft, wenn NICHT priorisiert gefunden wurde (oder Format nicht passte)
+        // =====================================================================
+        // 2. BREITE SUCHE:
+        //    numberExact/numberFuzzy, barcode, itemName, itemDescription, supplierNumber, supplierNumberFuzzy, sku
+        // =====================================================================
         if (candidates.length === 0) {
             console.log(`Tradeo AI: Starte breite Suche für '${identifier}'...`);
-            
-            const searchPromises = [];
 
-            // A) ID (nur wenn numerisch UND wir es oben nicht schon erfolglos geprüft haben)
-            if (!isNaN(identifier) && !isInternalNumberFormat) {
-                 searchPromises.push(
-                    makePlentyCall(`/rest/items/variations?id=${identifier}`)
-                    .then(res => ({ type: 'id', entries: res.entries }))
-                    .catch(() => ({ type: 'id', entries: [] }))
-                );
-            }
+            const tasks = [];
 
-            // B) Exakte Nummer (nur wenn oben nicht schon geprüft)
-            if (!isInternalNumberFormat) {
-                 searchPromises.push(
-                    makePlentyCall(`/rest/items/variations?numberExact=${encodeURIComponent(identifier)}`)
-                    .then(res => ({ type: 'numberExact', entries: res.entries }))
-                    .catch(() => ({ type: 'numberExact', entries: [] }))
-                );
-            }
+            // Exakte & fuzzy Variationsnummer
+            tasks.push(searchVariations({ numberExact: identifier }, "numberExact"));
+            tasks.push(searchVariations({ numberFuzzy: identifier }, "numberFuzzy"));
 
-            // C) Barcode / EAN (immer prüfen im Fallback)
-            searchPromises.push(
-                makePlentyCall(`/rest/items/variations?barcode=${encodeURIComponent(identifier)}`)
-                .then(res => ({ type: 'barcode', entries: res.entries }))
-                .catch(() => ({ type: 'barcode', entries: [] }))
-            );
+            // Barcode / EAN
+            tasks.push(searchVariations({ barcode: identifier }, "barcode"));
 
-            // D) Model (Teilenummer) - WICHTIG für Support!
-            searchPromises.push(
-                makePlentyCall(`/rest/items/variations?model=${encodeURIComponent(identifier)}`)
-                .then(res => ({ type: 'model', entries: res.entries }))
-                .catch(() => ({ type: 'model', entries: [] }))
-            );
+            // Freitext im Artikelnamen (dein Fall: "… - 0JY57X / JY57X")
+            tasks.push(searchVariations({ itemName: identifier }, "itemName"));
 
-            const results = await Promise.all(searchPromises);
+            // Freitext in der Beschreibung
+            tasks.push(searchVariations({ itemDescription: identifier }, "itemDescription"));
 
-            for (const res of results) {
-                if (res.entries && res.entries.length > 0) {
-                    for (const entry of res.entries) {
-                        if (!seenIds.has(entry.id)) {
-                            candidates.push(entry);
-                            seenIds.add(entry.id);
-                        }
-                    }
-                }
+            // Lieferantennummer (falls ihr sowas nutzt)
+            tasks.push(searchVariations({ supplierNumber: identifier }, "supplierNumber"));
+            tasks.push(searchVariations({ supplierNumberFuzzy: identifier }, "supplierNumberFuzzy"));
+
+            // SKU (z.B. Marktplatz-SKU)
+            tasks.push(searchVariations({ sku: identifier }, "sku"));
+
+            await Promise.all(tasks);
+
+            if (candidates.length > 0 && searchMethod === "unknown") {
+                searchMethod = "broad_search";
             }
         }
 
-        // --- FALLBACK 2: Fuzzy Suche (wenn immer noch nichts) ---
+        // =====================================================================
+        // 3. KEIN TREFFER → Fehler
+        // =====================================================================
         if (candidates.length === 0) {
-            console.log("Keine exakten Treffer. Versuche Fuzzy-Suche...");
-            try {
-                const fuzzyRes = await makePlentyCall(`/rest/items/variations?numberFuzzy=${encodeURIComponent(identifier)}`);
-                if (fuzzyRes.entries) {
-                    fuzzyRes.entries.forEach(entry => {
-                        if (!seenIds.has(entry.id)) {
-                            candidates.push(entry);
-                            seenIds.add(entry.id);
-                        }
-                    });
-                }
-            } catch (e) {
-                console.warn("Fuzzy search failed:", e);
-            }
+            throw new Error(
+                `Artikel/Variation '${identifier}' konnte nicht gefunden werden (weder via Variation-ID, Item-ID, Nummer, Barcode, Name, Beschreibung noch Supplier/SKU).`
+            );
         }
 
-        // --- SCHRITT 3: Ergebnisaufbereitung ---
-        
-        if (candidates.length === 0) {
-            throw new Error(`Artikel/Variation '${identifier}' konnte nicht gefunden werden (weder als ID, Nummer, EAN noch Model).`);
-        }
-
-        // Fall A: Genau ein Treffer
+        // =====================================================================
+        // 4. GENAU EIN TREFFER → direkt exportieren
+        // =====================================================================
         if (candidates.length === 1) {
             if (searchMethod === "unknown") searchMethod = "single_match";
             return await loadFullData(candidates[0]);
         }
 
-        // Fall B: Mehrere Treffer
-        console.log(`Ambige Ergebnisse: ${candidates.length} gefunden. Lade Details für Top 5...`);
-        
-        const topCandidates = candidates.slice(0, 5);
-        const candidatesWithContext = await Promise.all(topCandidates.map(async (cand) => {
-            try {
-                const itemBase = await makePlentyCall(`/rest/items/${cand.itemId}`);
-                const name = (itemBase.texts && itemBase.texts.length > 0) ? itemBase.texts[0].name1 : "Unbekannt";
-                
-                const stock = await makePlentyCall(`/rest/stockmanagement/stock?variationId=${cand.id}&warehouseId=1`);
-                const netStock = stock && stock.length > 0 ? stock[0].netStock : 0;
+        // =====================================================================
+        // 5. MEHRERE TREFFER → Kandidatenliste mit Kontext
+        // =====================================================================
+        console.log(`Tradeo AI: Ambige Ergebnisse – ${candidates.length} Treffer. Lade Details für Top 5...`);
 
-                return {
-                    id: cand.id,
-                    number: cand.number,
-                    model: cand.model,
-                    name: name,
-                    stockNet: netStock,
-                    isActive: cand.isActive
-                };
-            } catch (e) {
-                return { id: cand.id, number: cand.number, error: "Details fehlerhaft" };
-            }
-        }));
+        const topCandidates = candidates.slice(0, 5);
+
+        const candidatesWithContext = await Promise.all(
+            topCandidates.map(async (cand) => {
+                try {
+                    const itemBase = await makePlentyCall(`/rest/items/${cand.itemId}`);
+                    let name = "Unbekannt";
+
+                    if (itemBase && itemBase.texts && itemBase.texts.length > 0) {
+                        const t = itemBase.texts[0];
+                        name = t.name1 || t.name2 || t.name3 || "Unbekannt";
+                    }
+
+                    const stockData = await makePlentyCall(
+                        `/rest/stockmanagement/stock?variationId=${cand.id}&warehouseId=1`
+                    );
+                    const stockEntries = extractEntries(stockData);
+                    const netStock =
+                        stockEntries && stockEntries.length > 0 && typeof stockEntries[0].netStock !== "undefined"
+                            ? stockEntries[0].netStock
+                            : 0;
+
+                    return {
+                        id: cand.id,
+                        itemId: cand.itemId,
+                        number: cand.number,
+                        model: cand.model, // kommt aus Variation-Objekt
+                        name,
+                        stockNet: netStock,
+                        isActive: cand.isActive
+                    };
+                } catch (e) {
+                    console.warn("Tradeo AI: Kandidat-Detailabruf fehlgeschlagen:", e);
+                    return {
+                        id: cand.id,
+                        itemId: cand.itemId,
+                        number: cand.number,
+                        model: cand.model,
+                        error: "Details fehlerhaft"
+                    };
+                }
+            })
+        );
 
         return {
-            meta: { type: "PLENTY_ITEM_AMBIGUOUS", count: candidates.length, searchedFor: identifier, timestamp: new Date().toISOString() },
+            meta: {
+                type: "PLENTY_ITEM_AMBIGUOUS",
+                count: candidates.length,
+                searchedFor: identifier,
+                searchMethod,
+                timestamp: new Date().toISOString()
+            },
             message: `Es wurden ${candidates.length} passende Artikel gefunden (Suche nach '${identifier}').`,
             candidates: candidatesWithContext
         };
-
     } catch (error) {
         console.error("Fehler bei fetchItemDetails:", error);
         throw error;
