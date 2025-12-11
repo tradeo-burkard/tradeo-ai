@@ -8,16 +8,22 @@ const DASHBOARD_FOLDERS_TO_SCAN = [
 
 // SYSTEM PROMPT
 const SYSTEM_PROMPT = `
-Du bist ein erfahrener Support-Mitarbeiter der Firma "Tradeo / Servershop24".
+Du bist ein erfahrener Support-Mitarbeiter der Firma "Tradeo / Servershop24" (servershop24.de).
 Wir verkaufen Serverhardware, RAM und Storage.
 
 VORGABEN:
 1. Tonalität: Professionell, freundlich, direkt. Wir Siezen.
 2. Preis: Webshop-Preise sind fix. Rabatte erst bei großen Mengen.
 3. Fehler: Ehrlich zugeben.
-4. Signatur: Weglassen (macht das System).
+4. Signatur: Weglassen (macht das System). Also kein MfG, keinen Namen vom Absender etc.
+5. Du darfst, wenn deiner Meinung nach in Aussicht steht, dass die Konversation mit deiner Antwort ein Ende finden könnte, gern noch ein zeitabhängiges "schönen Abend/Tag/Wochenende/Weihnachten" etc. als Abschied dranhängen.
 
-WICHTIG:
+WICHTIG ZUM VERLAUF:
+Der übergebene Ticket-Verlauf ist UMGEKEHRT chronologisch sortiert. 
+- Die OBERSTE Nachricht ist die NEUESTE (die, auf die wir meistens reagieren).
+- Die UNTERSTE Nachricht ist der Ursprung (die älteste).
+
+ANTWORT FORMAT:
 Antworte IMMER im validen JSON-Format.
 Struktur:
 {
@@ -291,8 +297,18 @@ function initConversationUI() {
 
     const copilotContainer = document.createElement('div');
     copilotContainer.id = 'tradeo-ai-copilot-zone';
+    
+    // Default: Collapsed Class hinzufügen!
+    copilotContainer.classList.add('tradeo-collapsed');
+
+    // HTML Structure mit neuem Overlay
     copilotContainer.innerHTML = `
-        <div id="tradeo-ai-dummy-draft"><em>🤖 Suche vorbereiteten Entwurf...</em></div>
+        <div id="tradeo-ai-dummy-draft"><em>🤖 Bereite Antwortentwurf vor...</em></div>
+        
+        <div id="tradeo-ai-expand-overlay">
+            <button id="tradeo-ai-expand-btn">Ganzen Entwurf & AI Dialog anzeigen</button>
+        </div>
+
         <div id="tradeo-ai-chat-history"></div>
         <div id="tradeo-ai-resize-handle" title="Höhe anpassen"></div>
         <div id="tradeo-ai-input-area">
@@ -316,12 +332,15 @@ function initConversationUI() {
     const originalReplyBtn = document.querySelector('.conv-reply');
     if(originalReplyBtn) setupButtons(originalReplyBtn);
     
+    // Expand Button Listener
+    document.getElementById('tradeo-ai-expand-btn').addEventListener('click', expandInterface);
+
     setupModelSelector();
     setupEditorObserver();
     setupResizeHandler();
     copilotContainer.style.display = 'block';
 
-    // CACHE LOAD
+    // CACHE LOAD logic (unverändert, nur dass UI collapsed bleibt)
     const ticketId = getTicketIdFromUrl();
 
     if (ticketId) {
@@ -331,42 +350,24 @@ function initConversationUI() {
             if (cached) {
                 const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
                 
-                // 1. Aktuellen Entwurf setzen (Preview Box)
                 window.aiState.lastDraft = cached.draft;
                 dummyDraft.innerHTML = cached.draft;
-                flashElement(dummyDraft);
-
-                // 2. Kompletten Chat Verlauf wiederherstellen
+                // KEIN FLASH beim Laden, wirkt ruhiger wenn collapsed
+                
                 document.getElementById('tradeo-ai-chat-history').innerHTML = ''; 
 
                 if (cached.chatHistory && Array.isArray(cached.chatHistory)) {
-                    // NEUES FORMAT: Wir übernehmen das Array direkt
                     window.aiState.chatHistory = cached.chatHistory;
-                    
                     cached.chatHistory.forEach(msg => {
-                        if (msg.type === 'draft') {
-                            renderDraftMessage(msg.content);
-                        } else if (msg.type === 'user') {
-                            renderChatMessage('user', msg.content);
-                        } else if (msg.type === 'ai') {
-                            renderChatMessage('ai', msg.content);
-                        } else {
-                            // Fallback für alte Einträge
-                            const text = msg.text || msg.content;
-                            const role = msg.role === 'User' ? 'user' : 'ai';
-                            renderChatMessage(role, text);
-                        }
+                        if (msg.type === 'draft') renderDraftMessage(msg.content);
+                        else if (msg.type === 'user') renderChatMessage('user', msg.content);
+                        else if (msg.type === 'ai') renderChatMessage('ai', msg.content);
+                        else renderChatMessage('ai', msg.text || msg.content);
                     });
                 } else {
-                    // FALLBACK (Altes Format ohne History Array): 
-                    // Wir bauen die History on-the-fly auf, damit sie beim nächsten Speichern da ist!
                     const fallbackText = cached.feedback + " (Vorbereitet)";
                     renderChatMessage('ai', fallbackText);
-                    
-                    // FIX: State initialisieren, damit er nicht leer ist
-                    window.aiState.chatHistory = [
-                        { type: 'ai', content: fallbackText }
-                    ];
+                    window.aiState.chatHistory = [{ type: 'ai', content: fallbackText }];
                 }
 
             } else {
@@ -376,6 +377,14 @@ function initConversationUI() {
         });
     } else {
         runAI(true);
+    }
+}
+
+// Neue Funktion zum Ausklappen
+function expandInterface() {
+    const zone = document.getElementById('tradeo-ai-copilot-zone');
+    if (zone) {
+        zone.classList.remove('tradeo-collapsed');
     }
 }
 
@@ -413,9 +422,9 @@ function setupButtons(originalReplyBtn) {
     // Einfügen NACH dem Original-Button
     originalReplyBtn.parentNode.insertBefore(aiBtn, originalReplyBtn.nextSibling);
     
-    // 2. Reset Button erstellen (NEU)
-    const resetBtn = document.createElement('button'); // Nutzen wir ein cleanes Element statt Clone, um Styles sauber zu halten
-    resetBtn.className = 'btn btn-default tradeo-ai-reset-btn'; // 'btn btn-default' für Bootstrap Basis-Styles
+    // 2. Reset Button erstellen
+    const resetBtn = document.createElement('button'); 
+    resetBtn.className = 'btn btn-default tradeo-ai-reset-btn'; 
     resetBtn.innerHTML = '<i class="glyphicon glyphicon-refresh"></i> Reset';
     resetBtn.setAttribute('title', 'AI Gedächtnis löschen & neu starten');
     
@@ -428,12 +437,16 @@ function setupButtons(originalReplyBtn) {
     resetBtn.addEventListener('click', function(e) {
         e.preventDefault(); 
         e.stopPropagation();
+        expandInterface(); // Reset soll auch Interface öffnen
         performFullReset();
     });
 
-    // Logic: AI Button
+    // Logic: AI Button (Blitz)
     aiBtn.addEventListener('click', function(e) {
         e.preventDefault(); e.stopPropagation();
+        
+        expandInterface(); // WICHTIG: Klick auf Blitz öffnet alles!
+
         originalReplyBtn.click();
         window.aiState.isRealMode = true; window.aiState.preventOverwrite = false;
         waitForSummernote(function(editable) {
