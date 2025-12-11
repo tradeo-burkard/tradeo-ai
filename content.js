@@ -526,6 +526,13 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
                 } else if (fnName === 'getCustomerDetails') {
                     actionName = 'GET_CUSTOMER_DETAILS';
                     actionPayload = { contactId: fnArgs.contactId };
+                } else if (fnName === 'searchItemsByText') {
+                    actionName = 'SEARCH_ITEMS_BY_TEXT';
+                    actionPayload = { 
+                        searchText: fnArgs.searchText,
+                        mode: fnArgs.mode || 'name', // Fallback
+                        maxResults: fnArgs.maxResults || 30
+                    };
                 }
 
                 if (actionName) {
@@ -1161,6 +1168,13 @@ async function runAI(isInitial = false) {
                 } else if (fnName === 'getCustomerDetails') {
                     actionName = 'GET_CUSTOMER_DETAILS';
                     actionPayload = { contactId: fnArgs.contactId };
+                } else if (fnName === 'searchItemsByText') {
+                    actionName = 'SEARCH_ITEMS_BY_TEXT';
+                    actionPayload = { 
+                        searchText: fnArgs.searchText,
+                        mode: fnArgs.mode || 'name', // Fallback
+                        maxResults: fnArgs.maxResults || 30
+                    };
                 }
 
                 if (actionName) {

@@ -41,4 +41,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
         return true; // Async wait
     }
+
+        if (request.action === 'SEARCH_ITEMS_BY_TEXT') {
+        // Wir rufen direkt die Hauptfunktion auf, die Optionen erwarten kann
+        searchItemsByText(request.searchText, { mode: request.mode, maxResults: request.maxResults })
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(error => {
+                 sendResponse({ success: false, error: error.toString() });
+            });
+        return true; // Async wait
+    }
 });
