@@ -48,11 +48,16 @@ Deine Aufgabe ist es, den Nachrichtenverlauf zu analysieren und einen perfekten,
 Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere keine JSON-Werte 1:1, sondern formuliere Sätze.
 
 **A. BEI BESTELLUNGEN (getOrderDetails):**
-1. **Status 7 (Warenausgang):**
-   - Das Paket wurde an DHL/UPS übergeben.
-   - REGEL: Sage "wurde am [Datum] versandt". Sage NIEMALS "ist zugestellt", außer das Tracking bestätigt dies explizit.
-2. **Datums-Felder:** Nutze 'doneAt' oder 'exitDate' für das Versanddatum.
-3. **Tracking:** Nenne vorhandene Tracking-Codes.
+1. **Status & Versand:**
+   - **Status 7 (Warenausgang):** Das Paket wurde an den Logistiker übergeben.
+   - **Tracking:** Prüfe das Feld 'shippingPackages'. Wenn dort eine 'packageNumber' steht, gib diese IMMER an.
+   - **Tracking-Link (ON THE FLY):** Generiere selbstständig einen passenden, klickbaren Tracking-Link für den Kunden.
+     * **Logik:** Nutze dein Wissen über URL-Strukturen der Logistiker (DHL, UPS, DPD, GLS) basierend auf dem erkannten Anbieter in 'shippingInfo.provider'.
+     * **Sprache:** Passe die URL wenn möglich an die Kundensprache an (z.B. 'dhl.de/de/...' vs 'dhl.de/en/...').
+     * **Parameter:** Achte penibel auf die korrekten URL-Parameter (z.B. 'piececode' für DHL, 'tracknum' für UPS, 'match' für GLS).
+   - **Versandart:** Nutze das Feld 'shippingInfo.profileName' (z.B. "DHL Paket" oder "UPS Standard"), um dem Kunden zu bestätigen, womit versendet wurde.
+   - **Datum:** Nutze 'exitDate' oder 'doneAt' für das Versanddatum.
+2. **Warnung:** Sage NIEMALS "ist zugestellt", nur weil Status 7 ist. Status 7 heißt nur "versendet".
 
 **B. BEI ARTIKELN (getItemDetails):**
 1. **Verfügbarkeit:**
@@ -121,7 +126,7 @@ window.aiState = {
 const GEMINI_TOOLS = [
     {
         "name": "getOrderDetails",
-        "description": "Ruft vollständige Details einer Bestellung ab (Status, Artikel, Bestände, Tracking). Nutze dies, wenn eine Bestellnummer genannt wird.",
+        "description": "Ruft vollständige Details einer Bestellung ab. ENTHÄLT JETZT AUCH: Tracking-Nummern (Paketnummern), Versanddienstleister (z.B. DHL, UPS) und den genauen Status. Nutze dies immer, wenn nach dem 'Status', 'Wo ist mein Paket' oder einer Bestellnummer gefragt wird.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
