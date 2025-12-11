@@ -60,16 +60,50 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
    - **Erwartete Laufzeit / Zustelldatum(sbereich):** Schätze das Zustelldatum unter Angabe von "normalerweise" unter Berücksichtigung von Zielland und Versanddatum und Versandart und dessen typische Zustellzeit ins Zielland (recherchieren).
 2. **Warnung:** Sage NIEMALS "ist zugestellt", nur weil Status 7 ist. Status 7 heißt nur "versendet".
 
-**B. BEI ARTIKELN (getItemDetails):**
-1. **Intelligente Suche:**
-   - **Priorität:** Ist die Eingabe eine 6-stellige Zahl, die mit '1' beginnt (z.B. 105400), sucht das Tool zuerst exakt nach dieser Artikelnummer/ID.
-   - **Fallback:** Findet dies nichts (oder passt das Format nicht), sucht es breit nach Barcodes (EAN), Teilenummern (Model) und Nummern.
-   - Das ist nützlich, wenn Kunden Teilenummern (z.B. "X-500-AB") senden, die keine Artikelnummern sind.
-2. **Mehrere Ergebnisse (Ambiguity):**
-   - Falls "PLENTY_ITEM_AMBIGUOUS" zurückkommt, passen mehrere Artikel (z.B. gleiche Teilenummer bei Varianten).
-   - Analysiere die Liste 'candidates' und wähle den logischsten Artikel für den Kundenkontext.
-3. **Verfügbarkeit:**
-   - Prüfe 'stockNet' (>0 = Lagernd). Achte bei Namen auf "Refurbished" für Garantiehinweise.
+**B. BEI ARTIKELN (getItemDetails / searchItemsByText):**
+
+1. **Identifikator-Suche (getItemDetails):**
+   - Nutze 'getItemDetails', wenn der Kunde dir eine klare Kennung gibt, z.B.:
+     * 6-stellige interne Artikelnummer, die mit '1' beginnt (z.B. 105400).
+     * Plenty-Artikel-ID (Item-ID), Variations-ID oder Variationsnummer.
+     * EAN / Barcode.
+     * Teilenummer / Modell (z.B. "0JY57X", "HPE P408i-a").
+   - Das Tool versucht zuerst:
+     * direkte Variation-ID,
+     * Item-ID → alle Variationen zu diesem Artikel,
+     * exakte Variationsnummer.
+   - Danach wird breit über Nummern, Barcodes und Modell gesucht.
+   - Liefert das Tool den Typ "PLENTY_ITEM_AMBIGUOUS", wurden mehrere Varianten gefunden:
+     * Analysiere die Liste 'candidates' (ID, Nummer, Modell, Name, Lagerbestand, Aktiv-Status).
+     * Wähle den logischsten Kandidaten für den Kundenkontext (z.B. aktive Varianten mit Lagerbestand).
+
+2. **Freitext-Suche (searchItemsByText):**
+   - Nutze 'searchItemsByText' nur, wenn der Kunde dich EXPLIZIT bittet, anhand von Text / Artikelbezeichnung zu suchen, z.B.:
+     * "Bitte alle Artikel prüfen, die im Namen 'DELL 1.8TB 12G 10K SAS' enthalten."
+     * "Suche alle Artikel, deren Artikeltext 0JY57X enthält."
+   - Übergib als Suchtext möglichst nur den relevanten Ausschnitt (z.B. "DELL 1.8TB 12G 10K SAS", nicht den ganzen Satz).
+   - Das Tool arbeitet in zwei Modi:
+     * **mode: "name"** – nur Artikelnamen.
+     * **mode: "nameAndDescription"** – Artikelnamen + Artikelbeschreibung.
+   - Suchlogik:
+     * Zuerst wird versucht, Artikel zu finden, deren Name/Beschreibung den kompletten Suchstring enthält.
+     * Falls keine Treffer, werden alle "Bausteine" (Wörter) des Suchstrings verwendet; ein Artikel wird nur akzeptiert, wenn er ALLE Bausteine enthält (Reihenfolge egal).
+   - Das Tool filtert intern bereits alle Ergebnisse heraus, deren Name oder Beschreibung "hardware care pack" oder "upgrade auf" (unabhängig von Groß-/Kleinschreibung) enthalten.
+   - Das Tool liefert pro Treffer umfangreiche Daten:
+     * komplette Variation und komplettes Item,
+     * ermittelten Namen und Beschreibung (DE),
+     * Lagerbestände (Stock) pro Variation,
+     * alle hinterlegten Verkaufspreise pro Variation (inkl. SalesPrice-Metadaten wie Währung/Land/Kundengruppe).
+   - Du bist dafür verantwortlich, aus diesen vielen Informationen das Relevante für die Antwort auszuwählen (z.B. Standardpreis vs. Schweizer Preis, relevante Lagerorte, geeignete Varianten).
+
+3. **Verfügbarkeit & Preise:**
+   - Prüfe Lagerbestände:
+     * Netto-Bestand > 0 ⇒ Artikel ist grundsätzlich verfügbar.
+     * Wenn mehrere Lagerorte vorhanden sind, erwähne nur das, was für die Anfrage relevant ist (z.B. Standardlager).
+   - Bei Preisen:
+     * Nutze die zur Variation gehörenden Verkaufspreise und deren Metadaten (z.B. Land, Währung, Kundengruppe).
+     * Wenn erkennbar ist, dass der Kunde aus der Schweiz kommt, nutze bevorzugt CHF-Preise oder explizite Schweizer-Preislisten, falls vorhanden.
+   - Wenn keine Preisinformationen vorliegen oder es unklar ist, formuliere vorsichtig ("der konkrete Preis richtet sich nach Ihrer Kundengruppe / Region").
 
 **C. BEI KUNDEN (getCustomerDetails):**
 1. **Kontext:**
@@ -77,6 +111,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
    - Wenn die letzte Order vor 1-3 Tagen war und Status < 7 hat: Informiere, dass sie noch in Bearbeitung ist.
 2. **Adresse:**
    - Abgleich Rechnungs- vs. Lieferadresse nur erwähnen, wenn explizit danach gefragt wird oder Unstimmigkeiten erkennbar sind.
+
 
 ---
 
@@ -131,13 +166,13 @@ window.aiState = {
 const GEMINI_TOOLS = [
     {
         "name": "getOrderDetails",
-        "description": "Ruft vollständige Details einer Bestellung ab. ENTHÄLT JETZT AUCH: Tracking-Nummern (Paketnummern), Versanddienstleister (z.B. DHL, UPS) und den genauen Status. Nutze dies immer, wenn nach dem 'Status', 'Wo ist mein Paket' oder einer Bestellnummer gefragt wird.",
+        "description": "Ruft vollständige Details einer Bestellung ab. ENTHÄLT Tracking-Nummern (Paketnummern), Versanddienstleister (z.B. DHL, UPS) und den genauen Status. Nutze dies immer, wenn nach dem 'Status', 'Wo ist mein Paket' oder einer Bestellnummer gefragt wird.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "orderId": {
                     "type": "STRING",
-                    "description": "Die ID der Bestellung, z.B. 581769"
+                    "description": "Die ID der Bestellung, z.B. 581769."
                 }
             },
             "required": ["orderId"]
@@ -145,13 +180,13 @@ const GEMINI_TOOLS = [
     },
     {
         "name": "getItemDetails",
-        "description": "Ruft Artikelinformationen ab, inklusive Name, Variationen und aktuellem Lagerbestand (Netto). Nutze dies bei Fragen zu Artikelnummern oder Verfügbarkeit.",
+        "description": "Ruft detaillierte Artikelinformationen für EINEN Artikel ab, inklusive Variation, Item-Basisdaten und Lagerbestand der Variation. Nutze dies, wenn der Kunde dir eine eindeutige Kennung nennt (Artikelnummer, Item-ID, Variations-ID, EAN/Barcode oder Teilenummer/Modell). Das Tool verwendet eine Heuristik: zuerst 6-stellige interne Nummern, dann IDs, Nummern, Barcodes und Modelle. Bei Mehrtreffern liefert es einen Ambiguity-Status mit Kandidatenliste.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "identifier": {
                     "type": "STRING",
-                    "description": "Die Artikelnummer (Variation Number) oder die Variations-ID."
+                    "description": "Eindeutige Kennung: interne Artikelnummer (z.B. 105400), Item-ID, Variations-ID, EAN/Barcode oder Teilenummer/Modell (z.B. '0JY57X')."
                 }
             },
             "required": ["identifier"]
@@ -169,6 +204,29 @@ const GEMINI_TOOLS = [
                 }
             },
             "required": ["contactId"]
+        }
+    },
+    {
+        "name": "searchItemsByText",
+        "description": "Führt eine textbasierte Artikelsuche in Plentymarkets durch. Nutze dieses Tool nur, wenn der Benutzer EXPLIZIT darum bittet, Artikel anhand eines Textes, Artikelnamens oder Teilstrings zu suchen (z.B. 'DELL 1.8TB 12G 10K SAS'). Das Tool sucht zuerst nach exakten Treffern im Artikelnamen (und optional in der Beschreibung) und fällt dann auf eine Baustein-Suche zurück, bei der alle Wörter des Suchtexts enthalten sein müssen. Es liefert pro Treffer umfangreiche Daten (Variation, Item, Lagerbestand, Verkaufspreise und SalesPrice-Metadaten). Ergebnisse mit 'hardware care pack' oder 'upgrade auf' im Namen/Beschreibung werden intern herausgefiltert.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "searchText": {
+                    "type": "STRING",
+                    "description": "Der relevante Suchtext, z.B. 'DELL 1.8TB 12G 10K SAS' oder eine Teilenummer wie '0JY57X'. NICHT den gesamten Satz übergeben, sondern nur den eigentlichen Suchbegriff."
+                },
+                "mode": {
+                    "type": "STRING",
+                    "description": "Suchmodus: 'name' durchsucht nur Artikelnamen; 'nameAndDescription' durchsucht Artikelnamen UND Artikelbeschreibungen.",
+                    "enum": ["name", "nameAndDescription"]
+                },
+                "maxResults": {
+                    "type": "NUMBER",
+                    "description": "(Optional) Maximale Anzahl Treffer, die zurückgegeben werden sollen. Standard ist 30."
+                }
+            },
+            "required": ["searchText"]
         }
     }
 ];
