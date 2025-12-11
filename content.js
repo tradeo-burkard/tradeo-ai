@@ -1,5 +1,10 @@
 // --- KONFIGURATION ---
 const API_VERSION = "v1beta";
+const POLL_INTERVAL_MS = 2000; // Alle 2 Sekunden prüfen
+const DASHBOARD_FOLDERS_TO_SCAN = [
+    "https://desk.tradeo.de/mailbox/3/27",  // Servershop24 -> Nicht zugewiesen
+    "https://desk.tradeo.de/mailbox/3/155"  // Servershop24 -> Meine
+];
 
 // SYSTEM PROMPT
 const SYSTEM_PROMPT = `
@@ -10,98 +15,285 @@ VORGABEN:
 1. Tonalität: Professionell, freundlich, direkt. Wir Siezen.
 2. Preis: Webshop-Preise sind fix. Rabatte erst bei großen Mengen.
 3. Fehler: Ehrlich zugeben.
-4. Signatur: Weglassen (macht das System) also meinen Namen und MfG kannst dir schenken.
+4. Signatur: Weglassen (macht das System).
 
 WICHTIG:
 Antworte IMMER im validen JSON-Format.
 Struktur:
 {
-  "draft": "Der Text für die E-Mail an den Kunden (HTML erlaubt, <br> für Zeilenumbruch)",
-  "feedback": "Eine kurze Nachricht an mich (den Support-Agent), was du gemacht hast oder eine Rückfrage."
+  "draft": "Der Text für die E-Mail (HTML erlaubt)",
+  "feedback": "Kurze Info an den Agent (z.B. 'Habe Rabatt abgelehnt')"
 }
 `;
 
 // Model Definitionen
 const AI_MODELS = {
-    "gemini-2.5-flash-lite": { 
-        id: "gemini-2.5-flash-lite", 
-        label: "2.5 Flash Lite", 
-        dropdownText: "gemini-2.5-flash-lite (sehr schnell)" 
-    },
-    "gemini-2.5-flash": { 
-        id: "gemini-2.5-flash", 
-        label: "2.5 Flash", 
-        dropdownText: "gemini-2.5-flash (schnell)" 
-    },
-    "gemini-3-pro-preview": { 
-        id: "gemini-3-pro-preview", 
-        label: "3 Pro", 
-        dropdownText: "gemini-3-pro-preview (langsam, deep thinking)" 
-    }
+    "gemini-2.5-flash-lite": { id: "gemini-2.5-flash-lite", label: "2.5 Flash Lite", dropdownText: "gemini-2.5-flash-lite (sehr schnell)" },
+    "gemini-2.5-flash": { id: "gemini-2.5-flash", label: "2.5 Flash", dropdownText: "gemini-2.5-flash (schnell)" },
+    "gemini-3-pro-preview": { id: "gemini-3-pro-preview", label: "3 Pro", dropdownText: "gemini-3-pro-preview (langsam)" }
 };
 
-function init() {
-    const originalReplyBtn = document.querySelector('.conv-reply');
-    if (!originalReplyBtn || document.getElementById('tradeo-ai-copilot-zone')) return;
+// --- GLOBAL STATE ---
+window.aiState = {
+    lastDraft: "",     
+    isRealMode: false,
+    isGenerating: false,
+    preventOverwrite: false,
+    chatHistory: [],
+    currentModel: "gemini-2.5-flash",
+    // Cache management V3
+    knownTickets: new Map(), // Map<TicketID, ContentHash>
+    processingQueue: new Set() // Set<TicketID>
+};
 
-    // 1. UI INJECTION
+// --- CORE LOOPS (HEARTBEAT) ---
+
+function startHeartbeat() {
+    console.log("Tradeo AI: Heartbeat gestartet.");
+    setInterval(() => {
+        const pageType = detectPageType();
+        
+        if (pageType === 'ticket') {
+            // Wir sind im Ticket -> UI Rendern falls noch nicht da
+            if (!document.getElementById('tradeo-ai-copilot-zone')) initConversationUI();
+        } 
+        else if (pageType === 'inbox') {
+            // Wir sind in einer Liste -> Scannen
+            scanInboxTable();
+        } 
+        else if (pageType === 'dashboard') {
+            // Wir sind auf dem Dashboard -> Hintergrund-Scan
+            scanDashboardFolders();
+        }
+    }, POLL_INTERVAL_MS);
+}
+
+function detectPageType() {
+    if (document.getElementById('conv-layout-main')) return 'ticket';
+    if (document.querySelector('.table-conversations')) return 'inbox';
+    if (document.querySelector('.dash-cards')) return 'dashboard';
+    return 'unknown';
+}
+
+// --- LOGIC: INBOX SCANNER ---
+
+function scanInboxTable() {
+    const rows = Array.from(document.querySelectorAll('tr.conv-row[data-conversation_id]'));
+    
+    rows.forEach(row => {
+        const id = row.getAttribute('data-conversation_id');
+        const previewEl = row.querySelector('.conv-preview');
+        const previewText = previewEl ? previewEl.innerText.trim() : "no-preview";
+        
+        // Hash erstellen um Änderungen zu erkennen
+        const currentHash = `${id}_${previewText.substring(0, 50)}_${previewText.length}`;
+        checkAndQueue(id, currentHash);
+    });
+}
+
+// --- LOGIC: DASHBOARD SPIDER ---
+
+async function scanDashboardFolders() {
+    for (const url of DASHBOARD_FOLDERS_TO_SCAN) {
+        try {
+            const response = await fetch(url);
+            const text = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(text, 'text/html');
+            
+            const rows = Array.from(doc.querySelectorAll('tr.conv-row[data-conversation_id]'));
+            
+            rows.forEach(row => {
+                const id = row.getAttribute('data-conversation_id');
+                const previewEl = row.querySelector('.conv-preview');
+                const previewText = previewEl ? previewEl.innerText.trim() : "no-preview";
+                const currentHash = `${id}_${previewText.substring(0, 50)}_${previewText.length}`;
+                
+                checkAndQueue(id, currentHash);
+            });
+        } catch (e) {
+            console.warn(`Tradeo AI: Konnte Dashboard-Ordner nicht scannen (${url}):`, e);
+        }
+    }
+}
+
+// --- LOGIC: QUEUE MANAGEMENT ---
+
+function checkAndQueue(id, currentHash) {
+    if (window.aiState.processingQueue.has(id)) return; // Wird bereits verarbeitet
+    
+    // Prüfen ob Hash gleich ist (Cache hit im RAM)
+    if (window.aiState.knownTickets.get(id) === currentHash) return;
+
+    // Neu oder verändert
+    // console.log(`Tradeo AI: Ticket ${id} queueing...`);
+    window.aiState.processingQueue.add(id);
+    
+    processTicket(id, currentHash).then(() => {
+        window.aiState.processingQueue.delete(id);
+        window.aiState.knownTickets.set(id, currentHash);
+    });
+}
+
+async function processTicket(id, contentHash) {
+    try {
+        // Cache Check im Storage (Persistent)
+        const storageKey = `draft_${id}`;
+        const storedData = await chrome.storage.local.get([storageKey]);
+        
+        if (storedData[storageKey] && storedData[storageKey].contentHash === contentHash) {
+            return; // Nichts zu tun, Daten im Storage sind aktuell
+        }
+
+        console.log(`Tradeo AI: ⚡ Verarbeite Ticket ${id} im Hintergrund...`);
+
+        // Fetch
+        const response = await fetch(`https://desk.tradeo.de/conversation/${id}`);
+        const text = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(text, 'text/html');
+        const contextText = extractContextFromDOM(doc);
+
+        if (!contextText || contextText.length < 50) return;
+
+        // Generate
+        const aiResult = await generateDraftHeadless(contextText);
+
+        if (aiResult) {
+            const data = {};
+            data[storageKey] = {
+                draft: aiResult.draft,
+                feedback: aiResult.feedback,
+                timestamp: Date.now(),
+                contentHash: contentHash
+            };
+            await chrome.storage.local.set(data);
+            console.log(`Tradeo AI: ✅ Draft für Ticket ${id} gespeichert.`);
+        }
+
+        // Throttle
+        await new Promise(r => setTimeout(r, 1000));
+
+    } catch (e) {
+        console.error(`Fehler bei Ticket ${id}:`, e);
+    }
+}
+
+// --- API FUNCTIONS ---
+
+async function generateDraftHeadless(contextText) {
+    const stored = await chrome.storage.local.get(['geminiApiKey']);
+    const apiKey = stored.geminiApiKey;
+    if (!apiKey) return null;
+
+    const finalPrompt = `
+    ${SYSTEM_PROMPT}
+    === VERLAUF ===
+    ${contextText}
+    === AUFGABE ===
+    Analysiere das Ticket und erstelle einen passenden Antwortentwurf.
+    `;
+
+    const model = "gemini-2.5-flash"; 
+    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
+
+    try {
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: finalPrompt }] }] })
+        });
+        const data = await response.json();
+        let rawText = data.candidates[0].content.parts[0].text;
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        try { return JSON.parse(rawText); } catch(e) { return { draft: rawText, feedback: "Format Fehler" }; }
+    } catch (e) {
+        return null;
+    }
+}
+
+function extractContextFromDOM(docRoot) {
+    const mainContainer = docRoot.querySelector('#conv-layout-main');
+    if (!mainContainer) return "";
+    const clone = mainContainer.cloneNode(true);
+    const myZone = clone.querySelector('#tradeo-ai-copilot-zone');
+    if (myZone) myZone.remove();
+    const editorBlock = clone.querySelector('.conv-reply-block');
+    if(editorBlock) editorBlock.remove();
+    return clone.innerText;
+}
+
+// --- UI LOGIC (TICKET VIEW) ---
+
+function initConversationUI() {
     const mainContainer = document.getElementById('conv-layout-main');
     if (!mainContainer) return;
 
     const copilotContainer = document.createElement('div');
     copilotContainer.id = 'tradeo-ai-copilot-zone';
-    
-    // HTML mit neuem Model-Selector Wrapper
     copilotContainer.innerHTML = `
-        <div id="tradeo-ai-dummy-draft">
-            <em>🤖 AI analysiert das Ticket...</em>
-        </div>
-        <div id="tradeo-ai-chat-history">
-        </div>
+        <div id="tradeo-ai-dummy-draft"><em>🤖 Suche vorbereiteten Entwurf...</em></div>
+        <div id="tradeo-ai-chat-history"></div>
         <div id="tradeo-ai-resize-handle" title="Höhe anpassen"></div>
         <div id="tradeo-ai-input-area">
             <div class="tradeo-ai-model-wrapper">
                 <button id="tradeo-ai-model-btn" type="button">2.5 Flash</button>
-                <div id="tradeo-ai-model-dropdown" class="hidden">
-                    </div>
+                <div id="tradeo-ai-model-dropdown" class="hidden"></div>
             </div>
-            <textarea id="tradeo-ai-input" placeholder="Anweisung an AI (z.B. 'Kürzer fassen' oder 'Rabatt anbieten')..."></textarea>
+            <textarea id="tradeo-ai-input" placeholder="Anweisung an AI..."></textarea>
             <button id="tradeo-ai-send-btn">Go</button>
         </div>
     `;
-
     mainContainer.prepend(copilotContainer);
     
-    // API Key Input
     const keyInput = document.createElement('input');
-    keyInput.type = 'password';
-    keyInput.id = 'tradeo-apikey-input';
+    keyInput.type = 'password'; keyInput.id = 'tradeo-apikey-input';
+    keyInput.style.display = 'none'; keyInput.style.margin = '10px'; keyInput.style.width = '95%';
     keyInput.placeholder = 'API Key eingeben...';
-    keyInput.style.display = 'none';
-    keyInput.style.margin = '10px';
-    keyInput.style.width = '95%';
     copilotContainer.prepend(keyInput);
-
     checkApiKeyUI();
 
-    // 2. STATE & BUTTONS
-    window.aiState = {
-        lastDraft: "",     
-        isRealMode: false,
-        isGenerating: false,      // NEU: Arbeitet die AI gerade?
-        preventOverwrite: false,  // NEU: Verhindert Schreiben in Editor wenn true
-        chatHistory: [],
-        currentModel: "gemini-2.5-flash"
-    };
+    const originalReplyBtn = document.querySelector('.conv-reply');
+    if(originalReplyBtn) setupButtons(originalReplyBtn);
+    
+    setupModelSelector();
+    setupEditorObserver();
+    setupResizeHandler();
+    copilotContainer.style.display = 'block';
 
-    // --- MODEL SELECTOR LOGIC ---
+    // CACHE LOAD
+    const match = window.location.href.match(/conversation\/(\d+)/);
+    const ticketId = match ? match[1] : null;
+
+    if (ticketId) {
+        const storageKey = `draft_${ticketId}`;
+        chrome.storage.local.get([storageKey], function(result) {
+            const cached = result[storageKey];
+            if (cached) {
+                const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
+                addDraftMessage(cached.draft);
+                addChatMessage('ai', cached.feedback + " (Vorbereitet)");
+                window.aiState.lastDraft = cached.draft;
+                dummyDraft.innerHTML = cached.draft;
+                flashElement(dummyDraft);
+            } else {
+                addChatMessage("system", "Kein Entwurf gefunden. Starte Live-Analyse...");
+                runAI(true);
+            }
+        });
+    } else {
+        runAI(true);
+    }
+}
+
+// --- UI HELPERS ---
+
+function setupModelSelector() {
     const modelBtn = document.getElementById('tradeo-ai-model-btn');
     const modelDropdown = document.getElementById('tradeo-ai-model-dropdown');
-
     Object.values(AI_MODELS).forEach(model => {
         const item = document.createElement('div');
         item.className = 'model-item';
-        if(model.id === window.aiState.currentModel) item.classList.add('selected');
         item.innerText = model.dropdownText;
         item.onclick = (e) => {
             window.aiState.currentModel = model.id;
@@ -113,153 +305,139 @@ function init() {
         };
         modelDropdown.appendChild(item);
     });
+    modelBtn.addEventListener('click', (e) => { e.stopPropagation(); modelDropdown.classList.toggle('hidden'); });
+    document.addEventListener('click', () => modelDropdown.classList.add('hidden'));
+}
 
-    modelBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        modelDropdown.classList.toggle('hidden');
-    });
-
-    document.addEventListener('click', () => {
-        if (!modelDropdown.classList.contains('hidden')) {
-            modelDropdown.classList.add('hidden');
-        }
-    });
-
-    // --- EXISTING LOGIC & OBSERVER ---
-
+function setupButtons(originalReplyBtn) {
     const aiBtn = originalReplyBtn.cloneNode(true);
     aiBtn.classList.add('tradeo-ai-toolbar-btn');
-    aiBtn.setAttribute('data-original-title', 'Mit AI Antworten');
     aiBtn.setAttribute('title', 'Mit AI Antworten');
-    
-    const icon = aiBtn.classList.contains('glyphicon') ? aiBtn : aiBtn.querySelector('.glyphicon');
-    if (icon) {
-        icon.classList.remove('glyphicon-share-alt');
-        icon.classList.add('glyphicon-flash');
-    }
-
+    const icon = aiBtn.querySelector('.glyphicon') || aiBtn;
+    if(icon) { icon.classList.remove('glyphicon-share-alt'); icon.classList.add('glyphicon-flash'); }
     originalReplyBtn.parentNode.insertBefore(aiBtn, originalReplyBtn.nextSibling);
-
-    // Observer starten, um zu erkennen, wann der Editor geschlossen wird
-    setupEditorObserver();
-
-    // EVENT LISTENER: AI Button
+    
     aiBtn.addEventListener('click', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        originalReplyBtn.click(); // Öffnet den echten Editor
-        
-        window.aiState.isRealMode = true;
-        window.aiState.preventOverwrite = false; // Hier wollen wir explizit überschreiben
-        
+        e.preventDefault(); e.stopPropagation();
+        originalReplyBtn.click();
+        window.aiState.isRealMode = true; window.aiState.preventOverwrite = false;
         waitForSummernote(function(editable) {
-            const contentToTransfer = window.aiState.lastDraft || document.getElementById('tradeo-ai-dummy-draft').innerHTML;
-            setEditorContent(editable, contentToTransfer);
+            const content = window.aiState.lastDraft || document.getElementById('tradeo-ai-dummy-draft').innerHTML;
+            setEditorContent(editable, content);
             document.getElementById('tradeo-ai-dummy-draft').style.display = 'none';
         });
     });
-
-    // EVENT LISTENER: Original Antworten Button
-    originalReplyBtn.addEventListener('click', function() {
-        // UI sofort aufräumen: Dummy weg
+    originalReplyBtn.addEventListener('click', () => {
         document.getElementById('tradeo-ai-dummy-draft').style.display = 'none';
-        
-        // Logik: Wir sind jetzt im "echten" Modus
         window.aiState.isRealMode = true;
-
-        // ABER: Wenn die AI gerade noch am Denken ist (Start-Trigger), 
-        // darf sie uns nicht den Text überschreiben, sobald sie fertig ist.
-        if (window.aiState.isGenerating) {
-            console.log("AI arbeitet noch -> Overwrite verhindern");
-            window.aiState.preventOverwrite = true;
-        }
+        if(window.aiState.isGenerating) window.aiState.preventOverwrite = true;
     });
-
-    // Der alte "Trash-Click-Listener" wurde entfernt, da der Observer das jetzt zuverlässig macht.
-
     document.getElementById('tradeo-ai-send-btn').addEventListener('click', () => runAI());
-    document.getElementById('tradeo-ai-input').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            runAI();
-        }
+    document.getElementById('tradeo-ai-input').addEventListener('keydown', (e) => { 
+        if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runAI(); }
     });
-
-    // Resize Handler
-    const resizer = document.getElementById('tradeo-ai-resize-handle');
-    const chatHistory = document.getElementById('tradeo-ai-chat-history');
-
-    if (resizer && chatHistory) {
-        resizer.addEventListener('mousedown', function(e) {
-            e.preventDefault();
-            const startY = e.clientY;
-            const startHeight = chatHistory.offsetHeight;
-            function doDrag(e) {
-                const newHeight = startHeight + (e.clientY - startY);
-                if (newHeight >= 120) { 
-                    chatHistory.style.height = newHeight + 'px';
-                    chatHistory.scrollTop = chatHistory.scrollHeight;
-                }
-            }
-            function stopDrag() {
-                document.removeEventListener('mousemove', doDrag);
-                document.removeEventListener('mouseup', stopDrag);
-            }
-            document.addEventListener('mousemove', doDrag);
-            document.addEventListener('mouseup', stopDrag);
-        });
-    }
-
-    // Auto Start
-    copilotContainer.style.display = 'block';
-    addChatMessage("system", "Starte AI...");
-    runAI(true);
 }
 
-// --- NEU: MUTATION OBSERVER FÜR DEN EDITOR ---
 function setupEditorObserver() {
     const editorBlock = document.querySelector('.conv-reply-block');
     if (!editorBlock) return;
-
-    // Wir beobachten Attribut-Änderungen (speziell 'class' und 'style')
-    const observer = new MutationObserver((mutations) => {
+    new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
             if (mutation.attributeName === 'class' || mutation.attributeName === 'style') {
-                // Check: Ist der Editor versteckt?
-                // FreeScout nutzt meistens die Klasse 'hidden' oder display:none
                 const isHidden = editorBlock.classList.contains('hidden') || editorBlock.style.display === 'none';
-                
                 if (isHidden) {
-                    // Editor ist zu (wurde gelöscht, gesendet oder verworfen)
-                    // -> Reset State
-                    window.aiState.isRealMode = false;
-                    window.aiState.preventOverwrite = false;
-                    
-                    // -> Show Dummy Draft
+                    window.aiState.isRealMode = false; window.aiState.preventOverwrite = false;
                     const dummy = document.getElementById('tradeo-ai-dummy-draft');
                     if (dummy) {
-                        // Inhalt auffrischen falls nötig
                         if(window.aiState.lastDraft) dummy.innerHTML = window.aiState.lastDraft;
                         dummy.style.display = 'block';
                     }
                 } else {
-                    // Editor ist offen
-                    // -> Hide Dummy Draft (Sicherheitshalber, falls Button-Logik versagt)
                     const dummy = document.getElementById('tradeo-ai-dummy-draft');
-                    if (dummy) dummy.style.display = 'none';
+                    if(dummy) dummy.style.display = 'none';
                 }
             }
         });
-    });
-
-    observer.observe(editorBlock, { attributes: true });
+    }).observe(editorBlock, { attributes: true });
 }
+
+async function runAI(isInitial = false) {
+    const btn = document.getElementById('tradeo-ai-send-btn');
+    const input = document.getElementById('tradeo-ai-input');
+    const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
+    const apiKeyInput = document.getElementById('tradeo-apikey-input');
+    let userPrompt = input.value.trim();
+    
+    window.aiState.isGenerating = true;
+    if (isInitial) userPrompt = "Analysiere das Ticket und erstelle einen passenden Antwortentwurf.";
+    else { if (!userPrompt) return; addChatMessage('user', userPrompt); window.aiState.chatHistory.push({role: "User", text: userPrompt}); }
+
+    let apiKey = apiKeyInput.value.trim();
+    if (!apiKey) {
+        const stored = await chrome.storage.local.get(['geminiApiKey']);
+        apiKey = stored.geminiApiKey;
+    }
+    if (!apiKey) { window.aiState.isGenerating = false; return; }
+
+    btn.disabled = true; btn.innerText = "...";
+    
+    const contextText = extractContextFromDOM(document);
+    const historyString = window.aiState.chatHistory.map(e => `${e.role}: ${e.text}`).join("\n");
+    const currentDraft = window.aiState.isRealMode ? document.querySelector('.note-editable')?.innerHTML : dummyDraft.innerHTML;
+
+    const finalPrompt = `
+    ${SYSTEM_PROMPT}
+    === HINTERGRUND ===
+    TICKET VERLAUF:
+    ${contextText}
+    === AKTUELLER STATUS ===
+    DERZEITIGER ENTWURF: "${currentDraft}"
+    === HISTORIE ===
+    ${historyString}
+    === NEUE ANWEISUNG ===
+    User: ${userPrompt}
+    `;
+
+    const model = window.aiState.currentModel || "gemini-2.5-flash";
+
+    try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: finalPrompt }] }] })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error?.message || "API Error");
+
+        let rawText = data.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim();
+        let jsonResponse;
+        try { jsonResponse = JSON.parse(rawText); } catch(e) { jsonResponse = { draft: rawText, feedback: "Format Fehler" }; }
+
+        addDraftMessage(jsonResponse.draft);
+        addChatMessage('ai', jsonResponse.feedback);
+        window.aiState.chatHistory.push({role: "AI", text: jsonResponse.feedback});
+        window.aiState.lastDraft = jsonResponse.draft;
+        
+        if (window.aiState.isRealMode && !window.aiState.preventOverwrite) {
+            const editable = document.querySelector('.note-editable');
+            if (editable) setEditorContent(editable, jsonResponse.draft);
+        } else {
+            dummyDraft.innerHTML = jsonResponse.draft;
+            if(!window.aiState.preventOverwrite && !window.aiState.isRealMode) { dummyDraft.style.display = 'block'; flashElement(dummyDraft); }
+        }
+        if(!isInitial) input.value = '';
+    } catch(e) {
+        addChatMessage('system', "Error: " + e.message);
+    } finally {
+        btn.disabled = false; btn.innerText = "Go"; window.aiState.isGenerating = false; window.aiState.preventOverwrite = false;
+    }
+}
+
+// --- STANDARD UTILS ---
 
 function checkApiKeyUI() {
     chrome.storage.local.get(['geminiApiKey'], function(result) {
         const input = document.getElementById('tradeo-apikey-input');
-        if (!result.geminiApiKey) input.style.display = 'block';
-        else input.style.display = 'none';
+        if (input) input.style.display = !result.geminiApiKey ? 'block' : 'none';
     });
 }
 
@@ -290,18 +468,11 @@ function setEditorContent(editableElement, htmlContent) {
 
 function addChatMessage(role, text) {
     const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    if(!historyContainer) return;
     const msgDiv = document.createElement('div');
-    if (role === 'user') {
-        msgDiv.className = 'user-msg';
-        msgDiv.innerHTML = `<strong>DU</strong> ${text}`;
-    } else if (role === 'ai') {
-        msgDiv.className = 'ai-msg';
-        msgDiv.innerHTML = `<strong>AI</strong> ${text}`;
-    } else {
-        msgDiv.className = 'ai-msg'; 
-        msgDiv.style.fontStyle = 'italic';
-        msgDiv.innerHTML = text;
-    }
+    if (role === 'user') { msgDiv.className = 'user-msg'; msgDiv.innerHTML = `<strong>DU</strong> ${text}`; }
+    else if (role === 'ai') { msgDiv.className = 'ai-msg'; msgDiv.innerHTML = `<strong>AI</strong> ${text}`; }
+    else { msgDiv.className = 'ai-msg'; msgDiv.style.fontStyle = 'italic'; msgDiv.innerHTML = text; }
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
 }
@@ -311,282 +482,66 @@ function flashElement(element) {
     element.classList.remove('tradeo-flash-active');
     void element.offsetWidth;
     element.classList.add('tradeo-flash-active');
-    setTimeout(() => {
-        element.classList.remove('tradeo-flash-active');
-    }, 1200);
+    setTimeout(() => { element.classList.remove('tradeo-flash-active'); }, 1200);
 }
 
 function addDraftMessage(htmlContent) {
     const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    if(!historyContainer) return;
     const msgDiv = document.createElement('div');
     msgDiv.className = 'draft-msg'; 
-    
     msgDiv.innerHTML = `
-        <div class="draft-header">
-            <span class="icon">📄</span> Entwurf (Klicken zum Anzeigen)
-        </div>
-        <div class="draft-body">
-            ${htmlContent}
+        <div class="draft-header"><span class="icon">📄</span> Entwurf (Klicken zum Anzeigen)</div>
+        <div class="draft-body">${htmlContent}
             <div class="draft-actions">
                 <button class="draft-btn btn-copy">📋 Kopieren</button>
                 <button class="draft-btn primary btn-adopt">⚡ Übernehmen</button>
             </div>
-        </div>
-    `;
-
-    msgDiv.querySelector('.draft-header').addEventListener('click', function() {
-        msgDiv.classList.toggle('expanded');
-    });
-
-    msgDiv.querySelector('.btn-copy').addEventListener('click', function(e) {
+        </div>`;
+    msgDiv.querySelector('.draft-header').onclick = () => msgDiv.classList.toggle('expanded');
+    msgDiv.querySelector('.btn-copy').onclick = (e) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(htmlContent).then(() => {
-            const btn = e.target;
-            const originalText = btn.innerText;
-            btn.innerText = "✅ Kopiert!";
-            setTimeout(() => btn.innerText = originalText, 1500);
-        });
-    });
-
-    msgDiv.querySelector('.btn-adopt').addEventListener('click', function(e) {
+        navigator.clipboard.writeText(htmlContent);
+    };
+    msgDiv.querySelector('.btn-adopt').onclick = (e) => {
         e.stopPropagation();
-        
-        // 1. WICHTIG: Diesen Text als den "aktuellsten" Stand definieren.
-        // Das garantiert, dass wenn der User den Editor später wieder schließt,
-        // genau DIESER Text wieder im Dummy Draft erscheint (Observer-Logik).
         window.aiState.lastDraft = htmlContent;
-
-        const btn = e.target;
-        const originalText = btn.innerText;
-        btn.innerText = "⏳...";
-
-        // 2. Prüfen: Ist der Editor schon offen?
         const editorBlock = document.querySelector('.conv-reply-block');
         const replyBtn = document.querySelector('.conv-reply');
-        
-        // FreeScout nutzt meist 'hidden' Klasse oder style display:none
-        const isEditorVisible = editorBlock && !editorBlock.classList.contains('hidden') && editorBlock.style.display !== 'none';
-
-        if (isEditorVisible) {
-            // A: Editor ist bereits offen -> Direkt einfügen
+        if (editorBlock && !editorBlock.classList.contains('hidden') && editorBlock.style.display !== 'none') {
             const editable = document.querySelector('.note-editable');
-            if (editable) {
-                window.aiState.isRealMode = true; // Modus scharf schalten
-                setEditorContent(editable, htmlContent);
-                finishAdopt(btn, originalText);
-            }
-        } else {
-            // B: Editor ist ZU -> Öffnen erzwingen
-            if (replyBtn) {
-                // Wir setzen RealMode auf true, damit der Observer weiß, 
-                // dass wir jetzt im Editier-Modus sind.
-                window.aiState.isRealMode = true; 
-                
-                replyBtn.click(); // Klick auf den "Antworten Pfeil" simulieren
-                
-                // Warten bis Summernote initialisiert ist
-                waitForSummernote((editable) => {
-                    setEditorContent(editable, htmlContent);
-                    finishAdopt(btn, originalText);
-                    
-                    // Sicherheitshalber: Dummy verstecken (macht der Observer eigentlich auch)
-                    const dummy = document.getElementById('tradeo-ai-dummy-draft');
-                    if(dummy) dummy.style.display = 'none';
-                });
-            } else {
-                console.error("Tradeo AI: 'Antworten'-Button nicht gefunden.");
-                btn.innerText = "❌ Fehler";
-            }
+            if (editable) { window.aiState.isRealMode = true; setEditorContent(editable, htmlContent); }
+        } else if (replyBtn) {
+            window.aiState.isRealMode = true; replyBtn.click();
+            waitForSummernote((editable) => setEditorContent(editable, htmlContent));
         }
-    });
-
+    };
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
 }
 
-// Hilfsfunktion für Button-Reset
-function finishAdopt(btn, originalText) {
-    btn.innerText = "✅ Übernommen";
-    setTimeout(() => btn.innerText = originalText, 1500);
-}
-
-// --- CORE AI LOGIK ---
-
-async function runAI(isInitial = false) {
-    const btn = document.getElementById('tradeo-ai-send-btn');
-    const input = document.getElementById('tradeo-ai-input');
-    const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
-    const apiKeyInput = document.getElementById('tradeo-apikey-input');
-
-    let userPrompt = input.value.trim();
-    
-    // State setzen
-    window.aiState.isGenerating = true;
-
-    // Content Check
-    let currentDraftContent = "";
-    if (window.aiState.isRealMode) {
-        const editable = document.querySelector('.note-editable');
-        if (editable) currentDraftContent = editable.innerHTML;
-    } else {
-        if (!isInitial) currentDraftContent = dummyDraft.innerHTML;
-    }
-
-    if (isInitial) {
-        userPrompt = "Analysiere das Ticket und erstelle einen passenden Antwortentwurf.";
-    } else {
-        if (!userPrompt) return;
-        addChatMessage('user', userPrompt);
-        window.aiState.chatHistory.push({role: "User", text: userPrompt});
-    }
-
-    // API Key
-    let apiKey = apiKeyInput.value.trim();
-    if (!apiKey) {
-        const stored = await chrome.storage.local.get(['geminiApiKey']);
-        apiKey = stored.geminiApiKey;
-    }
-    if (!apiKey) {
-        window.aiState.isGenerating = false;
-        return;
-    }
-
-    btn.disabled = true;
-    btn.innerText = "...";
-
-    // Kontext lesen
-    const mainContainer = document.getElementById('conv-layout-main');
-    let contextText = "";
-    if (mainContainer) {
-        const clone = mainContainer.cloneNode(true);
-        const myZone = clone.querySelector('#tradeo-ai-copilot-zone');
-        if (myZone) myZone.remove();
-        const editorBlock = clone.querySelector('.conv-reply-block');
-        if(editorBlock) editorBlock.remove();
-        contextText = clone.innerText;
-    }
-
-    const historyString = window.aiState.chatHistory.map(entry => `${entry.role}: ${entry.text}`).join("\n");
-
-    const finalPrompt = `
-    ${SYSTEM_PROMPT}
-    
-    === HINTERGRUND ===
-    TICKET VERLAUF:
-    ${contextText}
-
-    === AKTUELLER STATUS ===
-    DERZEITIGER ENTWURF (Daran arbeiten wir):
-    "${currentDraftContent}"
-
-    === UNSER GESPRÄCHSVERLAUF BISHER ===
-    ${historyString}
-
-    === NEUE ANWEISUNG ===
-    User: ${userPrompt}
-    `;
-
-    const selectedModel = window.aiState.currentModel || "gemini-2.5-flash";
-    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${selectedModel}:generateContent?key=${apiKey}`;
-
-    try {
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: [{ text: finalPrompt }] }] })
+function setupResizeHandler() {
+    const resizer = document.getElementById('tradeo-ai-resize-handle');
+    const chatHistory = document.getElementById('tradeo-ai-chat-history');
+    if (resizer && chatHistory) {
+        resizer.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            const startY = e.clientY;
+            const startHeight = chatHistory.offsetHeight;
+            const doDrag = (e) => {
+                const newHeight = startHeight + (e.clientY - startY);
+                if (newHeight >= 120) chatHistory.style.height = newHeight + 'px';
+            };
+            const stopDrag = () => {
+                document.removeEventListener('mousemove', doDrag);
+                document.removeEventListener('mouseup', stopDrag);
+            };
+            document.addEventListener('mousemove', doDrag);
+            document.addEventListener('mouseup', stopDrag);
         });
-
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error?.message || "API Error");
-
-        let rawText = data.candidates[0].content.parts[0].text;
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-        
-        let jsonResponse;
-        try {
-            jsonResponse = JSON.parse(rawText);
-        } catch (e) {
-            jsonResponse = { draft: rawText, feedback: "Format Fehler." };
-        }
-
-        // 1. Historie
-        addDraftMessage(jsonResponse.draft);
-        addChatMessage('ai', jsonResponse.feedback);
-        window.aiState.chatHistory.push({role: "AI", text: jsonResponse.feedback});
-
-        // 2. Update Logic
-        window.aiState.lastDraft = jsonResponse.draft;
-
-        // CHECK: Darf ich in den Editor schreiben?
-        // Bedingung: RealMode ist an UND wir haben KEIN Prevent-Flag
-        if (window.aiState.isRealMode && !window.aiState.preventOverwrite) {
-            const editable = document.querySelector('.note-editable');
-            if (editable) {
-                setEditorContent(editable, jsonResponse.draft);
-            } else {
-                // Fallback, falls Element nicht gefunden, doch in Dummy
-                dummyDraft.innerHTML = jsonResponse.draft;
-                // Nicht anzeigen, da User im RealMode ist (aber ohne Editor?) - Edge Case.
-            }
-        } else {
-            // Wir schreiben NUR in den Dummy Draft
-            // Das passiert, wenn:
-            // a) Editor zu ist (Standard)
-            // b) preventOverwrite gesetzt ist (User hat manuell geklickt während AI lief)
-            dummyDraft.innerHTML = jsonResponse.draft;
-            
-            // Wenn preventOverwrite an war, ist der Dummy versteckt (durch den Klick).
-            // Wir lassen ihn versteckt, damit der User nicht gestört wird.
-            // Falls preventOverwrite NICHT an war (also AI im Hintergrund fertig wurde ohne Klick), 
-            // zeigen wir ihn an.
-            if (!window.aiState.preventOverwrite && !window.aiState.isRealMode) {
-                 dummyDraft.style.display = 'block';
-                 flashElement(dummyDraft);
-            } else {
-                console.log("AI fertig, Update im Hintergrund in Dummy Draft gespeichert.");
-            }
-        }
-
-        if (!isInitial) input.value = '';
-
-    } catch (error) {
-        addChatMessage('system', `<span style="color:red">Fehler (${selectedModel}): ${error.message}</span>`);
-    } finally {
-        btn.disabled = false;
-        btn.innerText = "Go";
-        window.aiState.isGenerating = false;
-        window.aiState.preventOverwrite = false; // Flag resetten für nächste Runde
     }
 }
 
-// --- BOOTSTRAP / LOADER LOGIC ---
-
-let bootTimer = null;
-
-function tryStartApp(observer = null) {
-    const replyBtn = document.querySelector('.conv-reply');
-    const mainContainer = document.getElementById('conv-layout-main');
-    const alreadyInitialized = document.getElementById('tradeo-ai-copilot-zone');
-
-    if (!replyBtn || !mainContainer || alreadyInitialized) return;
-
-    const threadCount = mainContainer.querySelectorAll('.thread').length;
-    if (threadCount === 0) return;
-
-    if (bootTimer) clearTimeout(bootTimer);
-
-    bootTimer = setTimeout(() => {
-        if (observer) observer.disconnect();
-        console.log(`Tradeo AI: Start trigger (${threadCount} threads detected).`);
-        init();
-    }, 50);
-}
-
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => tryStartApp());
-} else {
-    tryStartApp();
-}
-
-const observer = new MutationObserver(() => tryStartApp(observer));
-observer.observe(document.body, { childList: true, subtree: true });
+// --- BOOTSTRAP ---
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startHeartbeat);
+else startHeartbeat();
