@@ -61,12 +61,15 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
 2. **Warnung:** Sage NIEMALS "ist zugestellt", nur weil Status 7 ist. Status 7 heißt nur "versendet".
 
 **B. BEI ARTIKELN (getItemDetails):**
-1. **Verfügbarkeit:**
-   - Prüfe das Feld 'stock' -> 'net' (Netto-Bestand).
-   - Netto > 0: "Sofort lieferbar" / "Auf Lager".
-   - Netto <= 0: "Aktuell nicht lagernd". Prüfe, ob ein Liefertermin genannt ist.
-2. **Zustand:**
-   - Achte auf Hinweise wie "Renew", "Refurbished" oder "Neu" im Artikelnamen, um die Gewährleistungsregeln anzuwenden.
+1. **Intelligente Suche:**
+   - **Priorität:** Ist die Eingabe eine 6-stellige Zahl, die mit '1' beginnt (z.B. 105400), sucht das Tool zuerst exakt nach dieser Artikelnummer/ID.
+   - **Fallback:** Findet dies nichts (oder passt das Format nicht), sucht es breit nach Barcodes (EAN), Teilenummern (Model) und Nummern.
+   - Das ist nützlich, wenn Kunden Teilenummern (z.B. "X-500-AB") senden, die keine Artikelnummern sind.
+2. **Mehrere Ergebnisse (Ambiguity):**
+   - Falls "PLENTY_ITEM_AMBIGUOUS" zurückkommt, passen mehrere Artikel (z.B. gleiche Teilenummer bei Varianten).
+   - Analysiere die Liste 'candidates' und wähle den logischsten Artikel für den Kundenkontext.
+3. **Verfügbarkeit:**
+   - Prüfe 'stockNet' (>0 = Lagernd). Achte bei Namen auf "Refurbished" für Garantiehinweise.
 
 **C. BEI KUNDEN (getCustomerDetails):**
 1. **Kontext:**
@@ -334,7 +337,7 @@ async function processTicket(id, contentHash) {
         if (!contextText || contextText.length < 50) return;
 
         // Generate
-        const aiResult = await generateDraftHeadless(contextText);
+        const aiResult = await generateDraftHeadless(contextText, id);
 
         if (aiResult) {
             // FIX: Initialer Verlauf mit Draft-Bubble UND Text
@@ -365,7 +368,7 @@ async function processTicket(id, contentHash) {
 
 // --- API FUNCTIONS ---
 
-async function generateDraftHeadless(contextText) {
+async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     const stored = await chrome.storage.local.get(['geminiApiKey']);
     const apiKey = stored.geminiApiKey;
     if (!apiKey) return null;
@@ -466,9 +469,10 @@ async function generateDraftHeadless(contextText) {
                     
                     if(apiResult && apiResult.success) {
                         functionResult = apiResult.data;
-                        console.log(`Tradeo AI Headless: ✅ Tool ${fnName} erfolgreich.`);
+                        console.log(`Tradeo AI Headless [CID: ${ticketId}]: ✅ Tool ${fnName} erfolgreich.`);
                     } else {
-                        console.warn(`Tradeo AI Headless: ❌ Tool ${fnName} fehlgeschlagen.`, apiResult);
+                        // HIER IST DAS LOGGING, DAS DU GESUCHT HAST:
+                        console.warn(`Tradeo AI Headless [CID: ${ticketId}]: ❌ Tool ${fnName} fehlgeschlagen.`, apiResult);
                         functionResult = { error: apiResult ? apiResult.error : "Unknown Error" };
                     }
                 } else {
@@ -514,7 +518,7 @@ async function generateDraftHeadless(contextText) {
         return finalResponse;
 
     } catch (e) {
-        console.error("Tradeo AI Headless Error:", e);
+        console.error(`Tradeo AI Headless Error [CID: ${ticketId}]:`, e);
         return null;
     }
 }
@@ -826,7 +830,20 @@ function expandInterface() {
     }
 }
 
-// --- UI HELPERS ---
+// --- HELPERS ---
+
+/**
+ * Extrahiert die Conversation ID aus der URL.
+ * FreeScout URL Format: /conversation/{id}/{slug}
+ */
+function getCurrentConversationId() {
+    try {
+        const match = window.location.href.match(/conversation\/(\d+)/);
+        return match ? match[1] : 'UNKNOWN';
+    } catch (e) {
+        return 'ERR_EXTRACT';
+    }
+}
 
 // --- HELPER: Scroll to Bottom ---
 function scrollToBottom() {
