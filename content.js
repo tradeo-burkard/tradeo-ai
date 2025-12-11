@@ -107,6 +107,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
 const AI_MODELS = {
     "gemini-2.5-flash-lite": { id: "gemini-2.5-flash-lite", label: "2.5 Flash Lite", dropdownText: "gemini-2.5-flash-lite (sehr schnell)" },
     "gemini-2.5-flash": { id: "gemini-2.5-flash", label: "2.5 Flash", dropdownText: "gemini-2.5-flash (schnell)" },
+    "gemini-2.5-pro": { id: "gemini-2.5-pro", label: "2.5 Pro", dropdownText: "gemini-2.5-pro (standard)" },
     "gemini-3-pro-preview": { id: "gemini-3-pro-preview", label: "3 Pro", dropdownText: "gemini-3-pro-preview (langsam)" }
 };
 
@@ -117,7 +118,7 @@ window.aiState = {
     isGenerating: false,
     preventOverwrite: false,
     chatHistory: [], // Array von Objekten: { type: 'user'|'ai'|'draft', content: string }
-    currentModel: "gemini-2.5-flash",
+    currentModel: "gemini-2.5-pro",
     // Cache management V3
     knownTickets: new Map(), // Map<TicketID, ContentHash>
     processingQueue: new Set() // Set<TicketID>
@@ -377,7 +378,7 @@ async function generateDraftHeadless(contextText) {
     Analysiere das Ticket und erstelle einen passenden Antwortentwurf.
     `;
 
-    const model = "gemini-2.5-flash"; 
+    const model = "gemini-2.5-pro"; 
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
 
     try {
@@ -461,7 +462,7 @@ function initConversationUI() {
             <button id="tradeo-ai-settings-btn" title="Einstellungen (API Keys)"><i class="glyphicon glyphicon-cog"></i></button>
             
             <div class="tradeo-ai-model-wrapper">
-                <button id="tradeo-ai-model-btn" type="button">2.5 Flash</button>
+                <button id="tradeo-ai-model-btn" type="button">2.5 Pro</button>
                 <div id="tradeo-ai-model-dropdown" class="hidden"></div>
             </div>
 
@@ -502,7 +503,9 @@ function initConversationUI() {
                 window.aiState.lastDraft = cached.draft;
                 dummyDraft.innerHTML = cached.draft;
                 
-                document.getElementById('tradeo-ai-chat-history').innerHTML = ''; 
+                const histContainer = document.getElementById('tradeo-ai-chat-history');
+                histContainer.innerHTML = ''; 
+                
                 if (cached.chatHistory && Array.isArray(cached.chatHistory)) {
                     window.aiState.chatHistory = cached.chatHistory;
                     cached.chatHistory.forEach(msg => {
@@ -516,6 +519,11 @@ function initConversationUI() {
                     renderChatMessage('ai', fallbackText);
                     window.aiState.chatHistory = [{ type: 'ai', content: fallbackText }];
                 }
+
+                // FIX: Sicherstellen, dass wir ganz unten sind nach dem Laden
+                // Ein kurzer Timeout hilft, falls Bilder/Styles noch rendern
+                setTimeout(scrollToBottom, 50);
+
             } else {
                 renderChatMessage("system", "Kein Entwurf gefunden. Starte Live-Analyse...");
                 runAI(true);
@@ -678,15 +686,33 @@ function setupSettingsLogic() {
     });
 }
 
-// Neue Funktion zum Ausklappen
+// Neue Funktion zum Ausklappen mit Scroll-Fix
 function expandInterface() {
     const zone = document.getElementById('tradeo-ai-copilot-zone');
     if (zone) {
         zone.classList.remove('tradeo-collapsed');
+        
+        // FIX: Scrollen, sobald das Element sichtbar wird
+        // Kleiner Timeout ist wichtig, damit der Browser das 'display: block' erst rendern kann
+        setTimeout(() => {
+            scrollToBottom();
+            // Fokus ins Eingabefeld setzen (optional, aber nice to have)
+            const input = document.getElementById('tradeo-ai-input');
+            if(input) input.focus();
+        }, 50);
     }
 }
 
 // --- UI HELPERS ---
+
+// --- HELPER: Scroll to Bottom ---
+function scrollToBottom() {
+    const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    if (historyContainer) {
+        // Wir setzen es auf scrollHeight, um ganz nach unten zu springen
+        historyContainer.scrollTop = historyContainer.scrollHeight;
+    }
+}
 
 function setupModelSelector() {
     const modelBtn = document.getElementById('tradeo-ai-model-btn');
@@ -849,7 +875,7 @@ async function runAI(isInitial = false) {
         }
     ];
 
-    const model = window.aiState.currentModel || "gemini-2.5-flash";
+    const model = window.aiState.currentModel || "gemini-2.5-pro";
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
 
     try {
@@ -1173,19 +1199,29 @@ function flashElement(element) {
 function setupResizeHandler() {
     const resizer = document.getElementById('tradeo-ai-resize-handle');
     const chatHistory = document.getElementById('tradeo-ai-chat-history');
+    
     if (resizer && chatHistory) {
         resizer.addEventListener('mousedown', function(e) {
             e.preventDefault();
             const startY = e.clientY;
             const startHeight = chatHistory.offsetHeight;
+            
             const doDrag = (e) => {
+                // Berechne neue Höhe
                 const newHeight = startHeight + (e.clientY - startY);
-                if (newHeight >= 120) chatHistory.style.height = newHeight + 'px';
+                
+                if (newHeight >= 120) {
+                    chatHistory.style.height = newHeight + 'px';
+                    // FIX: Bottom Sticky während des Resizens erzwingen
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                }
             };
+            
             const stopDrag = () => {
                 document.removeEventListener('mousemove', doDrag);
                 document.removeEventListener('mouseup', stopDrag);
             };
+            
             document.addEventListener('mousemove', doDrag);
             document.addEventListener('mouseup', stopDrag);
         });
