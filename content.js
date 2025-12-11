@@ -49,25 +49,55 @@ window.aiState = {
 // --- CORE LOOPS (HEARTBEAT) ---
 
 function startHeartbeat() {
-    console.log("Tradeo AI: Heartbeat gestartet (Global Mode).");
-    setInterval(() => {
-        const pageType = detectPageType();
-        
-        // 1. UI & Lokaler DOM Scan (Abhängig von der Sicht)
-        if (pageType === 'ticket') {
-            // Wir sind im Ticket -> UI Rendern falls noch nicht da
-            if (!document.getElementById('tradeo-ai-copilot-zone')) initConversationUI();
-        } 
-        else if (pageType === 'inbox') {
-            // Wir sind in einer Liste -> Scannen der SICHTBAREN Tabelle (schneller als fetch)
-            scanInboxTable();
-        } 
-        
-        // 2. Globaler Hintergrund-Scan (IMMER, egal wo wir sind)
-        // Scannt die fest definierten URLs (Servershop24 -> Nicht zugewiesen & Meine)
-        scanDashboardFolders();
+    console.log("Tradeo AI: Heartbeat & Observer gestartet.");
 
+    // 1. Sofortige Ausführung beim Start (behebt den Initial-Delay)
+    runLifecycleCheck();
+
+    // 2. Observer für "Instant"-Reaktion bei DOM-Änderungen (z.B. Klick auf Ticket in Inbox)
+    // Wir beobachten den Body, ob '#conv-layout-main' (der Ticket-View) reingeladen wird.
+    const observer = new MutationObserver((mutations) => {
+        const ticketViewPresent = document.getElementById('conv-layout-main');
+        const uiMissing = !document.getElementById('tradeo-ai-copilot-zone');
+        
+        // Nur feuern, wenn wir im Ticket sind UND die UI noch fehlt
+        if (ticketViewPresent && uiMissing) {
+            runLifecycleCheck();
+        }
+    });
+    
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // 3. Langsamerer Interval für Hintergrund-Aufgaben (Inbox Scan etc.)
+    setInterval(() => {
+        runLifecycleCheck();
     }, POLL_INTERVAL_MS);
+}
+
+// Die Hauptlogik ausgelagert, damit wir sie sofort + per Interval + per Observer rufen können
+function runLifecycleCheck() {
+    const pageType = detectPageType();
+    
+    // 1. UI & Lokaler DOM Scan (Abhängig von der Sicht)
+    if (pageType === 'ticket') {
+        // Wir sind im Ticket -> UI Rendern falls noch nicht da
+        if (!document.getElementById('tradeo-ai-copilot-zone')) {
+            // Checken ob der Container wirklich bereit ist
+            if(document.querySelector('.conv-reply-block') || document.querySelector('.conv-reply')) {
+                initConversationUI();
+            }
+        }
+    } 
+    else if (pageType === 'inbox') {
+        // Wir sind in einer Liste -> Scannen der SICHTBAREN Tabelle
+        scanInboxTable();
+    } 
+    
+    // 2. Globaler Hintergrund-Scan (ServerShop24 -> Nicht zugewiesen & Meine)
+    // Das muss nicht bei jedem Millisekunden-Event laufen, daher kleiner Schutz:
+    if (!window.aiState.isBackgroundScanning) {
+        scanDashboardFolders();
+    }
 }
 
 function detectPageType() {
