@@ -564,6 +564,8 @@ function extractContextFromDOM(docRoot) {
 
 // --- UI LOGIC (TICKET VIEW) ---
 
+// Suche die Funktion initConversationUI und ersetze den Cache-Lade-Block (am Ende der Funktion) oder die ganze Funktion:
+
 function initConversationUI() {
     const mainContainer = document.getElementById('conv-layout-main');
     if (!mainContainer) return;
@@ -651,10 +653,19 @@ function initConversationUI() {
                 if (cached.chatHistory && Array.isArray(cached.chatHistory)) {
                     window.aiState.chatHistory = cached.chatHistory;
                     cached.chatHistory.forEach(msg => {
-                        if (msg.type === 'draft') renderDraftMessage(msg.content);
-                        else if (msg.type === 'user') renderChatMessage('user', msg.content);
-                        else if (msg.type === 'ai') renderChatMessage('ai', msg.content);
-                        else renderChatMessage('ai', msg.text || msg.content);
+                        if (msg.type === 'draft') {
+                            renderDraftMessage(msg.content);
+                        } else if (msg.type === 'user') {
+                            renderChatMessage('user', msg.content);
+                        } else if (msg.type === 'ai') {
+                            renderChatMessage('ai', msg.content);
+                        } else if (msg.type === 'system') {
+                            // FIX: System Nachrichten explizit als 'system' rendern
+                            renderChatMessage('system', msg.content);
+                        } else {
+                            // Fallback
+                            renderChatMessage('ai', msg.text || msg.content);
+                        }
                     });
                 } else {
                     const fallbackText = cached.feedback + " (Vorbereitet)";
@@ -663,7 +674,6 @@ function initConversationUI() {
                 }
 
                 // FIX: Sicherstellen, dass wir ganz unten sind nach dem Laden
-                // Ein kurzer Timeout hilft, falls Bilder/Styles noch rendern
                 setTimeout(scrollToBottom, 50);
 
             } else {
@@ -973,6 +983,8 @@ function setupEditorObserver() {
     }).observe(editorBlock, { attributes: true });
 }
 
+// Suche die Funktion runAI und ersetze sie durch diese Version:
+
 async function runAI(isInitial = false) {
     const btn = document.getElementById('tradeo-ai-send-btn');
     const input = document.getElementById('tradeo-ai-input');
@@ -1067,7 +1079,13 @@ async function runAI(isInitial = false) {
                 const fnName = functionCallPart.functionCall.name;
                 const fnArgs = functionCallPart.functionCall.args;
                 
-                renderChatMessage('system', `⚙️ AI ruft Tool: ${fnName}(${JSON.stringify(fnArgs)})`);
+                const logText = `⚙️ AI ruft Tool: ${fnName}(${JSON.stringify(fnArgs)})`;
+                
+                // RENDER
+                renderChatMessage('system', logText);
+                // FIX: PERSISTIEREN
+                window.aiState.chatHistory.push({ type: "system", content: logText });
+                
                 console.log("Tradeo AI: Function Call detected:", fnName, fnArgs);
 
                 // Tool ausführen
@@ -1169,8 +1187,7 @@ async function runAI(isInitial = false) {
             }
             if(!isInitial && input) input.value = '';
 
-            // --- PERSISTENZ SPEICHERN (FIX) ---
-            // Wir speichern JETZT den neuen Verlauf (inkl. User Prompt und neuer AI Antwort)
+            // --- PERSISTENZ SPEICHERN ---
             const ticketId = getTicketIdFromUrl();
             if (ticketId) {
                 const storageKey = `draft_${ticketId}`;
@@ -1182,7 +1199,7 @@ async function runAI(isInitial = false) {
                     const newData = {
                         draft: finalResponse.draft,
                         feedback: finalResponse.feedback,
-                        chatHistory: window.aiState.chatHistory, // Hier ist jetzt alles drin
+                        chatHistory: window.aiState.chatHistory, // Hier sind jetzt auch die System-Logs drin
                         timestamp: Date.now(),
                         contentHash: currentHash
                     };
@@ -1190,7 +1207,7 @@ async function runAI(isInitial = false) {
                     const saveObj = {};
                     saveObj[storageKey] = newData;
                     chrome.storage.local.set(saveObj, () => {
-                        console.log("Tradeo AI: Verlauf gespeichert.");
+                        console.log("Tradeo AI: Verlauf (inkl. Tools) gespeichert.");
                     });
                 });
             }
