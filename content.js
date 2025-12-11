@@ -370,28 +370,137 @@ async function generateDraftHeadless(contextText) {
     const apiKey = stored.geminiApiKey;
     if (!apiKey) return null;
 
-    const finalPrompt = `
+    // Strengerer Prompt für den Headless Mode, damit er Tools wirklich nutzt
+    const headlessPrompt = `
     ${SYSTEM_PROMPT}
-    === VERLAUF ===
+    === HINTERGRUND-ANALYSE ===
+    Dies ist ein automatischer Scan eines Tickets.
+    
+    === TICKET VERLAUF ===
     ${contextText}
+    
     === AUFGABE ===
-    Analysiere das Ticket und erstelle einen passenden Antwortentwurf.
+    1. Analysiere den Text.
+    2. WICHTIG: Wenn eine Bestellnummer (Order ID), Artikelnummer oder Kundennummer vorkommt, NUTZE DIE BEREITGESTELLTEN TOOLS (getOrderDetails, etc.), um echte Daten abzurufen.
+    3. Erfinde KEINE Daten. Wenn du Tools nutzen kannst, tu es.
+    4. Erstelle basierend auf den ECHTEN Daten einen Antwortentwurf im JSON-Format.
     `;
 
-    const model = "gemini-2.5-pro"; 
+    // Initialer Context Aufbau
+    let contents = [{
+        role: "user",
+        parts: [{ text: headlessPrompt }]
+    }];
+
+    const model = window.aiState.currentModel || "gemini-2.5-pro"; // Nutze eingestelltes Modell
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
 
     try {
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: [{ text: finalPrompt }] }] })
-        });
-        const data = await response.json();
-        let rawText = data.candidates[0].content.parts[0].text;
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-        try { return JSON.parse(rawText); } catch(e) { return { draft: rawText, feedback: "Format Fehler" }; }
+        let finalResponse = null;
+        let turnCount = 0;
+        const maxTurns = 3; // Sicherheitslimit für API Calls
+
+        // --- SCHLEIFE FÜR MULTI-TURN (Tool Use im Hintergrund) ---
+        while (turnCount < maxTurns) {
+            
+            const payload = {
+                contents: contents,
+                tools: [{ function_declarations: GEMINI_TOOLS }] // WICHTIG: Tools mitgeben!
+            };
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error?.message || "Headless API Error");
+
+            const candidate = data.candidates[0];
+            const content = candidate.content;
+            const parts = content.parts;
+
+            // Hat die AI einen FUNCTION CALL?
+            const functionCallPart = parts.find(p => p.functionCall);
+
+            if (functionCallPart) {
+                const fnName = functionCallPart.functionCall.name;
+                const fnArgs = functionCallPart.functionCall.args;
+                
+                console.log(`Tradeo AI Headless: ⚙️ Rufe Tool ${fnName} mit`, fnArgs);
+
+                // Tool ausführen (via Background Script)
+                let functionResult = null;
+                let actionName = '';
+                let actionPayload = {};
+
+                if (fnName === 'getOrderDetails') {
+                    actionName = 'GET_ORDER_FULL';
+                    actionPayload = { orderId: fnArgs.orderId };
+                } else if (fnName === 'getItemDetails') {
+                    actionName = 'GET_ITEM_DETAILS';
+                    actionPayload = { identifier: fnArgs.identifier };
+                } else if (fnName === 'getCustomerDetails') {
+                    actionName = 'GET_CUSTOMER_DETAILS';
+                    actionPayload = { contactId: fnArgs.contactId };
+                }
+
+                if (actionName) {
+                    // API Call via Background.js
+                    const apiResult = await new Promise(resolve => {
+                        chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => {
+                             resolve(response);
+                        });
+                    });
+                    
+                    if(apiResult && apiResult.success) {
+                        functionResult = apiResult.data;
+                        console.log(`Tradeo AI Headless: ✅ Tool ${fnName} erfolgreich.`);
+                    } else {
+                        console.warn(`Tradeo AI Headless: ❌ Tool ${fnName} fehlgeschlagen.`, apiResult);
+                        functionResult = { error: apiResult ? apiResult.error : "Unknown Error" };
+                    }
+                } else {
+                    functionResult = { error: "Tool not implemented" };
+                }
+
+                // Verlauf aktualisieren (Response an AI zurückfüttern)
+                contents.push(content); 
+                contents.push({
+                    role: "function",
+                    parts: [{
+                        functionResponse: {
+                            name: fnName,
+                            response: { name: fnName, content: functionResult }
+                        }
+                    }]
+                });
+
+                turnCount++;
+                continue; // Nächste Runde (AI soll jetzt mit den Daten antworten)
+            }
+
+            // Keine Function Call -> Finale Text-Antwort
+            let rawText = parts[0].text;
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            
+            try { 
+                finalResponse = JSON.parse(rawText); 
+            } catch(e) { 
+                console.warn("Tradeo AI Headless JSON Parse Error. Fallback auf Raw Text.");
+                finalResponse = { 
+                    draft: rawText.replace(/\n/g, '<br>'), 
+                    feedback: "Automatisch generiert (Formatierung evtl. abweichend)" 
+                }; 
+            }
+            break; // Loop beenden
+        }
+
+        return finalResponse;
+
     } catch (e) {
+        console.error("Tradeo AI Headless Error:", e);
         return null;
     }
 }
