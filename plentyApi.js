@@ -457,6 +457,34 @@ async function fetchFullOrderDetails(orderId) {
     }
 }
 
+/**
+ * Holt Kundendaten und die letzten Bestellungen.
+ */
+async function fetchCustomerDetails(contactId) {
+    try {
+        // 1. Stammdaten holen
+        const contactData = await makePlentyCall(`/rest/accounts/contacts/${contactId}`);
+        
+        // 2. Letzte 5 Bestellungen holen (absteigend sortiert)
+        // itemsPerPage=5, sortierte nach ID desc (neueste zuerst)
+        const orderHistory = await makePlentyCall(`/rest/orders?contactId=${contactId}&itemsPerPage=5&sortBy=id&sortOrder=desc`);
+
+        // 3. Rechnungsadresse(n) holen (optional, aber nützlich für Kontext)
+        // Wir nehmen hier vereinfacht an, dass wir die Adressen aus den Orders oder separat laden könnten.
+        // Um API-Calls zu sparen, verlassen wir uns erstmal auf die Stammdaten und Orders.
+
+        return {
+            meta: { type: "PLENTY_CUSTOMER_EXPORT", timestamp: new Date().toISOString() },
+            contact: contactData,
+            recentOrders: orderHistory.entries || [] 
+        };
+
+    } catch (error) {
+        console.error("Fehler bei fetchCustomerDetails:", error);
+        throw error;
+    }
+}
+
 async function fetchItemDetails(identifierRaw) {
     try {
         const identifier = String(identifierRaw).trim();
@@ -690,30 +718,292 @@ async function fetchItemDetails(identifierRaw) {
     }
 }
 
+
 /**
- * Holt Kundendaten und die letzten Bestellungen.
+ * Freitext-Suche nach Artikeln / Variationen.
+ *
+ * - Sucht zuerst direkt nach dem kompletten String in den Artikelnamen (itemNames).
+ * - Wenn nichts gefunden wird, wird nach allen "Bausteinen" (Tokens) gesucht,
+ *   d.h. alle Treffer müssen alle Wörter enthalten (Reihenfolge egal).
+ * - Zwei Modi:
+ *   mode: "name"                => nur Artikelnamen (itemNames)
+ *   mode: "nameAndDescription"  => Artikelnamen + Artikelbeschreibung (itemDescription)
+ *
+ * Ergebnisse:
+ * {
+ *   meta: {...},
+ *   salesPriceInfo: [ SalesPrice... ],   // Metadaten zu allen verwendeten salesPriceIds
+ *   results: [
+ *     {
+ *       itemId,
+ *       variationId,
+ *       name,                 // zusammengesetzter Name (name1/2/3 DE)
+ *       description,          // Beschreibung (DE, falls vorhanden)
+ *       variation,            // komplettes Variation-Objekt
+ *       item,                 // komplettes Item-Objekt
+ *       stock,                // /rest/items/{itemId}/variations/{variationId}/stock
+ *       variationSalesPrices  // /rest/items/{itemId}/variations/{variationId}/variation_sales_prices
+ *     },
+ *     ...
+ *   ]
+ * }
  */
-async function fetchCustomerDetails(contactId) {
-    try {
-        // 1. Stammdaten holen
-        const contactData = await makePlentyCall(`/rest/accounts/contacts/${contactId}`);
-        
-        // 2. Letzte 5 Bestellungen holen (absteigend sortiert)
-        // itemsPerPage=5, sortierte nach ID desc (neueste zuerst)
-        const orderHistory = await makePlentyCall(`/rest/orders?contactId=${contactId}&itemsPerPage=5&sortBy=id&sortOrder=desc`);
+async function searchItemsByText(searchText, options = {}) {
+    // ---- Optionen / Modi parsen ----
+    let mode = "name";
+    let maxResults = 30;
 
-        // 3. Rechnungsadresse(n) holen (optional, aber nützlich für Kontext)
-        // Wir nehmen hier vereinfacht an, dass wir die Adressen aus den Orders oder separat laden könnten.
-        // Um API-Calls zu sparen, verlassen wir uns erstmal auf die Stammdaten und Orders.
-
-        return {
-            meta: { type: "PLENTY_CUSTOMER_EXPORT", timestamp: new Date().toISOString() },
-            contact: contactData,
-            recentOrders: orderHistory.entries || [] 
-        };
-
-    } catch (error) {
-        console.error("Fehler bei fetchCustomerDetails:", error);
-        throw error;
+    if (typeof options === "string") {
+        // Rückwärtskompatibilität, falls du mal "nameAndDescription" direkt als String übergibst
+        mode = options === "nameAndDescription" ? "nameAndDescription" : "name";
+    } else if (options && typeof options === "object") {
+        if (options.mode === "nameAndDescription") {
+            mode = "nameAndDescription";
+        }
+        if (typeof options.maxResults === "number") {
+            maxResults = options.maxResults;
+        }
     }
+
+    const searchInDescription = mode === "nameAndDescription";
+
+    // ---- Input validieren ----
+    if (!searchText || typeof searchText !== "string" || !searchText.trim()) {
+        throw new Error("searchItemsByText: Suchstring fehlt oder ist leer.");
+    }
+
+    const search = searchText.trim();
+    const tokens = Array.from(
+        new Set(
+            search
+                .split(/\s+/)
+                .map(t => t.trim())
+                .filter(t => t.length > 1)
+        )
+    );
+
+    const bannedRegex = /(hardware\s*care\s*pack|upgrade\s+auf)/i;
+    const lang = "de";
+
+    // Hilfsfunktion: Variationen per /rest/items/variations holen
+    const searchVariations = async (params) => {
+        const qp = new URLSearchParams({
+            itemsPerPage: String(maxResults),
+            lang,
+            ...params
+        });
+
+        const res = await makePlentyCall(`/rest/items/variations?${qp.toString()}`);
+        return (res && Array.isArray(res.entries)) ? res.entries : [];
+    };
+
+    // Hilfsfunktion: Deduplizieren nach variation.id
+    const dedupeVariations = (list) => {
+        const map = new Map();
+        for (const v of list || []) {
+            if (!v || typeof v.id === "undefined") continue;
+            if (!map.has(v.id)) map.set(v.id, v);
+        }
+        return Array.from(map.values());
+    };
+
+    // ---- 1. Direkte Suche mit komplettem String ----
+    let variations = [];
+    try {
+        const nameMatches = await searchVariations({ itemNames: search });
+        let descMatches = [];
+        if (searchInDescription) {
+            descMatches = await searchVariations({ itemDescription: search });
+        }
+        variations = dedupeVariations([...nameMatches, ...descMatches]);
+    } catch (e) {
+        console.warn("searchItemsByText: direkte Suche fehlgeschlagen:", e);
+    }
+
+    // ---- 2. Fallback: Bausteine (alle Tokens müssen matchen) ----
+    if (variations.length === 0 && tokens.length > 0) {
+        console.log("searchItemsByText: keine direkten Treffer, starte Token-basierte Suche mit:", tokens);
+
+        let currentMatches = null;
+
+        for (let i = 0; i < tokens.length; i++) {
+            const term = tokens[i];
+            try {
+                const nameMatches = await searchVariations({ itemNames: term });
+                let descMatches = [];
+                if (searchInDescription) {
+                    descMatches = await searchVariations({ itemDescription: term });
+                }
+                const combined = dedupeVariations([...nameMatches, ...descMatches]);
+                const idSet = new Set(combined.map(v => v.id));
+
+                if (i === 0) {
+                    currentMatches = combined;
+                } else if (currentMatches) {
+                    currentMatches = currentMatches.filter(v => idSet.has(v.id));
+                }
+
+                if (!currentMatches || currentMatches.length === 0) {
+                    break; // Kein Artikel erfüllt alle Tokens
+                }
+            } catch (e) {
+                console.warn(`searchItemsByText: Token-Suche für '${term}' fehlgeschlagen:`, e);
+            }
+        }
+
+        if (currentMatches && currentMatches.length > 0) {
+            variations = currentMatches;
+        }
+    }
+
+    if (!variations || variations.length === 0) {
+        return {
+            meta: {
+                type: "PLENTY_ITEM_TEXT_SEARCH_RESULTS",
+                searchText,
+                mode,
+                timestamp: new Date().toISOString(),
+                resultCount: 0
+            },
+            salesPriceInfo: [],
+            results: []
+        };
+    }
+
+    // ggf. harte Obergrenze
+    if (variations.length > maxResults) {
+        variations = variations.slice(0, maxResults);
+    }
+
+    // ---- 3. Items + Namen + Beschreibungen + Stock + Preise holen ----
+    const itemCache = new Map();  // itemId -> item
+    const enrichedResults = [];
+    const allSalesPriceIds = new Set();
+
+    // kleine Helper-Funktion für Namen/Beschreibung aus Item
+    const extractNameAndDescription = (item) => {
+        let name = "";
+        let description = "";
+
+        if (item && Array.isArray(item.texts) && item.texts.length > 0) {
+            const textDe =
+                item.texts.find(t => t.lang === "de") ||
+                item.texts[0];
+
+            if (textDe) {
+                const parts = [textDe.name1, textDe.name2, textDe.name3].filter(Boolean);
+                name = parts.join(" ").trim();
+                description = (textDe.description || "").trim();
+            }
+        }
+
+        return { name, description };
+    };
+
+    for (const variation of variations) {
+        if (!variation || typeof variation.id === "undefined") continue;
+
+        const itemId = variation.itemId;
+        const variationId = variation.id;
+
+        // Item aus Cache oder API holen
+        let item = itemCache.get(itemId);
+        if (!item) {
+            try {
+                item = await makePlentyCall(`/rest/items/${itemId}`);
+                itemCache.set(itemId, item);
+            } catch (e) {
+                console.warn(`searchItemsByText: Item ${itemId} konnte nicht geladen werden:`, e);
+                continue;
+            }
+        }
+
+        const { name, description } = extractNameAndDescription(item);
+
+        // "Hardware Care Pack" / "Upgrade auf" rausfiltern
+        const haystack = (name + " " + description).toLowerCase();
+        if (bannedRegex.test(haystack)) {
+            continue;
+        }
+
+        // Stock + Variation-Sales-Prices parallel holen
+        let stock = [];
+        let variationSalesPrices = [];
+
+        try {
+            const [stockRes, vspRes] = await Promise.all([
+                makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
+                makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
+            ]);
+
+            if (Array.isArray(stockRes)) {
+                stock = stockRes;
+            }
+
+            if (Array.isArray(vspRes)) {
+                variationSalesPrices = vspRes;
+                vspRes.forEach(sp => {
+                    if (sp && typeof sp.salesPriceId !== "undefined") {
+                        allSalesPriceIds.add(sp.salesPriceId);
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn(`searchItemsByText: Stock/Prices für Variation ${variationId} konnten nicht geladen werden:`, e);
+        }
+
+        enrichedResults.push({
+            itemId,
+            variationId,
+            name,
+            description,
+            variation,
+            item,
+            stock,
+            variationSalesPrices
+        });
+    }
+
+    // ---- 4. SalesPrice-Metadaten für alle verwendeten salesPriceIds holen ----
+    let salesPriceInfo = [];
+    if (allSalesPriceIds.size > 0) {
+        try {
+            const idsParam = Array.from(allSalesPriceIds).join(",");
+            const qp = new URLSearchParams({
+                ids: idsParam,
+                with: "names,countries,currencies,clients,customerClasses"
+            });
+
+            const spiRes = await makePlentyCall(`/rest/items/sales_prices?${qp.toString()}`);
+            if (spiRes && Array.isArray(spiRes.entries)) {
+                salesPriceInfo = spiRes.entries;
+            }
+        } catch (e) {
+            console.warn("searchItemsByText: Laden der SalesPrice-Metadaten fehlgeschlagen:", e);
+        }
+    }
+
+    return {
+        meta: {
+            type: "PLENTY_ITEM_TEXT_SEARCH_RESULTS",
+            searchText,
+            mode,
+            timestamp: new Date().toISOString(),
+            resultCount: enrichedResults.length,
+            maxResults
+        },
+        salesPriceInfo,
+        results: enrichedResults
+    };
+}
+
+
+// Nur Artikelnamen
+async function searchItemsByNameText(searchString) {
+    return searchItemsByText(searchString, { includeDescription: false });
+}
+
+// Artikelnamen + Artikelbeschreibung
+async function searchItemsByNameAndDescriptionText(searchString) {
+    return searchItemsByText(searchString, { includeDescription: true });
 }
