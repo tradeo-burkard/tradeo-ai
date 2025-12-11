@@ -524,24 +524,23 @@ function setupVoiceInput() {
     const micBtn = document.getElementById('tradeo-ai-mic-btn');
     const inputField = document.getElementById('tradeo-ai-input');
 
-    // Prüfen ob Browser Support hat
     if (!('webkitSpeechRecognition' in window)) {
-        micBtn.style.display = 'none'; // Verstecken wenn nicht unterstützt
-        console.warn("Tradeo AI: Web Speech API nicht unterstützt.");
+        micBtn.style.display = 'none'; 
         return;
     }
 
     const recognition = new webkitSpeechRecognition();
-    recognition.continuous = false; // Stoppt automatisch nach einem Satz/Pause
-    recognition.interimResults = false; // Wir wollen nur das Endergebnis
-    recognition.lang = 'de-DE'; // Deutsch als Standardsprache
+    recognition.continuous = true; 
+    recognition.interimResults = false; 
+    recognition.lang = 'de-DE';
 
     let isRecording = false;
 
     recognition.onstart = function() {
         isRecording = true;
         micBtn.classList.add('recording');
-        inputField.setAttribute('placeholder', 'Sprechen Sie jetzt...');
+        // Angepasster Placeholder Text
+        inputField.setAttribute('placeholder', 'Diktat läuft... ("...und los" zum Senden)');
     };
 
     recognition.onend = function() {
@@ -551,28 +550,58 @@ function setupVoiceInput() {
     };
 
     recognition.onresult = function(event) {
-        let transcript = event.results[0][0].transcript;
-        console.log("Tradeo AI Speech:", transcript);
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+                let transcript = event.results[i][0].transcript;
+                console.log("Tradeo AI Speech Chunk:", transcript);
 
-        // Text intelligent anfügen
-        const currentVal = inputField.value;
-        if (currentVal.length > 0 && !currentVal.endsWith(' ')) {
-            inputField.value += " " + transcript;
-        } else {
-            inputField.value += transcript;
+                // --- NEUER TRIGGER: "und los" ---
+                // Sucht nach "und los" am Satzende (optional mit Satzzeichen)
+                const triggerRegex = /(?:\s|^)und\s+los[\.\!\?]?$/i;
+                
+                let shouldAutoSubmit = false;
+
+                if (triggerRegex.test(transcript)) {
+                    shouldAutoSubmit = true;
+                    // Entfernt "und los" aus dem Text
+                    transcript = transcript.replace(triggerRegex, "").trim();
+                }
+
+                // --- TEXT EINFÜGEN ---
+                if (transcript.length > 0) {
+                    const currentVal = inputField.value;
+                    if (currentVal.length > 0 && !currentVal.endsWith(' ')) {
+                        inputField.value += " " + transcript;
+                    } else {
+                        inputField.value += transcript;
+                    }
+                    
+                    inputField.dispatchEvent(new Event('input'));
+                    inputField.scrollTop = inputField.scrollHeight; 
+                }
+
+                // --- AUTO SUBMIT ---
+                if (shouldAutoSubmit) {
+                    console.log("Tradeo AI: 'und los' erkannt -> Sende...");
+                    recognition.stop(); 
+                    
+                    setTimeout(() => {
+                        const sendBtn = document.getElementById('tradeo-ai-send-btn');
+                        if (sendBtn && !sendBtn.disabled) {
+                            sendBtn.click();
+                        }
+                    }, 300);
+                    return; 
+                }
+            }
         }
-        
-        // Trigger Input Event für eventuelle Listener
-        inputField.dispatchEvent(new Event('input'));
-        inputField.focus();
     };
 
     recognition.onerror = function(event) {
         console.error("Tradeo AI Speech Error:", event.error);
-        micBtn.classList.remove('recording');
-        
-        if (event.error === 'not-allowed') {
-            alert("Zugriff auf Mikrofon verweigert. Bitte in den Browsereinstellungen erlauben.");
+        if (event.error !== 'no-speech') {
+             micBtn.classList.remove('recording');
+             isRecording = false;
         }
     };
 
