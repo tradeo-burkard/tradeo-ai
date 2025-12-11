@@ -91,13 +91,17 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
     }
 }
 
+// DATEI: tradeo-burkard/tradeo-ai/tradeo-ai-main/plentyApi.js
+// Ersetze die Funktion fetchFullOrderDetails komplett durch diese Version:
+
 /**
- * Holt komplexe Order-Details inkl. Items, Bestand UND ADRESSEN.
+ * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN und TRACKING.
  */
 async function fetchFullOrderDetails(orderId) {
     try {
-        // 1. Hole Order mit Basis-Relationen
-        const orderData = await makePlentyCall(`/rest/orders/${orderId}?with[]=orderItems&with[]=relations&with[]=amounts&with[]=dates&with[]=addressRelations`);
+        // 1. Hole Order mit Basis-Relationen + shippingPackages (NEU)
+        // wir fügen 'shippingPackages' hinzu, um Tracking-Codes zu erhalten
+        const orderData = await makePlentyCall(`/rest/orders/${orderId}?with[]=orderItems&with[]=relations&with[]=amounts&with[]=dates&with[]=addressRelations&with[]=shippingPackages`);
         
         if (!orderData) throw new Error("Order not found");
 
@@ -105,49 +109,69 @@ async function fetchFullOrderDetails(orderId) {
             meta: { type: "PLENTY_ORDER_FULL_EXPORT", orderId: orderId, timestamp: new Date().toISOString() },
             order: orderData,
             stocks: [],
-            addresses: [] // Hier kommen die Klartext-Adressen rein
+            addresses: [],
+            shippingInfo: {
+                profileName: "Unknown",
+                provider: "Unknown"
+            }
         };
 
-        // 2. Adressen auflösen (NEU)
-        // Wir schauen in die addressRelations (Rechnung=1, Lieferung=2) und holen die Details
+        // 2. Adressen auflösen
         if (orderData.addressRelations && orderData.addressRelations.length > 0) {
             const addressPromises = orderData.addressRelations.map(async (rel) => {
                 try {
-                    // API Call für die echte Adresse
                     const addrDetail = await makePlentyCall(`/rest/accounts/addresses/${rel.addressId}`);
-                    // Wir fügen den Typ (Rechnung/Lieferung) hinzu, damit die AI es unterscheiden kann
                     return { 
                         relationType: rel.typeId === 1 ? "Billing/Rechnung" : (rel.typeId === 2 ? "Shipping/Lieferung" : "Other"),
                         ...addrDetail 
                     };
                 } catch (e) {
-                    console.warn(`Konnte Adresse ${rel.addressId} nicht laden`, e);
                     return null;
                 }
             });
-            
-            // Warten bis alle Adressen geladen sind und null-Werte filtern
             const loadedAddresses = await Promise.all(addressPromises);
             result.addresses = loadedAddresses.filter(a => a !== null);
         }
 
-        // 3. Bestände holen (wie gehabt)
-        const variationIds = orderData.orderItems
-            .filter(item => item.typeId === 3 || item.typeId === 1)
-            .map(item => item.itemVariationId);
+        // 3. Bestände holen
+        if (orderData.orderItems) {
+            const variationIds = orderData.orderItems
+                .filter(item => item.typeId === 3 || item.typeId === 1)
+                .map(item => item.itemVariationId);
+            
+            const uniqueVarIds = [...new Set(variationIds)];
+            
+            const stockPromises = uniqueVarIds.map(async (vid) => {
+                try {
+                    const stockData = await makePlentyCall(`/rest/stockmanagement/stock?variationId=${vid}&warehouseId=1`);
+                    return { variationId: vid, data: stockData };
+                } catch (e) {
+                    return { variationId: vid, error: "Could not fetch stock" };
+                }
+            });
+            result.stocks = await Promise.all(stockPromises);
+        }
 
-        const uniqueVarIds = [...new Set(variationIds)];
-
-        const stockPromises = uniqueVarIds.map(async (vid) => {
+        // 4. (NEU) Versandart-Name auflösen
+        // Die Order enthält meist shippingProfileId. Wir holen den Klartext-Namen dazu.
+        if (orderData.shippingProfileId) {
             try {
-                const stockData = await makePlentyCall(`/rest/stockmanagement/stock?variationId=${vid}&warehouseId=1`);
-                return { variationId: vid, data: stockData };
+                const profileData = await makePlentyCall(`/rest/orders/shipping/profiles/${orderData.shippingProfileId}`);
+                // Struktur variiert je nach Plenty-Version, wir versuchen backendName oder name
+                result.shippingInfo.profileName = profileData.backendName || profileData.name || ("ID_" + orderData.shippingProfileId);
+                
+                // Versuch den Provider abzuleiten (DHL, UPS, etc.)
+                const lowerName = result.shippingInfo.profileName.toLowerCase();
+                if (lowerName.includes('dhl')) result.shippingInfo.provider = "DHL";
+                else if (lowerName.includes('ups')) result.shippingInfo.provider = "UPS";
+                else if (lowerName.includes('gls')) result.shippingInfo.provider = "GLS";
+                else if (lowerName.includes('spedition')) result.shippingInfo.provider = "Spedition";
+                
             } catch (e) {
-                return { variationId: vid, error: "Could not fetch stock" };
+                console.warn("Konnte Shipping Profile nicht laden:", e);
+                result.shippingInfo.error = e.toString();
             }
-        });
-
-        result.stocks = await Promise.all(stockPromises);
+        }
 
         return result;
 
