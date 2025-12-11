@@ -417,6 +417,7 @@ function initConversationUI() {
             </div>
             <textarea id="tradeo-ai-input" placeholder="Anweisung an AI..."></textarea>
             <button id="tradeo-ai-send-btn">Go</button>
+            <button id="tradeo-ai-test-props-btn" style="margin-left: 5px; background: #6c757d; color: white; border: none; padding: 0 10px; border-radius: 4px; font-size: 11px;">Test Props</button>
         </div>
     `;
     mainContainer.prepend(copilotContainer);
@@ -609,6 +610,13 @@ function setupButtons(originalReplyBtn) {
 
     // Logic: Send Button & Enter
     document.getElementById('tradeo-ai-send-btn').addEventListener('click', () => runAI());
+
+    // NEU: Listener für Test Button
+    const testBtn = document.getElementById('tradeo-ai-test-props-btn');
+    if (testBtn) {
+        testBtn.addEventListener('click', () => window.testItemProperties());
+    }
+
     document.getElementById('tradeo-ai-input').addEventListener('keydown', (e) => { 
         if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runAI(); }
     });
@@ -981,52 +989,77 @@ window.testPlentyConnection = async function() {
     }
 };
 
-/**
- * TEST: Holt Order Item Properties (aus deinem Screenshot)
- * Endpoint: /rest/orders/items/{orderItemId}/properties
- * * Nutzung: window.testItemProperties() in der Konsole eingeben.
- * (Sucht sich automatisch eine gültige Item-ID aus dem letzten Auftrag, damit du nicht suchen musst)
- */
-window.testItemProperties = async function(manualItemId = null) {
-    console.log("🕵️ Starte Test für Order Item Properties...");
+// Aktualisierte Test-Funktion: Exportiert Daten als Plain Text für AI-Training
+window.testItemProperties = async function(manualOrderId = null) {
+    const btn = document.getElementById('tradeo-ai-test-props-btn');
+    if(btn) btn.innerText = "⏳ Export..."; 
+
+    console.log("🕵️ Starte Daten-Export für AI...");
 
     try {
-        let itemId = manualItemId;
+        let orderId = manualOrderId;
 
-        // 1. Wenn keine ID übergeben wurde, holen wir uns schnell eine echte aus dem letzten Auftrag
-        if (!itemId) {
-            console.log("Keine ID angegeben. Suche nach dem neuesten Auftrag...");
-            // Wir laden den letzten Auftrag inkl. OrderItems
-            const orders = await callPlenty('/rest/orders?itemsPerPage=1&with[]=orderItems');
-            
-            if (orders.entries && orders.entries.length > 0 && orders.entries[0].orderItems.length > 0) {
-                const order = orders.entries[0];
-                itemId = order.orderItems[0].id; // Nimm das erste Item
-                console.log(`💡 Gefunden: Auftrag ID ${order.id}, nutze Item ID ${itemId}`);
+        // 1. Order ID finden
+        if (!orderId) {
+            const orders = await callPlenty('/rest/orders?itemsPerPage=1');
+            if (orders.entries && orders.entries.length > 0) {
+                orderId = orders.entries[0].id;
             } else {
-                console.warn("❌ Keine Aufträge oder Items im System gefunden.");
-                alert("Konnte keine Test-ID finden (System leer?).");
+                alert("Keine Aufträge gefunden.");
                 return;
             }
         }
 
-        // 2. Der eigentliche Call aus deinem Screenshot
-        console.log(`🚀 Rufe Properties für Item ${itemId} ab...`);
-        const endpoint = `/rest/orders/items/${itemId}/properties`;
-        
-        const data = await callPlenty(endpoint);
+        // 2. Order Daten laden
+        const orderData = await callPlenty(`/rest/orders/${orderId}?with[]=orderItems`);
 
-        // 3. Ergebnis
-        console.log("✅ ERGEBNIS (Properties):", data);
+        // 3. Bestandsdaten laden (Parallel)
+        const items = orderData.orderItems || [];
+        const variationIds = [...new Set(items
+            .map(item => item.itemVariationId)
+            .filter(id => id && id > 0)
+        )];
         
-        if (Array.isArray(data) && data.length === 0) {
-            alert(`Abruf erfolgreich für Item ${itemId}, aber Liste war leer ( [] ).`);
-        } else {
-            alert(`Erfolg! Daten für Item ${itemId} geladen. Siehe Konsole (F12).`);
+        const stockPromises = variationIds.map(async (vid) => {
+            try {
+                const s = await callPlenty(`/rest/stockmanagement/stock?variationId=${vid}`);
+                return { variationId: vid, data: s.entries || s };
+            } catch (e) { return { variationId: vid, error: e.toString() }; }
+        });
+        
+        const stockResults = await Promise.all(stockPromises);
+
+        // 4. ALLES ZUSAMMENPACKEN
+        // Wir erstellen ein Objekt, das genau so aussieht, wie die AI es später sehen wird
+        const aiTrainingData = {
+            meta: {
+                type: "PLENTY_ORDER_FULL_EXPORT",
+                orderId: orderId,
+                timestamp: new Date().toISOString()
+            },
+            order: orderData,
+            stocks: stockResults
+        };
+
+        // 5. Als String formatieren (Pretty Print)
+        const plainText = JSON.stringify(aiTrainingData, null, 2);
+
+        // A) Versuch: In die Zwischenablage kopieren
+        try {
+            await navigator.clipboard.writeText(plainText);
+        } catch (clipboardErr) {
+            console.warn("Clipboard Zugriff verweigert, Fallback auf Konsole.");
         }
 
+        // B) Ausgabe in Konsole (als Text, damit man es markieren kann)
+        console.group("📋 AI TRAINING DATEN (Kopier diesen Block)");
+        console.log(plainText);
+        console.groupEnd();
+
     } catch (e) {
-        console.error("❌ Fehler beim Test:", e);
-        alert("Fehler: " + e);
+        console.error("Fehler:", e);
+        alert("Fehler: " + e.toString());
+    } finally {
+        if(btn) btn.innerText = "Test Order"; 
     }
 };
