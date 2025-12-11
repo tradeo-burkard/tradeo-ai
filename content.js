@@ -614,7 +614,7 @@ function setupButtons(originalReplyBtn) {
     // NEU: Listener für Test Button
     const testBtn = document.getElementById('tradeo-ai-test-props-btn');
     if (testBtn) {
-        testBtn.addEventListener('click', () => window.testItemProperties());
+        testBtn.addEventListener('click', () => window.getOrderInfo());
     }
 
     document.getElementById('tradeo-ai-input').addEventListener('keydown', (e) => { 
@@ -990,7 +990,7 @@ window.testPlentyConnection = async function() {
 };
 
 // Aktualisierte Test-Funktion: Exportiert Daten als Plain Text für AI-Training
-window.testItemProperties = async function(manualOrderId = null) {
+window.getOrderInfo = async function(manualOrderId = null) {
     const btn = document.getElementById('tradeo-ai-test-props-btn');
     if(btn) btn.innerText = "⏳ Export..."; 
 
