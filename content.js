@@ -81,20 +81,13 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
    - Nutze 'searchItemsByText' nur, wenn der Kunde dich EXPLIZIT bittet, anhand von Text / Artikelbezeichnung zu suchen, z.B.:
      * "Bitte alle Artikel prüfen, die im Namen 'DELL 1.8TB 12G 10K SAS' enthalten."
      * "Suche alle Artikel, deren Artikeltext 0JY57X enthält."
-   - Übergib als Suchtext möglichst nur den relevanten Ausschnitt (z.B. "DELL 1.8TB 12G 10K SAS", nicht den ganzen Satz).
-   - Das Tool arbeitet in zwei Modi:
-     * **mode: "name"** – nur Artikelnamen.
-     * **mode: "nameAndDescription"** – Artikelnamen + Artikelbeschreibung.
-   - Suchlogik:
-     * Zuerst wird versucht, Artikel zu finden, deren Name/Beschreibung den kompletten Suchstring enthält.
-     * Falls keine Treffer, werden alle "Bausteine" (Wörter) des Suchstrings verwendet; ein Artikel wird nur akzeptiert, wenn er ALLE Bausteine enthält (Reihenfolge egal).
-   - Das Tool filtert intern bereits alle Ergebnisse heraus, deren Name oder Beschreibung "hardware care pack" oder "upgrade auf" (unabhängig von Groß-/Kleinschreibung) enthalten.
-   - Das Tool liefert pro Treffer umfangreiche Daten:
-     * komplette Variation und komplettes Item,
-     * ermittelten Namen und Beschreibung (DE),
-     * Lagerbestände (Stock) pro Variation,
-     * alle hinterlegten Verkaufspreise pro Variation (inkl. SalesPrice-Metadaten wie Währung/Land/Kundengruppe).
-   - Du bist dafür verantwortlich, aus diesen vielen Informationen das Relevante für die Antwort auszuwählen (z.B. Standardpreis vs. Schweizer Preis, relevante Lagerorte, geeignete Varianten).
+   - Übergib als Suchtext möglichst nur den relevanten Ausschnitt.
+   - **Suchlogik ("Smart Token Intersection"):** Das Tool zerlegt den Suchtext in Wörter ("Tokens"), findet das spezifischste Wort (wenigste Treffer) und filtert dann die Ergebnisse so, dass *alle* Wörter im Namen oder der Beschreibung enthalten sein müssen.
+   - **WICHTIG - ARTIKELNUMMERN:**
+     * Das Tool liefert ein Feld 'articleNumber' (6-stellige Zahl, beginnend mit 1, z.B. 105400). **Nutze IMMER diese Nummer**, wenn du dem Kunden eine Artikelnummer gibst.
+     * Ignoriere die 'variationNumber' (oft beginnend mit "SVR-..." oder "VAR-..."). Diese ist rein technisch und für den Kunden uninteressant. Erwähne "SVR-" Nummern NICHT im Text.
+   - **Filter:** Ergebnisse mit "hardware care pack" oder "upgrade auf" werden automatisch ausgefiltert.
+   - **Daten:** Du erhältst Stocks und Preise (SalesPrice-Metadaten). Wähle intelligent die passenden Preise (z.B. CHF für Schweiz) und prüfe, ob der Netto-Bestand > 0 ist.
 
 3. **Verfügbarkeit & Preise:**
    - Prüfe Lagerbestände:
@@ -1528,108 +1521,116 @@ window.testPlentyConnection = async function() {
     }
 };
 
-// --- DEBUG: Vollständige Artikelsuche-Analyse ---
+// --- content.js (Debug Update) ---
+
 window.debugPlentyItemSearch = async function(rawSearch) {
     try {
         const searchText = (typeof rawSearch === 'string' ? rawSearch : '').trim();
-        if (!searchText) {
-            alert("Bitte zuerst einen Suchtext eingeben.");
+        if (!searchText) { alert("Bitte Suchtext eingeben."); return; }
+
+        console.clear();
+        console.group(`🚀 DEBUG: Smart Item Search für "${searchText}"`);
+
+        // 1. Tokens
+        const tokens = Array.from(new Set(searchText.split(/\s+/).map(t => t.trim()).filter(t => t.length > 1)));
+        console.log("📦 1. Tokens:", tokens);
+
+        // 2. Pre-Flight
+        console.group("📊 2. Token-Analyse (Pre-Flight)");
+        const stats = [];
+        for (const token of tokens) {
+            console.log(`Prüfe Token: "${token}"...`);
+            const p1 = callPlenty(`/rest/items/variations?itemsPerPage=1&lang=de&itemName=${encodeURIComponent(token)}`);
+            const p2 = callPlenty(`/rest/items/variations?itemsPerPage=1&lang=de&itemDescription=${encodeURIComponent(token)}`);
+            
+            const [r1, r2] = await Promise.all([p1, p2]);
+            const cName = r1 ? r1.totalsCount : 0;
+            const cDesc = r2 ? r2.totalsCount : 0;
+            const total = cName + cDesc;
+            
+            console.log(`   👉 "${token}": Name=${cName}, Desc=${cDesc} | Σ = ${total}`);
+            stats.push({ token, total });
+        }
+        console.groupEnd();
+
+        // 3. Gewinner
+        const validStats = stats.filter(s => s.total > 0).sort((a, b) => a.total - b.total);
+        if (validStats.length === 0) {
+            console.warn("❌ Keine Treffer für irgendein Token.");
+            console.groupEnd();
             return;
         }
+        const winner = validStats[0];
+        console.log(`🏆 3. Gewinner-Token: "${winner.token}" (Kleinste Menge: ${winner.total})`);
 
-        const itemsPerPage = 30;
-        const lang = "de";
-
-        // Tokenisierung genau wie in searchItemsByText
-        const tokens = Array.from(
-            new Set(
-                searchText
-                    .split(/\s+/)
-                    .map(t => t.trim())
-                    .filter(t => t.length > 1)
-            )
-        );
-
-        console.group(`🔍 PLENTY DEBUG ITEM SEARCH: "${searchText}"`);
-        console.log("Tokens:", tokens);
-
-        const buildEndpoint = (params) => {
-            const qp = new URLSearchParams({
-                itemsPerPage: String(itemsPerPage),
-                lang,
-                ...params
-            });
-            return `/rest/items/variations?${qp.toString()}`;
-        };
-
-        // 1️⃣ Direkte Suche: itemName = kompletter String
-        try {
-            const endpoint = buildEndpoint({ itemName: searchText });
-            console.groupCollapsed("1️⃣ Direkte Suche: itemName = voller String");
-            console.log("GET", endpoint);
-            const res = await callPlenty(endpoint, "GET");
-            console.log("Antwort (raw):", res);
-            console.log(
-                "entries length:",
-                res && Array.isArray(res.entries) ? res.entries.length : "n/a"
-            );
-            console.groupEnd();
-        } catch (e) {
-            console.error("Fehler bei direkter itemName-Suche:", e);
+        // 4. Fetch Loop
+        console.group(`📥 4. Lade ALLE Variationen für "${winner.token}"...`);
+        let allCandidates = [];
+        let page = 1;
+        let hasMore = true;
+        
+        while(hasMore) {
+            console.log(`   Lade Seite ${page}...`);
+            const pName = callPlenty(`/rest/items/variations?itemsPerPage=50&page=${page}&lang=de&itemName=${encodeURIComponent(winner.token)}`);
+            const pDesc = callPlenty(`/rest/items/variations?itemsPerPage=50&page=${page}&lang=de&itemDescription=${encodeURIComponent(winner.token)}`);
+            
+            const [rName, rDesc] = await Promise.all([pName, pDesc]);
+            const entries = [...(rName.entries || []), ...(rDesc.entries || [])];
+            
+            if (entries.length > 0) allCandidates.push(...entries);
+            
+            const lastPageName = rName.isLastPage;
+            const lastPageDesc = rDesc.isLastPage;
+            
+            if (lastPageName && lastPageDesc) hasMore = false;
+            else page++;
+            
+            if(page > 10) { console.warn("   ⚠️ Debug-Limit erreicht (10 Seiten)"); hasMore = false; }
         }
+        
+        const map = new Map();
+        allCandidates.forEach(c => map.set(c.id, c));
+        const uniqueCandidates = Array.from(map.values());
+        console.log(`✅ Geladen: ${uniqueCandidates.length} einzigartige Kandidaten.`);
+        console.groupEnd();
 
-        // 2️⃣ Direkte Suche: itemDescription = kompletter String
-        try {
-            const endpoint = buildEndpoint({ itemDescription: searchText });
-            console.groupCollapsed("2️⃣ Direkte Suche: itemDescription = voller String");
-            console.log("GET", endpoint);
-            const res = await callPlenty(endpoint, "GET");
-            console.log("Antwort (raw):", res);
-            console.log(
-                "entries length:",
-                res && Array.isArray(res.entries) ? res.entries.length : "n/a"
-            );
-            console.groupEnd();
-        } catch (e) {
-            console.error("Fehler bei direkter itemDescription-Suche:", e);
-        }
-
-        // 3️⃣ Einzelwort-Suchen je Token (Name + Beschreibung)
-        for (const token of tokens) {
-            try {
-                console.groupCollapsed(`🔹 Token "${token}"`);
-
-                // itemName = Token
-                const endpointName = buildEndpoint({ itemName: token });
-                console.log("GET (itemName):", endpointName);
-                const resName = await callPlenty(endpointName, "GET");
-                console.log("Antwort itemName (raw):", resName);
-                console.log(
-                    "itemName entries length:",
-                    resName && Array.isArray(resName.entries) ? resName.entries.length : "n/a"
-                );
-
-                // itemDescription = Token
-                const endpointDesc = buildEndpoint({ itemDescription: token });
-                console.log("GET (itemDescription):", endpointDesc);
-                const resDesc = await callPlenty(endpointDesc, "GET");
-                console.log("Antwort itemDescription (raw):", resDesc);
-                console.log(
-                    "itemDescription entries length:",
-                    resDesc && Array.isArray(resDesc.entries) ? resDesc.entries.length : "n/a"
-                );
-
-                console.groupEnd();
-            } catch (e) {
-                console.error(`Fehler bei Token-Suche für "${token}":`, e);
+        // 5. Filtering
+        console.group("🔍 5. Filterung (Matching)");
+        let matches = 0;
+        const limitDebug = 5; 
+        
+        for (const cand of uniqueCandidates) {
+            if (uniqueCandidates.length > 200 && matches < 1) {
+                console.log("   (Zu viele Kandidaten für Detail-Log, zeige nur Zusammenfassung...)");
+            }
+            
+            if (matches < limitDebug) {
+               try {
+                   // Item Details holen für Name Check
+                   const item = await callPlenty(`/rest/items/${cand.itemId}`);
+                   let name = "???";
+                   if(item.texts && item.texts[0]) name = item.texts[0].name1;
+                   
+                   const fullString = JSON.stringify(item).toLowerCase();
+                   const allIn = tokens.every(t => fullString.includes(t.toLowerCase()));
+                   
+                   if (allIn) {
+                       // HIER: Anzeige angepasst, damit du siehst was die AI später als "ArticleNumber" bekommt
+                       console.log(`   ✅ MATCH: [Artikel: ${cand.itemId} | Var: ${cand.id}] ${name}`);
+                       matches++;
+                   }
+               } catch(e) { console.error(e); }
+            } else {
+                matches++;
             }
         }
-
+        console.log(`🎉 5. Ergebnis: Ca. ${matches} echte Treffer.`);
         console.groupEnd();
-        alert('Debug-Suche ausgeführt. Siehe Browser-Konsole (PLENTY DEBUG ITEM SEARCH).');
+        console.log("✅ DEBUG FINISHED");
+        console.groupEnd();
+
     } catch (err) {
-        console.error("debugPlentyItemSearch Fehler:", err);
-        alert("Fehler in debugPlentyItemSearch: " + err);
+        console.error("Debug Error:", err);
     }
 };
 
