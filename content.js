@@ -423,7 +423,7 @@ function initConversationUI() {
     copilotContainer.id = 'tradeo-ai-copilot-zone';
     copilotContainer.classList.add('tradeo-collapsed');
 
-    // Neues HTML Layout mit Settings Panel
+    // Layout Update: Mic Button nach rechts verschoben
     copilotContainer.innerHTML = `
         <div id="tradeo-ai-dummy-draft"><em>🤖 Bereite Antwortentwurf vor...</em></div>
         
@@ -458,14 +458,18 @@ function initConversationUI() {
                 <button id="tradeo-ai-model-btn" type="button">2.5 Flash</button>
                 <div id="tradeo-ai-model-dropdown" class="hidden"></div>
             </div>
-            <textarea id="tradeo-ai-input" placeholder="Anweisung an AI..."></textarea>
+
+            <button id="tradeo-ai-mic-btn" title="Spracheingabe (Klick zum Starten/Stoppen)">🎤</button>
+            
             <button id="tradeo-ai-send-btn">Go</button>
+
+            <textarea id="tradeo-ai-input" placeholder="Anweisung an AI..."></textarea>
         </div>
     `;
     mainContainer.prepend(copilotContainer);
     
     // UI Event Listener laden
-    setupSettingsLogic(); // <--- NEU
+    setupSettingsLogic();
     
     const originalReplyBtn = document.querySelector('.conv-reply');
     if(originalReplyBtn) setupButtons(originalReplyBtn);
@@ -475,9 +479,13 @@ function initConversationUI() {
     setupModelSelector();
     setupEditorObserver();
     setupResizeHandler();
+    
+    // Voice Input aktivieren
+    if (typeof setupVoiceInput === 'function') setupVoiceInput();
+
     copilotContainer.style.display = 'block';
 
-    // Cache laden (Unverändert)
+    // Cache laden
     const ticketId = getTicketIdFromUrl();
     if (ticketId) {
         const storageKey = `draft_${ticketId}`;
@@ -510,6 +518,74 @@ function initConversationUI() {
     } else {
         runAI(true);
     }
+}
+
+function setupVoiceInput() {
+    const micBtn = document.getElementById('tradeo-ai-mic-btn');
+    const inputField = document.getElementById('tradeo-ai-input');
+
+    // Prüfen ob Browser Support hat
+    if (!('webkitSpeechRecognition' in window)) {
+        micBtn.style.display = 'none'; // Verstecken wenn nicht unterstützt
+        console.warn("Tradeo AI: Web Speech API nicht unterstützt.");
+        return;
+    }
+
+    const recognition = new webkitSpeechRecognition();
+    recognition.continuous = false; // Stoppt automatisch nach einem Satz/Pause
+    recognition.interimResults = false; // Wir wollen nur das Endergebnis
+    recognition.lang = 'de-DE'; // Deutsch als Standardsprache
+
+    let isRecording = false;
+
+    recognition.onstart = function() {
+        isRecording = true;
+        micBtn.classList.add('recording');
+        inputField.setAttribute('placeholder', 'Sprechen Sie jetzt...');
+    };
+
+    recognition.onend = function() {
+        isRecording = false;
+        micBtn.classList.remove('recording');
+        inputField.setAttribute('placeholder', 'Anweisung an AI...');
+    };
+
+    recognition.onresult = function(event) {
+        let transcript = event.results[0][0].transcript;
+        console.log("Tradeo AI Speech:", transcript);
+
+        // Text intelligent anfügen
+        const currentVal = inputField.value;
+        if (currentVal.length > 0 && !currentVal.endsWith(' ')) {
+            inputField.value += " " + transcript;
+        } else {
+            inputField.value += transcript;
+        }
+        
+        // Trigger Input Event für eventuelle Listener
+        inputField.dispatchEvent(new Event('input'));
+        inputField.focus();
+    };
+
+    recognition.onerror = function(event) {
+        console.error("Tradeo AI Speech Error:", event.error);
+        micBtn.classList.remove('recording');
+        
+        if (event.error === 'not-allowed') {
+            alert("Zugriff auf Mikrofon verweigert. Bitte in den Browsereinstellungen erlauben.");
+        }
+    };
+
+    micBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (isRecording) {
+            recognition.stop();
+        } else {
+            recognition.start();
+        }
+    });
 }
 
 function setupSettingsLogic() {
