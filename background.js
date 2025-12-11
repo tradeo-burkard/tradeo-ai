@@ -12,9 +12,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Async wait
     }
 
-    // NEU: Spezifischer Call für den AI Agent ("Function Calling")
+    // Order Details (Bestehend)
     if (request.action === 'GET_ORDER_FULL') {
         fetchFullOrderDetails(request.orderId)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(error => {
+                 sendResponse({ success: false, error: error.toString() });
+            });
+        return true; // Async wait
+    }
+
+    // NEU: Artikel Details
+    if (request.action === 'GET_ITEM_DETAILS') {
+        fetchItemDetails(request.identifier)
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(error => {
+                 sendResponse({ success: false, error: error.toString() });
+            });
+        return true; // Async wait
+    }
+
+    // NEU: Kunden Details
+    if (request.action === 'GET_CUSTOMER_DETAILS') {
+        fetchCustomerDetails(request.contactId)
             .then(data => sendResponse({ success: true, data: data }))
             .catch(error => {
                  sendResponse({ success: false, error: error.toString() });

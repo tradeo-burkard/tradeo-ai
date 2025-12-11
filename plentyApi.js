@@ -156,3 +156,84 @@ async function fetchFullOrderDetails(orderId) {
         throw error;
     }
 }
+
+/**
+ * Holt Artikeldetails (Variation) und Netto-Bestand.
+ * Versucht zuerst die Suche über Variation-ID, dann über Artikelnummer.
+ */
+async function fetchItemDetails(identifier) {
+    try {
+        let variationData = null;
+
+        // 1. Versuch: Direkter Abruf über ID (falls numerisch)
+        if (!isNaN(identifier)) {
+            try {
+                // Wir nutzen die Search-Route, da sie flexibler ist
+                const response = await makePlentyCall(`/rest/items/variations?id=${identifier}`);
+                if (response.entries && response.entries.length > 0) {
+                    variationData = response.entries[0];
+                }
+            } catch (e) {
+                console.log("Keine Variation mit ID gefunden, versuche Nummer...");
+            }
+        }
+
+        // 2. Versuch: Suche über exakte Nummer (falls noch nichts gefunden)
+        if (!variationData) {
+            const response = await makePlentyCall(`/rest/items/variations?numberExact=${encodeURIComponent(identifier)}`);
+            if (response.entries && response.entries.length > 0) {
+                variationData = response.entries[0];
+            }
+        }
+
+        if (!variationData) throw new Error(`Artikel/Variation '${identifier}' nicht gefunden.`);
+
+        const variationId = variationData.id;
+        const itemId = variationData.itemId;
+
+        // 3. Zusatzdaten laden (Bestand & Basis-Artikeldaten für Name)
+        const [stockData, itemBaseData] = await Promise.all([
+            makePlentyCall(`/rest/stockmanagement/stock?variationId=${variationId}&warehouseId=1`), // Warehouse 1 als Standard
+            makePlentyCall(`/rest/items/${itemId}`)
+        ]);
+
+        return {
+            meta: { type: "PLENTY_ITEM_EXPORT", timestamp: new Date().toISOString() },
+            variation: variationData,
+            item: itemBaseData, // Enthält oft den allgemeinen Namen
+            stock: stockData
+        };
+
+    } catch (error) {
+        console.error("Fehler bei fetchItemDetails:", error);
+        throw error;
+    }
+}
+
+/**
+ * Holt Kundendaten und die letzten Bestellungen.
+ */
+async function fetchCustomerDetails(contactId) {
+    try {
+        // 1. Stammdaten holen
+        const contactData = await makePlentyCall(`/rest/accounts/contacts/${contactId}`);
+        
+        // 2. Letzte 5 Bestellungen holen (absteigend sortiert)
+        // itemsPerPage=5, sortierte nach ID desc (neueste zuerst)
+        const orderHistory = await makePlentyCall(`/rest/orders?contactId=${contactId}&itemsPerPage=5&sortBy=id&sortOrder=desc`);
+
+        // 3. Rechnungsadresse(n) holen (optional, aber nützlich für Kontext)
+        // Wir nehmen hier vereinfacht an, dass wir die Adressen aus den Orders oder separat laden könnten.
+        // Um API-Calls zu sparen, verlassen wir uns erstmal auf die Stammdaten und Orders.
+
+        return {
+            meta: { type: "PLENTY_CUSTOMER_EXPORT", timestamp: new Date().toISOString() },
+            contact: contactData,
+            recentOrders: orderHistory.entries || [] 
+        };
+
+    } catch (error) {
+        console.error("Fehler bei fetchCustomerDetails:", error);
+        throw error;
+    }
+}
