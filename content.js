@@ -56,7 +56,8 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
      * **Sprache:** Passe die URL wenn möglich an die Kundensprache an (z.B. 'dhl.de/de/...' vs 'dhl.de/en/...').
      * **Parameter:** Achte penibel auf die korrekten URL-Parameter (z.B. 'piececode' für DHL, 'tracknum' für UPS, 'match' für GLS).
    - **Versandart:** Nutze das Feld 'shippingInfo.profileName' (z.B. "DHL Paket" oder "UPS Standard"), um dem Kunden zu bestätigen, womit versendet wurde.
-   - **Datum:** Nutze 'exitDate' oder 'doneAt' für das Versanddatum.
+   - **Datum:** Nutze das Datum mit der typeId 7 (Warenausgang) aus der 'dates'-Liste für das Versanddatum.
+   - **Erwartete Laufzeit / Zustelldatum(sbereich):** Schätze das Zustelldatum unter Angabe von "normalerweise" unter Berücksichtigung von Zielland und Versanddatum und Versandart und dessen typische Zustellzeit ins Zielland (recherchieren).
 2. **Warnung:** Sage NIEMALS "ist zugestellt", nur weil Status 7 ist. Status 7 heißt nur "versendet".
 
 **B. BEI ARTIKELN (getItemDetails):**
