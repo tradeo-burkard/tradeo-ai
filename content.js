@@ -417,11 +417,21 @@ async function generateDraftHeadless(contextText) {
             const data = await response.json();
             if (!response.ok) throw new Error(data.error?.message || "Headless API Error");
 
-            const candidate = data.candidates[0];
+            // --- FIX START: Defensive Checks ---
+            const candidate = data.candidates?.[0];
+            
+            // Fall 1: Keine Kandidaten oder Content wurde wegen Safety/Filter blockiert
+            if (!candidate || !candidate.content || !candidate.content.parts) {
+                console.warn(`Tradeo AI Headless: ⚠️ Antwort blockiert oder leer. FinishReason: ${candidate?.finishReason}`);
+                return null; // Abbruch, da wir nichts verarbeiten können
+            }
+            // --- FIX END ---
+
             const content = candidate.content;
             const parts = content.parts;
 
             // Hat die AI einen FUNCTION CALL?
+            // Da wir oben geprüft haben, ist 'parts' hier sicher ein Array
             const functionCallPart = parts.find(p => p.functionCall);
 
             if (functionCallPart) {
@@ -482,17 +492,21 @@ async function generateDraftHeadless(contextText) {
             }
 
             // Keine Function Call -> Finale Text-Antwort
-            let rawText = parts[0].text;
+            let rawText = parts[0].text || ""; // Safety Fallback falls text leer
             rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
             
             try { 
                 finalResponse = JSON.parse(rawText); 
             } catch(e) { 
                 console.warn("Tradeo AI Headless JSON Parse Error. Fallback auf Raw Text.");
-                finalResponse = { 
-                    draft: rawText.replace(/\n/g, '<br>'), 
-                    feedback: "Automatisch generiert (Formatierung evtl. abweichend)" 
-                }; 
+                if(rawText) {
+                    finalResponse = { 
+                        draft: rawText.replace(/\n/g, '<br>'), 
+                        feedback: "Automatisch generiert (Formatierung evtl. abweichend)" 
+                    }; 
+                } else {
+                    return null; // Wenn Text leer war
+                }
             }
             break; // Loop beenden
         }
