@@ -351,39 +351,64 @@ function addDraftMessage(htmlContent) {
     msgDiv.querySelector('.btn-adopt').addEventListener('click', function(e) {
         e.stopPropagation();
         
+        // 1. WICHTIG: Diesen Text als den "aktuellsten" Stand definieren.
+        // Das garantiert, dass wenn der User den Editor später wieder schließt,
+        // genau DIESER Text wieder im Dummy Draft erscheint (Observer-Logik).
         window.aiState.lastDraft = htmlContent;
 
-        // Klügere Logik beim Übernehmen:
-        // Wir schauen, ob der Editor sichtbar ist, nicht nur auf die Variable
-        const editorBlock = document.querySelector('.conv-reply-block');
-        const isEditorVisible = editorBlock && !editorBlock.classList.contains('hidden');
+        const btn = e.target;
+        const originalText = btn.innerText;
+        btn.innerText = "⏳...";
 
-        if (window.aiState.isRealMode || isEditorVisible) {
-             const editable = document.querySelector('.note-editable');
-             if (editable) {
-                 setEditorContent(editable, htmlContent);
-             } else {
-                 // Fallback: Editor aufmachen
-                 document.querySelector('.conv-reply').click();
-                 waitForSummernote((ed) => setEditorContent(ed, htmlContent));
-             }
+        // 2. Prüfen: Ist der Editor schon offen?
+        const editorBlock = document.querySelector('.conv-reply-block');
+        const replyBtn = document.querySelector('.conv-reply');
+        
+        // FreeScout nutzt meist 'hidden' Klasse oder style display:none
+        const isEditorVisible = editorBlock && !editorBlock.classList.contains('hidden') && editorBlock.style.display !== 'none';
+
+        if (isEditorVisible) {
+            // A: Editor ist bereits offen -> Direkt einfügen
+            const editable = document.querySelector('.note-editable');
+            if (editable) {
+                window.aiState.isRealMode = true; // Modus scharf schalten
+                setEditorContent(editable, htmlContent);
+                finishAdopt(btn, originalText);
+            }
         } else {
-            const dummy = document.getElementById('tradeo-ai-dummy-draft');
-            if (dummy) {
-                dummy.innerHTML = htmlContent;
-                dummy.style.display = 'block';
+            // B: Editor ist ZU -> Öffnen erzwingen
+            if (replyBtn) {
+                // Wir setzen RealMode auf true, damit der Observer weiß, 
+                // dass wir jetzt im Editier-Modus sind.
+                window.aiState.isRealMode = true; 
+                
+                replyBtn.click(); // Klick auf den "Antworten Pfeil" simulieren
+                
+                // Warten bis Summernote initialisiert ist
+                waitForSummernote((editable) => {
+                    setEditorContent(editable, htmlContent);
+                    finishAdopt(btn, originalText);
+                    
+                    // Sicherheitshalber: Dummy verstecken (macht der Observer eigentlich auch)
+                    const dummy = document.getElementById('tradeo-ai-dummy-draft');
+                    if(dummy) dummy.style.display = 'none';
+                });
+            } else {
+                console.error("Tradeo AI: 'Antworten'-Button nicht gefunden.");
+                btn.innerText = "❌ Fehler";
             }
         }
-        
-        const btn = e.target;
-        btn.innerText = "✅ Übernommen";
-        setTimeout(() => btn.innerText = "⚡ Übernehmen", 1500);
     });
 
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
 }
 
+// Hilfsfunktion für Button-Reset
+function finishAdopt(btn, originalText) {
+    btn.innerText = "✅ Übernommen";
+    setTimeout(() => btn.innerText = originalText, 1500);
+}
 
 // --- CORE AI LOGIK ---
 
