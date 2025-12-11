@@ -49,22 +49,24 @@ window.aiState = {
 // --- CORE LOOPS (HEARTBEAT) ---
 
 function startHeartbeat() {
-    console.log("Tradeo AI: Heartbeat gestartet.");
+    console.log("Tradeo AI: Heartbeat gestartet (Global Mode).");
     setInterval(() => {
         const pageType = detectPageType();
         
+        // 1. UI & Lokaler DOM Scan (Abhängig von der Sicht)
         if (pageType === 'ticket') {
             // Wir sind im Ticket -> UI Rendern falls noch nicht da
             if (!document.getElementById('tradeo-ai-copilot-zone')) initConversationUI();
         } 
         else if (pageType === 'inbox') {
-            // Wir sind in einer Liste -> Scannen
+            // Wir sind in einer Liste -> Scannen der SICHTBAREN Tabelle (schneller als fetch)
             scanInboxTable();
         } 
-        else if (pageType === 'dashboard') {
-            // Wir sind auf dem Dashboard -> Hintergrund-Scan
-            scanDashboardFolders();
-        }
+        
+        // 2. Globaler Hintergrund-Scan (IMMER, egal wo wir sind)
+        // Scannt die fest definierten URLs (Servershop24 -> Nicht zugewiesen & Meine)
+        scanDashboardFolders();
+
     }, POLL_INTERVAL_MS);
 }
 
@@ -93,27 +95,43 @@ function scanInboxTable() {
 
 // --- LOGIC: DASHBOARD SPIDER ---
 
+// --- LOGIC: DASHBOARD SPIDER ---
+
 async function scanDashboardFolders() {
-    for (const url of DASHBOARD_FOLDERS_TO_SCAN) {
-        try {
-            const response = await fetch(url);
-            const text = await response.text();
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(text, 'text/html');
-            
-            const rows = Array.from(doc.querySelectorAll('tr.conv-row[data-conversation_id]'));
-            
-            rows.forEach(row => {
-                const id = row.getAttribute('data-conversation_id');
-                const previewEl = row.querySelector('.conv-preview');
-                const previewText = previewEl ? previewEl.innerText.trim() : "no-preview";
-                const currentHash = `${id}_${previewText.substring(0, 50)}_${previewText.length}`;
+    // Schutzmechanismus: Wenn ein Scan noch läuft, nicht noch einen starten
+    if (window.aiState.isBackgroundScanning) return;
+    
+    window.aiState.isBackgroundScanning = true;
+
+    try {
+        for (const url of DASHBOARD_FOLDERS_TO_SCAN) {
+            try {
+                // Wir fetchen die HTML der Ordner im Hintergrund
+                const response = await fetch(url);
+                const text = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, 'text/html');
                 
-                checkAndQueue(id, currentHash);
-            });
-        } catch (e) {
-            console.warn(`Tradeo AI: Konnte Dashboard-Ordner nicht scannen (${url}):`, e);
+                // Suche nach Ticket-Zeilen im gefetchten HTML
+                const rows = Array.from(doc.querySelectorAll('tr.conv-row[data-conversation_id]'));
+                
+                rows.forEach(row => {
+                    const id = row.getAttribute('data-conversation_id');
+                    const previewEl = row.querySelector('.conv-preview');
+                    const previewText = previewEl ? previewEl.innerText.trim() : "no-preview";
+                    
+                    // Hash erstellen
+                    const currentHash = `${id}_${previewText.substring(0, 50)}_${previewText.length}`;
+                    
+                    checkAndQueue(id, currentHash);
+                });
+            } catch (e) {
+                console.warn(`Tradeo AI: Hintergrund-Scan Fehler bei ${url}:`, e);
+            }
         }
+    } finally {
+        // Flag wieder freigeben, egal ob Fehler oder Erfolg
+        window.aiState.isBackgroundScanning = false;
     }
 }
 
@@ -355,13 +373,35 @@ function setupModelSelector() {
 }
 
 function setupButtons(originalReplyBtn) {
+    // 1. AI Button erstellen (wie bisher)
     const aiBtn = originalReplyBtn.cloneNode(true);
     aiBtn.classList.add('tradeo-ai-toolbar-btn');
     aiBtn.setAttribute('title', 'Mit AI Antworten');
     const icon = aiBtn.querySelector('.glyphicon') || aiBtn;
     if(icon) { icon.classList.remove('glyphicon-share-alt'); icon.classList.add('glyphicon-flash'); }
+    
+    // Einfügen NACH dem Original-Button
     originalReplyBtn.parentNode.insertBefore(aiBtn, originalReplyBtn.nextSibling);
     
+    // 2. Reset Button erstellen (NEU)
+    const resetBtn = document.createElement('button'); // Nutzen wir ein cleanes Element statt Clone, um Styles sauber zu halten
+    resetBtn.className = 'btn btn-default tradeo-ai-reset-btn'; // 'btn btn-default' für Bootstrap Basis-Styles
+    resetBtn.innerHTML = '<i class="glyphicon glyphicon-refresh"></i> Reset';
+    resetBtn.setAttribute('title', 'AI Gedächtnis löschen & neu starten');
+    
+    // Einfügen NACH dem AI-Button
+    aiBtn.parentNode.insertBefore(resetBtn, aiBtn.nextSibling);
+
+    // --- Event Listener ---
+
+    // Logic: Reset Button
+    resetBtn.addEventListener('click', function(e) {
+        e.preventDefault(); 
+        e.stopPropagation();
+        performFullReset();
+    });
+
+    // Logic: AI Button
     aiBtn.addEventListener('click', function(e) {
         e.preventDefault(); e.stopPropagation();
         originalReplyBtn.click();
@@ -372,11 +412,15 @@ function setupButtons(originalReplyBtn) {
             document.getElementById('tradeo-ai-dummy-draft').style.display = 'none';
         });
     });
+
+    // Logic: Original Button Hooks
     originalReplyBtn.addEventListener('click', () => {
         document.getElementById('tradeo-ai-dummy-draft').style.display = 'none';
         window.aiState.isRealMode = true;
         if(window.aiState.isGenerating) window.aiState.preventOverwrite = true;
     });
+
+    // Logic: Send Button & Enter
     document.getElementById('tradeo-ai-send-btn').addEventListener('click', () => runAI());
     document.getElementById('tradeo-ai-input').addEventListener('keydown', (e) => { 
         if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runAI(); }
@@ -529,8 +573,8 @@ async function runAI(isInitial = false) {
 // --- STANDARD UTILS ---
 
 // --- DEBUGGING / KONSOLE ---
-// Aufrufbar via Konsole mit: window.resetAI()
-window.resetAI = async function() {
+// Wurde umgebaut von window.resetAI zu interner Funktion für den Button
+async function performFullReset() {
     console.log("💣 Tradeo AI: Starte kompletten Reset...");
     
     // 1. Storage bereinigen (Nur Ticket-Daten, API Key behalten)
@@ -559,13 +603,17 @@ window.resetAI = async function() {
 
     // 3. UI Feedback
     const historyDiv = document.getElementById('tradeo-ai-chat-history');
-    if (historyDiv) historyDiv.innerHTML = '<div style="padding:20px; text-align:center; color:#999;">♻️ Reset durchgeführt.<br>Bitte Seite neu laden.</div>';
+    if (historyDiv) historyDiv.innerHTML = '<div style="padding:20px; text-align:center; color:#856404; background:#fff3cd; border:1px solid #ffeeba; margin:10px; border-radius:4px;"><strong>♻️ Reset erfolgreich!</strong><br>Der Verlauf wurde gelöscht.<br>Lade AI neu...</div>';
     
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
     if (dummyDraft) dummyDraft.innerHTML = '<em>Reset...</em>';
 
-    console.log("✅ Reset fertig. Bitte Seite neu laden (F5).");
-};
+    // 4. Automatisch neu starten nach kurzem Delay
+    setTimeout(() => {
+        console.log("🔄 Starte AI neu...");
+        runAI(true); // Neustart mit Initial-Prompt
+    }, 1500);
+}
 
 function getTicketIdFromUrl() {
     const match = window.location.href.match(/conversation\/(\d+)/);
