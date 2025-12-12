@@ -1029,7 +1029,7 @@ async function runAI(isInitial = false) {
     const input = document.getElementById('tradeo-ai-input');
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
     
-    // --- NEU: ID holen für Logging ---
+    // ID für Logging holen
     const cid = getTicketIdFromUrl() || "UNKNOWN";
 
     const storageData = await chrome.storage.local.get(['geminiApiKey']);
@@ -1047,7 +1047,7 @@ async function runAI(isInitial = false) {
     }
 
     if (!apiKey) {
-        renderChatMessage('system', "⚠️ Kein API Key gefunden.");
+        renderChatMessage('system', "⚠️ Kein API Key gefunden. Bitte in den Einstellungen hinterlegen.");
         return; 
     }
 
@@ -1055,12 +1055,15 @@ async function runAI(isInitial = false) {
     if(btn) { btn.disabled = true; btn.innerText = "..."; }
     
     const contextText = extractContextFromDOM(document);
+    
+    // History String bauen
     const historyString = window.aiState.chatHistory.map(e => {
         if(e.type === 'draft') return ""; 
         const role = e.type === 'user' ? 'User' : 'AI';
         return `${role}: ${e.content}`;
     }).join("\n");
     
+    // Aktuellen Draft auslesen (falls vorhanden)
     const currentDraft = window.aiState.isRealMode ? document.querySelector('.note-editable')?.innerHTML : dummyDraft.innerHTML;
 
     let contents = [
@@ -1102,12 +1105,28 @@ async function runAI(isInitial = false) {
             });
 
             const data = await response.json();
-            if (!response.ok) throw new Error(data.error?.message || "API Error");
+            
+            if (!response.ok) {
+                throw new Error(data.error?.message || `API Error: ${response.status}`);
+            }
 
-            const candidate = data.candidates[0];
+            // --- SAFETY FIX START: Prüfen ob Candidate existiert ---
+            const candidate = data.candidates?.[0];
+            
+            if (!candidate || !candidate.content) {
+                console.warn(`[CID: ${cid}] Tradeo AI: Leere Antwort von Gemini. FinishReason: ${candidate?.finishReason}`);
+                throw new Error(`Die AI hat keine Antwort generiert (Grund: ${candidate?.finishReason || 'Unbekannt'}). Bitte versuchen Sie es erneut.`);
+            }
+            
             const content = candidate.content;
-            const parts = content.parts;
+            
+            if (!content.parts || content.parts.length === 0) {
+                 console.warn(`[CID: ${cid}] Tradeo AI: Content vorhanden aber 'parts' leer.`);
+                 throw new Error("Leere Antwort erhalten.");
+            }
+            // --- SAFETY FIX END ---
 
+            const parts = content.parts;
             const functionCallPart = parts.find(p => p.functionCall);
 
             if (functionCallPart) {
@@ -1119,13 +1138,13 @@ async function runAI(isInitial = false) {
                 renderChatMessage('system', logText);
                 window.aiState.chatHistory.push({ type: "system", content: logText });
                 
-                // --- Log angepasst ---
                 console.log(`[CID: ${cid}] Tradeo AI: Function Call detected:`, fnName, fnArgs);
 
                 let functionResult = null;
                 let actionName = '';
                 let actionPayload = {};
 
+                // Tool Mapping
                 if (fnName === 'getOrderDetails') {
                     actionName = 'GET_ORDER_FULL';
                     actionPayload = { orderId: fnArgs.orderId };
@@ -1145,21 +1164,28 @@ async function runAI(isInitial = false) {
                 }
 
                 if (actionName) {
+                    // Auf API Antwort warten
                     const apiResult = await new Promise(resolve => {
                         chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => {
-                             resolve(response);
+                             // Runtime Error Check
+                             if (chrome.runtime.lastError) {
+                                 resolve({ success: false, error: chrome.runtime.lastError.message });
+                             } else {
+                                 resolve(response);
+                             }
                         });
                     });
                     
                     if(apiResult && apiResult.success) {
                         functionResult = apiResult.data;
                     } else {
-                        functionResult = { error: apiResult ? apiResult.error : "Unknown Error" };
+                        functionResult = { error: apiResult ? apiResult.error : "Unknown Error/Timeout" };
                     }
                 } else {
                     functionResult = { error: "Tool not implemented in frontend" };
                 }
 
+                // History aufbauen für nächsten Turn
                 contents.push(content); 
                 contents.push({
                     role: "function",
@@ -1172,10 +1198,11 @@ async function runAI(isInitial = false) {
                 });
 
                 turnCount++;
-                continue; 
+                continue; // Nächster Schleifendurchlauf (neuer Request an Gemini mit Tool-Ergebnis)
             }
 
-            let rawText = parts[0].text;
+            // Kein Function Call -> Text Antwort parsen
+            let rawText = parts[0].text || "";
             rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
             
             try { 
@@ -1188,26 +1215,29 @@ async function runAI(isInitial = false) {
                 if(!finalResponse.draft && finalResponse.text) finalResponse.draft = finalResponse.text;
 
             } catch(e) { 
-                // --- Log angepasst ---
                 console.warn(`[CID: ${cid}] Tradeo AI JSON Parse Error:`, e);
+                // Fallback wenn kein JSON
                 const fallbackHtml = rawText.replace(/\n/g, '<br>');
                 finalResponse = { 
                     draft: fallbackHtml, 
-                    feedback: "Achtung: AI Formatierung war fehlerhaft, Rohdaten werden angezeigt." 
+                    feedback: "Achtung: AI Formatierung war fehlerhaft (kein JSON), Rohdaten werden angezeigt." 
                 }; 
             }
-            break; 
+            break; // Schleife verlassen, da wir eine Antwort haben
         }
 
         if (finalResponse) {
             renderDraftMessage(finalResponse.draft);
             window.aiState.chatHistory.push({ type: "draft", content: finalResponse.draft });
             
-            renderChatMessage('ai', finalResponse.feedback);
-            window.aiState.chatHistory.push({ type: "ai", content: finalResponse.feedback });
+            if (finalResponse.feedback) {
+                renderChatMessage('ai', finalResponse.feedback);
+                window.aiState.chatHistory.push({ type: "ai", content: finalResponse.feedback });
+            }
             
             window.aiState.lastDraft = finalResponse.draft;
             
+            // Editor Logik
             if (window.aiState.isRealMode && !window.aiState.preventOverwrite) {
                 const editable = document.querySelector('.note-editable');
                 if (editable) setEditorContent(editable, finalResponse.draft);
@@ -1220,7 +1250,7 @@ async function runAI(isInitial = false) {
             }
             if(!isInitial && input) input.value = '';
 
-            // --- PERSISTENZ TEIL (den hast du vorhin schon geupdated) ---
+            // Speichern
             const ticketId = getTicketIdFromUrl();
             if (ticketId) {
                 const storageKey = `draft_${ticketId}`;
@@ -1239,18 +1269,14 @@ async function runAI(isInitial = false) {
                     
                     const saveObj = {};
                     saveObj[storageKey] = newData;
-                    chrome.storage.local.set(saveObj, () => {
-                        // --- Log angepasst ---
-                        console.log(`[CID: ${cid}] Tradeo AI: Verlauf gespeichert.`);
-                    });
+                    chrome.storage.local.set(saveObj);
                 });
             }
         }
 
     } catch(e) {
-        renderChatMessage('system', "Error: " + e.message);
-        // --- Log angepasst ---
-        console.error(`[CID: ${cid}] Error:`, e);
+        renderChatMessage('system', "❌ Error: " + e.message);
+        console.error(`[CID: ${cid}] Error in runAI:`, e);
     } finally {
         if(btn) { btn.disabled = false; btn.innerText = "Go"; }
         window.aiState.isGenerating = false; 
