@@ -1,6 +1,7 @@
 // --- KONFIGURATION ---
 const API_VERSION = "v1beta";
 const POLL_INTERVAL_MS = 2000; // Alle 2 Sekunden prüfen
+const LOCK_TTL_MS = 180000; // 3 Minuten Timeout für verwaiste Locks
 const AI_TIMEOUT_STANDARD = 180000; // 2 Min für Standard-Modelle (Flash, 2.5 Pro)
 const AI_TIMEOUT_SLOW = 600000;     // 10 Min für langsame Modelle (3 Pro)
 
@@ -220,6 +221,37 @@ const GEMINI_TOOLS = [
     }
 ];
 
+async function acquireLock(ticketId, type) {
+    const lockKey = `processing_${ticketId}`;
+    const result = await chrome.storage.local.get([lockKey]);
+    const existingLock = result[lockKey];
+
+    // Prüfen ob valider Lock existiert
+    if (existingLock) {
+        const age = Date.now() - existingLock.timestamp;
+        // Wenn Lock jünger als TTL ist, respektieren wir ihn
+        if (age < LOCK_TTL_MS) {
+            // Wenn wir Hintergrund sind und Live schon dran ist -> Abbruch
+            if (type === 'background' && existingLock.type === 'live') return false;
+            // Wenn wir Hintergrund sind und Hintergrund schon dran ist -> Abbruch
+            if (type === 'background' && existingLock.type === 'background') return false;
+            
+            // Wenn wir Live sind und Background läuft -> return 'WAIT' (Signal zum Warten)
+            if (type === 'live' && existingLock.type === 'background') return 'WAIT';
+        }
+    }
+
+    // Lock setzen
+    await chrome.storage.local.set({
+        [lockKey]: { timestamp: Date.now(), type: type }
+    });
+    return true;
+}
+
+async function releaseLock(ticketId) {
+    await chrome.storage.local.remove(`processing_${ticketId}`);
+}
+
 // --- CORE LOOPS (HEARTBEAT) ---
 
 function startHeartbeat() {
@@ -299,8 +331,6 @@ function scanInboxTable() {
 
 // --- LOGIC: DASHBOARD SPIDER ---
 
-// --- LOGIC: DASHBOARD SPIDER ---
-
 async function scanDashboardFolders() {
     // Schutzmechanismus: Wenn ein Scan noch läuft, nicht noch einen starten
     if (window.aiState.isBackgroundScanning) return;
@@ -358,8 +388,17 @@ function checkAndQueue(id, currentHash) {
 
 // --- LOGIC: QUEUE MANAGEMENT & PROCESSING ---
 
+// --- LOGIC: QUEUE MANAGEMENT & PROCESSING ---
+
 async function processTicket(id, incomingInboxHash) {
     try {
+        // 1. Locking prüfen
+        const lockAcquired = await acquireLock(id, 'background');
+        if (!lockAcquired) {
+            console.log(`[CID: ${id}] Skip Pre-Fetch: Bereits in Bearbeitung oder Locked.`);
+            return;
+        }
+
         const storageKey = `draft_${id}`;
         const storedRes = await chrome.storage.local.get([storageKey]);
         const storedData = storedRes[storageKey];
@@ -367,11 +406,11 @@ async function processTicket(id, incomingInboxHash) {
         if (storedData) {
             const lastKnownHash = storedData.inboxHash || storedData.contentHash;
             if (lastKnownHash === incomingInboxHash || (lastKnownHash && lastKnownHash.startsWith('manual_save'))) {
+                await releaseLock(id); // Wichtig: Lock freigeben
                 return; 
             }
         }
 
-        // --- Log angepasst ---
         console.log(`[CID: ${id}] Tradeo AI: ⚡ Verarbeite Ticket im Hintergrund...`);
 
         const response = await fetch(`https://desk.tradeo.de/conversation/${id}`);
@@ -380,9 +419,12 @@ async function processTicket(id, incomingInboxHash) {
         const doc = parser.parseFromString(text, 'text/html');
         const contextText = extractContextFromDOM(doc);
 
-        if (!contextText || contextText.length < 50) return;
+        if (!contextText || contextText.length < 50) {
+            await releaseLock(id);
+            return;
+        }
 
-        // ID wird hier übergeben!
+        // Headless Draft erstellen
         const aiResult = await generateDraftHeadless(contextText, id);
 
         if (aiResult) {
@@ -404,15 +446,14 @@ async function processTicket(id, incomingInboxHash) {
             };
             
             await chrome.storage.local.set(data);
-            // --- Log angepasst ---
             console.log(`[CID: ${id}] Tradeo AI: ✅ Draft gespeichert.`);
         }
 
-        await new Promise(r => setTimeout(r, 1000));
-
     } catch (e) {
-        // --- Log angepasst ---
         console.error(`[CID: ${id}] Fehler bei Verarbeitung:`, e);
+    } finally {
+        // IMMER Lock freigeben, auch bei Fehler
+        await releaseLock(id);
     }
 }
 
@@ -596,6 +637,110 @@ function extractContextFromDOM(docRoot) {
 
 // Suche die Funktion initConversationUI und ersetze den Cache-Lade-Block (am Ende der Funktion) oder die ganze Funktion:
 
+// --- NEUE FUNKTION: STARTUP SYNC ---
+async function handleStartupSync(ticketId) {
+    const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
+    
+    // 1. Versuchen Lock zu bekommen ('live')
+    // Gibt 'WAIT' zurück, wenn background gerade läuft
+    const lockStatus = await acquireLock(ticketId, 'live');
+
+    // SCENARIO A: Background läuft gerade (WAIT)
+    if (lockStatus === 'WAIT') {
+        console.log("Tradeo AI: Background Job aktiv. Warte auf Fertigstellung...");
+        renderChatMessage('system', "⏳ <strong>Pre-Fetch läuft...</strong><br>Ein Hintergrundprozess analysiert dieses Ticket gerade. Bitte warten...");
+        dummyDraft.innerHTML = "<em>⏳ Warte auf Hintergrund-Analyse...</em>";
+
+        // Listener für Changes im Storage
+        const changeListener = (changes, area) => {
+            if (area === 'local') {
+                // Check 1: Draft wurde erstellt
+                if (changes[`draft_${ticketId}`]) {
+                    console.log("Tradeo AI: Background fertig (Draft da). Lade...");
+                    chrome.storage.onChanged.removeListener(changeListener);
+                    loadFromCache(ticketId); // Helper Funktion unten
+                }
+                // Check 2: Lock wurde entfernt (Fertig oder Error)
+                else if (changes[`processing_${ticketId}`] && !changes[`processing_${ticketId}`].newValue) {
+                    console.log("Tradeo AI: Background fertig (Lock weg). Prüfe Ergebnis...");
+                    chrome.storage.onChanged.removeListener(changeListener);
+                    
+                    // Kurz warten, damit Write sicher durch ist
+                    setTimeout(async () => {
+                        const hasDraft = await checkDraftExists(ticketId);
+                        if (hasDraft) {
+                            loadFromCache(ticketId);
+                        } else {
+                            renderChatMessage('system', "⚠️ Background Scan abgebrochen. Starte Live-Analyse.");
+                            runAI(true); // Fallback auf Live
+                        }
+                    }, 500);
+                }
+            }
+        };
+        chrome.storage.onChanged.addListener(changeListener);
+        return; 
+    }
+
+    // SCENARIO B: Wir haben den Lock (oder es gab keinen) -> Prüfen ob Cache da ist
+    // Zuerst Lock wieder freigeben, da loadFromCache nichts tut und runAI sich selbst lockt
+    await releaseLock(ticketId);
+
+    const hasDraft = await checkDraftExists(ticketId);
+    if (hasDraft) {
+        loadFromCache(ticketId);
+    } else {
+        // Kein Draft, kein Background -> Wir starten Live
+        runAI(true);
+    }
+}
+
+async function checkDraftExists(ticketId) {
+    const res = await chrome.storage.local.get([`draft_${ticketId}`]);
+    return !!res[`draft_${ticketId}`];
+}
+
+function loadFromCache(ticketId) {
+    const storageKey = `draft_${ticketId}`;
+    chrome.storage.local.get([storageKey], function(result) {
+        const cached = result[storageKey];
+        if (cached) {
+            const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
+            window.aiState.lastDraft = cached.draft;
+            dummyDraft.innerHTML = cached.draft;
+            
+            // UI sichtbar machen, falls noch eingeklappt
+            dummyDraft.style.display = 'block'; 
+            flashElement(dummyDraft);
+
+            const histContainer = document.getElementById('tradeo-ai-chat-history');
+            histContainer.innerHTML = ''; 
+            
+            if (cached.chatHistory && Array.isArray(cached.chatHistory)) {
+                window.aiState.chatHistory = cached.chatHistory;
+                cached.chatHistory.forEach(msg => {
+                    if (msg.type === 'draft') {
+                        renderDraftMessage(msg.content);
+                    } else if (msg.type === 'user') {
+                        renderChatMessage('user', msg.content);
+                    } else if (msg.type === 'ai') {
+                        renderChatMessage('ai', msg.content);
+                    } else if (msg.type === 'system') {
+                        renderChatMessage('system', msg.content);
+                    } else {
+                        renderChatMessage('ai', msg.text || msg.content);
+                    }
+                });
+            } else {
+                const fallbackText = cached.feedback + " (Vorbereitet)";
+                renderChatMessage('ai', fallbackText);
+                window.aiState.chatHistory = [{ type: 'ai', content: fallbackText }];
+            }
+            setTimeout(scrollToBottom, 50);
+        }
+    });
+}
+
 function initConversationUI() {
     const mainContainer = document.getElementById('conv-layout-main');
     if (!mainContainer) return;
@@ -666,51 +811,10 @@ function initConversationUI() {
 
     copilotContainer.style.display = 'block';
 
-    // Cache laden
+    // Startup Sync Logik
     const ticketId = getTicketIdFromUrl();
     if (ticketId) {
-        const storageKey = `draft_${ticketId}`;
-        chrome.storage.local.get([storageKey], function(result) {
-            const cached = result[storageKey];
-            if (cached) {
-                const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
-                window.aiState.lastDraft = cached.draft;
-                dummyDraft.innerHTML = cached.draft;
-                
-                const histContainer = document.getElementById('tradeo-ai-chat-history');
-                histContainer.innerHTML = ''; 
-                
-                if (cached.chatHistory && Array.isArray(cached.chatHistory)) {
-                    window.aiState.chatHistory = cached.chatHistory;
-                    cached.chatHistory.forEach(msg => {
-                        if (msg.type === 'draft') {
-                            renderDraftMessage(msg.content);
-                        } else if (msg.type === 'user') {
-                            renderChatMessage('user', msg.content);
-                        } else if (msg.type === 'ai') {
-                            renderChatMessage('ai', msg.content);
-                        } else if (msg.type === 'system') {
-                            // FIX: System Nachrichten explizit als 'system' rendern
-                            renderChatMessage('system', msg.content);
-                        } else {
-                            // Fallback
-                            renderChatMessage('ai', msg.text || msg.content);
-                        }
-                    });
-                } else {
-                    const fallbackText = cached.feedback + " (Vorbereitet)";
-                    renderChatMessage('ai', fallbackText);
-                    window.aiState.chatHistory = [{ type: 'ai', content: fallbackText }];
-                }
-
-                // FIX: Sicherstellen, dass wir ganz unten sind nach dem Laden
-                setTimeout(scrollToBottom, 50);
-
-            } else {
-                renderChatMessage("system", "Kein Entwurf gefunden. Starte Live-Analyse...");
-                runAI(true);
-            }
-        });
+        handleStartupSync(ticketId);
     } else {
         runAI(true);
     }
@@ -1015,11 +1119,19 @@ function setupEditorObserver() {
 
 // Suche die Funktion runAI und ersetze sie durch diese Version:
 
+// Suche die Funktion runAI und ersetze sie durch diese Version:
+
 async function runAI(isInitial = false) {
     const btn = document.getElementById('tradeo-ai-send-btn');
     const input = document.getElementById('tradeo-ai-input');
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
     const cid = getTicketIdFromUrl() || "UNKNOWN";
+
+    // --- LOCK SETZEN FÜR LIVE MODUS ---
+    // Wir setzen den Lock ohne Prüfung auf 'WAIT', da runAI() die aktive Ausführung ist.
+    // Falls ein Background-Prozess läuft, wurde das vorher in initConversationUI abgefangen.
+    // Hier sagen wir explizit: "Ich bin jetzt der Chef".
+    await acquireLock(cid, 'live'); 
 
     const storageData = await chrome.storage.local.get(['geminiApiKey']);
     const apiKey = storageData.geminiApiKey;
@@ -1030,13 +1142,17 @@ async function runAI(isInitial = false) {
         userPrompt = "Analysiere das Ticket. Wenn eine Bestellnummer zu finden ist, prüfe deren Status. Erstelle dann einen Antwortentwurf.";
     } else { 
         userPrompt = input.value.trim();
-        if (!userPrompt) return; 
+        if (!userPrompt) {
+            await releaseLock(cid); // Lock weg bei leerer Eingabe
+            return; 
+        }
         renderChatMessage('user', userPrompt); 
         window.aiState.chatHistory.push({ type: "user", content: userPrompt }); 
     }
 
     if (!apiKey) {
         renderChatMessage('system', "⚠️ Kein API Key gefunden.");
+        await releaseLock(cid);
         return; 
     }
 
@@ -1052,10 +1168,8 @@ async function runAI(isInitial = false) {
         return `${role}: ${e.content}`;
     }).join("\n");
 
-    // --- TIMEOUT LOGIK (UPDATED) ---
     const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
-    const isSlowModel = currentModel.includes("gemini-3-pro"); // Erkennt 'gemini-3-pro-preview'
-    // Nutzung der neuen Konstanten:
+    const isSlowModel = currentModel.includes("gemini-3-pro"); 
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : AI_TIMEOUT_STANDARD; 
 
     // 1. HAUPT-TASK
@@ -1077,21 +1191,17 @@ async function runAI(isInitial = false) {
         return await executeGeminiLoop(contents, apiKey, cid, true);
     };
 
-    // 2. TIMEOUT PROMISE
     const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error("TIMEOUT")), dynamicTimeoutMs)
     );
 
     try {
-        // Race: AI vs. Dynamisches Timeout
         const finalResponse = await Promise.race([primaryTask(), timeoutPromise]);
-        
         handleAiSuccess(finalResponse, isInitial, input, dummyDraft, cid);
 
     } catch (error) {
         console.warn(`[CID: ${cid}] Tradeo AI: Abbruch (${error.message}). Starte Fallback.`);
         
-        // Unterscheidung für die User-Meldung
         let reasonText = "Ein Fehler ist aufgetreten";
         if (error.message === "TIMEOUT") {
             const min = Math.round(dynamicTimeoutMs / 60000);
@@ -1102,7 +1212,6 @@ async function runAI(isInitial = false) {
         renderWarningMessage(warningText);
         window.aiState.chatHistory.push({ type: "system", content: warningText });
 
-        // 3. FALLBACK-LOGIK (Tools verboten)
         try {
             let fallbackPrompt = `
                 ACHTUNG: Die vorherige Verarbeitung ist fehlgeschlagen (${error.message}).
@@ -1134,6 +1243,7 @@ async function runAI(isInitial = false) {
     } finally {
         if(btn) { btn.disabled = false; btn.innerText = "Go"; }
         window.aiState.isGenerating = false; 
+        await releaseLock(cid); // Lock freigeben
     }
 }
 
