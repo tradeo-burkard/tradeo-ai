@@ -622,7 +622,8 @@ async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
 
 /**
  * Extrahiert den reinen Text-Kontext für die AI.
- * WICHTIG: Entfernt Zeitstempel und UI-Elemente für stabilen Hash!
+ * FIX v3.4: Entfernt aggressive Zeitstempel (.thread-meta) und Viewer-Listen,
+ * damit der Hash stabil bleibt und nicht bei jedem Refresh feuert.
  */
 function extractContextFromDOM(docRoot) {
     const mainContainer = docRoot.querySelector('#conv-layout-main');
@@ -638,18 +639,32 @@ function extractContextFromDOM(docRoot) {
     const editorBlock = clone.querySelector('.conv-reply-block');
     if(editorBlock) editorBlock.remove();
 
-    // 3. Entferne Dropdown-Menüs und UI-Buttons
-    clone.querySelectorAll('.dropdown-menu, .thread-options, .conv-action-wrapper').forEach(el => el.remove());
+    // 3. Störfaktoren entfernen (Elemente die sich oft ändern oder unsichtbar sind)
+    const noiseSelectors = [
+        '.dropdown-menu', 
+        '.thread-options', 
+        '.conv-action-wrapper',
+        '.thread-info',    // Zeitstempel der Nachricht ("vor 2 Stunden")
+        '.thread-meta',    // <--- WICHTIG: "Kunde betrachtete vor X Minuten" (Das war der Bug!)
+        '#conv-viewers',   // "Wer schaut gerade zu" (ändert sich dynamisch)
+        '.hidden',         // Unsichtbare Elemente (Background vs Live Diskrepanz)
+        '.hide',           
+        'script',          
+        'style',           
+        '[style*="display: none"]', 
+        '[style*="display:none"]'
+    ];
 
-    // 4. WICHTIG: Entferne Zeitstempel/Meta-Infos (.thread-info), 
-    // damit "vor 1 Minute" vs "vor 5 Minuten" den Hash nicht ändert!
-    clone.querySelectorAll('.thread-info').forEach(el => el.remove());
+    clone.querySelectorAll(noiseSelectors.join(', ')).forEach(el => el.remove());
 
-    // 5. Formatierung bereinigen
+    // 4. Formatierung bereinigen
     let cleanText = clone.innerText;
-    cleanText = cleanText.replace(/\n\s*\n/g, '\n\n').trim();
-
-    return cleanText;
+    
+    // Leerzeichen normalisieren
+    cleanText = cleanText.replace(/[ \t]+/g, ' '); 
+    cleanText = cleanText.replace(/\n\s*\n/g, '\n\n'); 
+    
+    return cleanText.trim();
 }
 
 async function handleStartupSync(ticketId) {
