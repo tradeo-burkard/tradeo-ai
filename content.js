@@ -353,23 +353,24 @@ function checkAndQueue(id, currentHash) {
     });
 }
 
-async function processTicket(id, contentHash) {
+// --- LOGIC: QUEUE MANAGEMENT & PROCESSING ---
+
+async function processTicket(id, incomingInboxHash) {
     try {
-        // Cache Check im Storage (Persistent)
         const storageKey = `draft_${id}`;
-        const storedData = await chrome.storage.local.get([storageKey]);
-        
-        if (storedData[storageKey] 
-            && storedData[storageKey].contentHash === contentHash 
-            && storedData[storageKey].chatHistory 
-            && Array.isArray(storedData[storageKey].chatHistory)
-        ) {
-            return; // Nichts zu tun
+        const storedRes = await chrome.storage.local.get([storageKey]);
+        const storedData = storedRes[storageKey];
+
+        if (storedData) {
+            const lastKnownHash = storedData.inboxHash || storedData.contentHash;
+            if (lastKnownHash === incomingInboxHash || (lastKnownHash && lastKnownHash.startsWith('manual_save'))) {
+                return; 
+            }
         }
 
-        console.log(`Tradeo AI: ⚡ Verarbeite Ticket ${id} im Hintergrund...`);
+        // --- Log angepasst ---
+        console.log(`[CID: ${id}] Tradeo AI: ⚡ Verarbeite Ticket im Hintergrund...`);
 
-        // Fetch
         const response = await fetch(`https://desk.tradeo.de/conversation/${id}`);
         const text = await response.text();
         const parser = new DOMParser();
@@ -378,24 +379,16 @@ async function processTicket(id, contentHash) {
 
         if (!contextText || contextText.length < 50) return;
 
-        // Generate
+        // ID wird hier übergeben!
         const aiResult = await generateDraftHeadless(contextText, id);
 
         if (aiResult) {
-            // FIX START: Tool Logs in History integrieren
             let initialHistory = [];
-
-            // 1. Wenn Tools genutzt wurden, füge sie als System-Nachrichten hinzu
             if (aiResult.toolLogs && Array.isArray(aiResult.toolLogs)) {
-                aiResult.toolLogs.forEach(logText => {
-                    initialHistory.push({ type: 'system', content: logText });
-                });
+                aiResult.toolLogs.forEach(logText => initialHistory.push({ type: 'system', content: logText }));
             }
-
-            // 2. Draft und Feedback hinzufügen
             initialHistory.push({ type: 'draft', content: aiResult.draft });
-            initialHistory.push({ type: 'ai', content: aiResult.feedback + " (Vorbereitet)" });
-            // FIX END
+            initialHistory.push({ type: 'ai', content: aiResult.feedback + " (Automatisch vorbereitet)" });
 
             const data = {};
             data[storageKey] = {
@@ -403,17 +396,20 @@ async function processTicket(id, contentHash) {
                 feedback: aiResult.feedback,
                 chatHistory: initialHistory,
                 timestamp: Date.now(),
-                contentHash: contentHash
+                inboxHash: incomingInboxHash, 
+                contentHash: incomingInboxHash 
             };
+            
             await chrome.storage.local.set(data);
-            console.log(`Tradeo AI: ✅ Draft für Ticket ${id} gespeichert.`);
+            // --- Log angepasst ---
+            console.log(`[CID: ${id}] Tradeo AI: ✅ Draft gespeichert.`);
         }
 
-        // Throttle
         await new Promise(r => setTimeout(r, 1000));
 
     } catch (e) {
-        console.error(`Fehler bei Ticket ${id}:`, e);
+        // --- Log angepasst ---
+        console.error(`[CID: ${id}] Fehler bei Verarbeitung:`, e);
     }
 }
 
@@ -424,7 +420,7 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     const apiKey = stored.geminiApiKey;
     if (!apiKey) return null;
 
-    // Strengerer Prompt für den Headless Mode, damit er Tools wirklich nutzt
+    // Strengerer Prompt für den Headless Mode
     const headlessPrompt = `
     ${SYSTEM_PROMPT}
     === HINTERGRUND-ANALYSE ===
@@ -440,29 +436,25 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     4. Erstelle basierend auf den ECHTEN Daten einen Antwortentwurf im JSON-Format.
     `;
 
-    // Initialer Context Aufbau
     let contents = [{
         role: "user",
         parts: [{ text: headlessPrompt }]
     }];
 
-    const model = window.aiState.currentModel || "gemini-2.5-pro"; // Nutze eingestelltes Modell
+    const model = window.aiState.currentModel || "gemini-2.5-pro"; 
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
 
-    // NEU: Array zum Sammeln der ausgeführten Tools für die History
     let executedTools = [];
 
     try {
         let finalResponse = null;
         let turnCount = 0;
-        const maxTurns = 3; // Sicherheitslimit für API Calls
+        const maxTurns = 3; 
 
-        // --- SCHLEIFE FÜR MULTI-TURN (Tool Use im Hintergrund) ---
         while (turnCount < maxTurns) {
-            
             const payload = {
                 contents: contents,
-                tools: [{ function_declarations: GEMINI_TOOLS }] // WICHTIG: Tools mitgeben!
+                tools: [{ function_declarations: GEMINI_TOOLS }] 
             };
 
             const response = await fetch(endpoint, {
@@ -476,29 +468,27 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
 
             const candidate = data.candidates?.[0];
             
-            // Fall 1: Keine Kandidaten oder Content wurde wegen Safety/Filter blockiert
+            // --- HIER WAR DEIN FEHLER IM SCREENSHOT (Log angepasst) ---
             if (!candidate || !candidate.content || !candidate.content.parts) {
-                console.warn(`Tradeo AI Headless: ⚠️ Antwort blockiert oder leer. FinishReason: ${candidate?.finishReason}`);
-                return null; // Abbruch, da wir nichts verarbeiten können
+                console.warn(`[CID: ${ticketId}] Tradeo AI Headless: ⚠️ Antwort blockiert oder leer. FinishReason: ${candidate?.finishReason}`);
+                return null; 
             }
 
             const content = candidate.content;
             const parts = content.parts;
 
-            // Hat die AI einen FUNCTION CALL?
             const functionCallPart = parts.find(p => p.functionCall);
 
             if (functionCallPart) {
                 const fnName = functionCallPart.functionCall.name;
                 const fnArgs = functionCallPart.functionCall.args;
                 
-                // NEU: Log für die UI History speichern
                 const toolLogText = `⚙️ AI nutzt Tool: ${fnName}(${JSON.stringify(fnArgs)})`;
                 executedTools.push(toolLogText);
 
-                console.log(`Tradeo AI Headless: ⚙️ Rufe Tool ${fnName} mit`, fnArgs);
+                // --- Log angepasst ---
+                console.log(`[CID: ${ticketId}] Tradeo AI Headless: ⚙️ Rufe Tool ${fnName} mit`, fnArgs);
 
-                // Tool ausführen (via Background Script)
                 let functionResult = null;
                 let actionName = '';
                 let actionPayload = {};
@@ -516,13 +506,12 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
                     actionName = 'SEARCH_ITEMS_BY_TEXT';
                     actionPayload = { 
                         searchText: fnArgs.searchText,
-                        mode: fnArgs.mode || 'name', // Fallback
+                        mode: fnArgs.mode || 'name', 
                         maxResults: fnArgs.maxResults || 30
                     };
                 }
 
                 if (actionName) {
-                    // API Call via Background.js
                     const apiResult = await new Promise(resolve => {
                         chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => {
                              resolve(response);
@@ -531,16 +520,15 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
                     
                     if(apiResult && apiResult.success) {
                         functionResult = apiResult.data;
-                        console.log(`Tradeo AI Headless [CID: ${ticketId}]: ✅ Tool ${fnName} erfolgreich.`);
+                        console.log(`[CID: ${ticketId}] Tradeo AI Headless: ✅ Tool ${fnName} erfolgreich.`);
                     } else {
-                        console.warn(`Tradeo AI Headless [CID: ${ticketId}]: ❌ Tool ${fnName} fehlgeschlagen.`, apiResult);
+                        console.warn(`[CID: ${ticketId}] Tradeo AI Headless: ❌ Tool ${fnName} fehlgeschlagen.`, apiResult);
                         functionResult = { error: apiResult ? apiResult.error : "Unknown Error" };
                     }
                 } else {
                     functionResult = { error: "Tool not implemented" };
                 }
 
-                // Verlauf aktualisieren (Response an AI zurückfüttern)
                 contents.push(content); 
                 contents.push({
                     role: "function",
@@ -553,17 +541,17 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
                 });
 
                 turnCount++;
-                continue; // Nächste Runde (AI soll jetzt mit den Daten antworten)
+                continue; 
             }
 
-            // Keine Function Call -> Finale Text-Antwort
             let rawText = parts[0].text || ""; 
             rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
             
             try { 
                 finalResponse = JSON.parse(rawText); 
             } catch(e) { 
-                console.warn("Tradeo AI Headless JSON Parse Error. Fallback auf Raw Text.");
+                // --- Log angepasst ---
+                console.warn(`[CID: ${ticketId}] Tradeo AI Headless JSON Parse Error. Fallback auf Raw Text.`);
                 if(rawText) {
                     finalResponse = { 
                         draft: rawText.replace(/\n/g, '<br>'), 
@@ -573,10 +561,9 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
                     return null;
                 }
             }
-            break; // Loop beenden
+            break; 
         }
 
-        // NEU: Logs an das Resultat anhängen, damit processTicket sie nutzen kann
         if (finalResponse) {
             finalResponse.toolLogs = executedTools;
         }
@@ -584,7 +571,8 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
         return finalResponse;
 
     } catch (e) {
-        console.error(`Tradeo AI Headless Error [CID: ${ticketId}]:`, e);
+        // --- Log angepasst ---
+        console.error(`[CID: ${ticketId}] Tradeo AI Headless Error:`, e);
         return null;
     }
 }
@@ -1041,6 +1029,9 @@ async function runAI(isInitial = false) {
     const input = document.getElementById('tradeo-ai-input');
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
     
+    // --- NEU: ID holen für Logging ---
+    const cid = getTicketIdFromUrl() || "UNKNOWN";
+
     const storageData = await chrome.storage.local.get(['geminiApiKey']);
     const apiKey = storageData.geminiApiKey;
 
@@ -1051,8 +1042,6 @@ async function runAI(isInitial = false) {
     } else { 
         userPrompt = input.value.trim();
         if (!userPrompt) return; 
-        
-        // 1. User Input sofort anzeigen & im RAM speichern
         renderChatMessage('user', userPrompt); 
         window.aiState.chatHistory.push({ type: "user", content: userPrompt }); 
     }
@@ -1065,7 +1054,6 @@ async function runAI(isInitial = false) {
     window.aiState.isGenerating = true;
     if(btn) { btn.disabled = true; btn.innerText = "..."; }
     
-    // Kontext bauen
     const contextText = extractContextFromDOM(document);
     const historyString = window.aiState.chatHistory.map(e => {
         if(e.type === 'draft') return ""; 
@@ -1075,7 +1063,6 @@ async function runAI(isInitial = false) {
     
     const currentDraft = window.aiState.isRealMode ? document.querySelector('.note-editable')?.innerHTML : dummyDraft.innerHTML;
 
-    // Initialer Prompt-Content
     let contents = [
         {
             role: "user",
@@ -1097,14 +1084,12 @@ async function runAI(isInitial = false) {
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
 
     try {
-        // --- SCHLEIFE FÜR MULTI-TURN (Tool Use) ---
         let finalResponse = null;
         let turnCount = 0;
-        const maxTurns = 3; // Sicherheitslimit
+        const maxTurns = 3; 
 
         while (turnCount < maxTurns) {
             
-            // Payload mit Tools
             const payload = {
                 contents: contents,
                 tools: [{ function_declarations: GEMINI_TOOLS }]
@@ -1123,7 +1108,6 @@ async function runAI(isInitial = false) {
             const content = candidate.content;
             const parts = content.parts;
 
-            // Hat die AI einen FUNCTION CALL?
             const functionCallPart = parts.find(p => p.functionCall);
 
             if (functionCallPart) {
@@ -1132,19 +1116,16 @@ async function runAI(isInitial = false) {
                 
                 const logText = `⚙️ AI ruft Tool: ${fnName}(${JSON.stringify(fnArgs)})`;
                 
-                // RENDER
                 renderChatMessage('system', logText);
-                // FIX: PERSISTIEREN
                 window.aiState.chatHistory.push({ type: "system", content: logText });
                 
-                console.log("Tradeo AI: Function Call detected:", fnName, fnArgs);
+                // --- Log angepasst ---
+                console.log(`[CID: ${cid}] Tradeo AI: Function Call detected:`, fnName, fnArgs);
 
-                // Tool ausführen
                 let functionResult = null;
                 let actionName = '';
                 let actionPayload = {};
 
-                // Mapping der Tools auf Background Actions
                 if (fnName === 'getOrderDetails') {
                     actionName = 'GET_ORDER_FULL';
                     actionPayload = { orderId: fnArgs.orderId };
@@ -1158,7 +1139,7 @@ async function runAI(isInitial = false) {
                     actionName = 'SEARCH_ITEMS_BY_TEXT';
                     actionPayload = { 
                         searchText: fnArgs.searchText,
-                        mode: fnArgs.mode || 'name', // Fallback
+                        mode: fnArgs.mode || 'name', 
                         maxResults: fnArgs.maxResults || 30
                     };
                 }
@@ -1179,7 +1160,6 @@ async function runAI(isInitial = false) {
                     functionResult = { error: "Tool not implemented in frontend" };
                 }
 
-                // Verlauf aktualisieren
                 contents.push(content); 
                 contents.push({
                     role: "function",
@@ -1195,36 +1175,31 @@ async function runAI(isInitial = false) {
                 continue; 
             }
 
-            // Keine Function Call -> Finale Antwort
             let rawText = parts[0].text;
-            // Markdown Code-Blocks entfernen
             rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
             
             try { 
                 finalResponse = JSON.parse(rawText); 
                 
-                // LOGGING: Sehen, was die AI erkannt hat
                 if(finalResponse.detected_language) {
-                    console.log("Tradeo AI Language Detect:", finalResponse.detected_language);
+                    console.log(`[CID: ${cid}] Tradeo AI Language Detect:`, finalResponse.detected_language);
                 }
                 
-                // Fallback, falls 'draft' fehlt aber 'text' da ist (Halluzination)
                 if(!finalResponse.draft && finalResponse.text) finalResponse.draft = finalResponse.text;
 
             } catch(e) { 
-                console.warn("Tradeo AI JSON Parse Error:", e);
-                // Fallback: Wenn JSON kaputt ist, nehmen wir den Raw Text, wandeln Newlines in <br> um
+                // --- Log angepasst ---
+                console.warn(`[CID: ${cid}] Tradeo AI JSON Parse Error:`, e);
                 const fallbackHtml = rawText.replace(/\n/g, '<br>');
                 finalResponse = { 
                     draft: fallbackHtml, 
                     feedback: "Achtung: AI Formatierung war fehlerhaft, Rohdaten werden angezeigt." 
                 }; 
             }
-            break; // Loop beenden
+            break; 
         }
 
         if (finalResponse) {
-            // UI Updates
             renderDraftMessage(finalResponse.draft);
             window.aiState.chatHistory.push({ type: "draft", content: finalResponse.draft });
             
@@ -1237,44 +1212,45 @@ async function runAI(isInitial = false) {
                 const editable = document.querySelector('.note-editable');
                 if (editable) setEditorContent(editable, finalResponse.draft);
             } else {
-                dummyDraft.innerHTML = finalResponse.draft;
-                if(!window.aiState.preventOverwrite && !window.aiState.isRealMode) { 
+                if(dummyDraft) dummyDraft.innerHTML = finalResponse.draft;
+                if(!window.aiState.preventOverwrite && !window.aiState.isRealMode && dummyDraft) { 
                     dummyDraft.style.display = 'block'; 
                     flashElement(dummyDraft); 
                 }
             }
             if(!isInitial && input) input.value = '';
 
-            // --- PERSISTENZ SPEICHERN ---
+            // --- PERSISTENZ TEIL (den hast du vorhin schon geupdated) ---
             const ticketId = getTicketIdFromUrl();
             if (ticketId) {
                 const storageKey = `draft_${ticketId}`;
-                // Alten Hash holen um ihn beizubehalten
                 chrome.storage.local.get([storageKey], function(res) {
                     const oldData = res[storageKey] || {};
-                    const currentHash = oldData.contentHash || "modified_by_user";
+                    const preservedInboxHash = oldData.inboxHash || oldData.contentHash || "manual_save_" + Date.now();
 
                     const newData = {
                         draft: finalResponse.draft,
                         feedback: finalResponse.feedback,
-                        chatHistory: window.aiState.chatHistory, // Hier sind jetzt auch die System-Logs drin
+                        chatHistory: window.aiState.chatHistory,
                         timestamp: Date.now(),
-                        contentHash: currentHash
+                        inboxHash: preservedInboxHash,
+                        contentHash: preservedInboxHash
                     };
                     
                     const saveObj = {};
                     saveObj[storageKey] = newData;
                     chrome.storage.local.set(saveObj, () => {
-                        console.log("Tradeo AI: Verlauf (inkl. Tools) gespeichert.");
+                        // --- Log angepasst ---
+                        console.log(`[CID: ${cid}] Tradeo AI: Verlauf gespeichert.`);
                     });
                 });
             }
-            // ------------------------------------
         }
 
     } catch(e) {
         renderChatMessage('system', "Error: " + e.message);
-        console.error(e);
+        // --- Log angepasst ---
+        console.error(`[CID: ${cid}] Error:`, e);
     } finally {
         if(btn) { btn.disabled = false; btn.innerText = "Go"; }
         window.aiState.isGenerating = false; 
