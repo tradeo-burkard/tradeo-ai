@@ -741,15 +741,96 @@ function loadFromCache(ticketId) {
     });
 }
 
-function initConversationUI() {
+/**
+ * Überwacht den Chat-Verlauf auf Änderungen und stellt die UI bei Verlust wieder her.
+ */
+function setupThreadObserver() {
+    if (window.aiState.threadObserverActive) return;
+
     const mainContainer = document.getElementById('conv-layout-main');
     if (!mainContainer) return;
+
+    console.log("Tradeo AI: Starte Thread-Überwachung (Restore-Mode)...");
+    window.aiState.threadObserverActive = true;
+
+    // Initialen Text speichern
+    const lastExistingThread = mainContainer.querySelector('.thread .thread-content');
+    if (lastExistingThread) {
+        window.aiState.lastThreadText = lastExistingThread.innerText.trim();
+    }
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldReset = false;
+        let newTextContent = "";
+        let isRedraw = false;
+
+        mutations.forEach((mutation) => {
+            if (mutation.addedNodes.length > 0) {
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeType === 1) {
+                        if (node.classList.contains('thread') || 
+                            node.classList.contains('conv-message') ||
+                            node.id.startsWith('thread-')) {
+                            
+                            if (node.id.includes('tradeo-ai')) return;
+
+                            const contentEl = node.querySelector('.thread-content');
+                            const text = contentEl ? contentEl.innerText.trim() : node.innerText.trim();
+
+                            // Vergleich: Ist es derselbe Inhalt?
+                            if (text && text === window.aiState.lastThreadText) {
+                                isRedraw = true;
+                                return; 
+                            }
+
+                            newTextContent = text;
+                            shouldReset = true;
+                        }
+                    }
+                });
+            }
+        });
+
+        // FALL A: Echter neuer Inhalt -> Alles Resetten
+        if (shouldReset) {
+            if (newTextContent) window.aiState.lastThreadText = newTextContent;
+            resetUiToLoadingState();
+        } 
+        // FALL B: Redraw erkannt (Inhalt gleich) -> UI prüfen & Retten
+        else if (isRedraw) {
+            console.log("Tradeo AI: Redraw erkannt. Prüfe UI Integrität...");
+            
+            const zone = document.getElementById('tradeo-ai-copilot-zone');
+            
+            if (!zone) {
+                // UI ist komplett weg -> Neu aufbauen im Restore Mode
+                console.log("Tradeo AI: UI verloren gegangen. Stelle wieder her...");
+                initConversationUI(true); 
+            } else {
+                // UI ist noch da, aber vielleicht nicht mehr ganz oben?
+                // FreeScout schiebt oft neue Elemente davor
+                const main = document.getElementById('conv-layout-main');
+                if (main && main.firstChild !== zone) {
+                    console.log("Tradeo AI: UI verrutscht. Schiebe nach oben...");
+                    main.prepend(zone);
+                }
+            }
+        }
+    });
+
+    observer.observe(mainContainer, { childList: true, subtree: true });
+}
+
+function initConversationUI(isRestore = false) {
+    const mainContainer = document.getElementById('conv-layout-main');
+    if (!mainContainer) return;
+
+    if (document.getElementById('tradeo-ai-copilot-zone')) return;
 
     const copilotContainer = document.createElement('div');
     copilotContainer.id = 'tradeo-ai-copilot-zone';
     copilotContainer.classList.add('tradeo-collapsed');
 
-    // Layout Update: Mic Button nach rechts verschoben
     copilotContainer.innerHTML = `
         <div id="tradeo-ai-dummy-draft"><em>🤖 Bereite Antwortentwurf vor...</em></div>
         
@@ -792,32 +873,63 @@ function initConversationUI() {
             <textarea id="tradeo-ai-input" placeholder="Anweisung an AI..."></textarea>
         </div>
     `;
+    
     mainContainer.prepend(copilotContainer);
     
-    // UI Event Listener laden
+    // --- EVENT LISTENER ---
     setupSettingsLogic();
-    
     const originalReplyBtn = document.querySelector('.conv-reply');
     if(originalReplyBtn) setupButtons(originalReplyBtn);
-    
     document.getElementById('tradeo-ai-expand-btn').addEventListener('click', expandInterface);
-
     setupModelSelector();
     setupEditorObserver();
     setupResizeHandler();
-    
-    // Voice Input aktivieren
     if (typeof setupVoiceInput === 'function') setupVoiceInput();
 
     copilotContainer.style.display = 'block';
 
-    // Startup Sync Logik
-    const ticketId = getTicketIdFromUrl();
-    if (ticketId) {
-        handleStartupSync(ticketId);
+    // --- LOGIK-WEICHE ---
+    if (isRestore) {
+        console.log("Tradeo AI: ♻️ Stelle UI aus RAM wieder her...");
+        
+        const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
+        if (window.aiState.lastDraft) {
+            dummyDraft.innerHTML = window.aiState.lastDraft;
+            dummyDraft.style.display = 'block';
+        }
+
+        const histContainer = document.getElementById('tradeo-ai-chat-history');
+        if (window.aiState.chatHistory && window.aiState.chatHistory.length > 0) {
+            window.aiState.chatHistory.forEach(msg => {
+                if (msg.type === 'draft') {
+                    renderDraftMessage(msg.content);
+                } else if (msg.type === 'user') {
+                    renderChatMessage('user', msg.content);
+                } else if (msg.type === 'ai') {
+                    renderChatMessage('ai', msg.content);
+                } else if (msg.type === 'system') {
+                    renderChatMessage('system', msg.content);
+                } else {
+                    renderChatMessage('ai', msg.text || msg.content);
+                }
+            });
+            
+            // WICHTIG: Scroll to Bottom Sticky erzwingen
+            setTimeout(() => { 
+                scrollToBottom(); 
+            }, 100);
+        }
+
     } else {
-        runAI(true);
+        const ticketId = getTicketIdFromUrl();
+        if (ticketId) {
+            handleStartupSync(ticketId);
+        } else {
+            runAI(true);
+        }
     }
+
+    setupThreadObserver();
 }
 
 function setupVoiceInput() {
@@ -990,6 +1102,66 @@ function expandInterface() {
 }
 
 // --- HELPERS ---
+
+/**
+ * Setzt UI und Speicher zurück, um einen "Frischen Start" zu erzwingen.
+ */
+async function resetUiToLoadingState() {
+    console.log("Tradeo AI: 🔄 Neuer Inhalt! Resetting UI & Cache...");
+    
+    const ticketId = getTicketIdFromUrl();
+    if (!ticketId) return;
+
+    // 1. WICHTIG: Cache löschen, damit keine alten Antworten geladen werden
+    await chrome.storage.local.remove(`draft_${ticketId}`);
+    
+    // 2. Internen State leeren (ABER lastThreadText behalten!)
+    const preservedThreadText = window.aiState.lastThreadText; // <--- Sichern
+    
+    window.aiState.lastDraft = "";
+    window.aiState.chatHistory = [];
+    
+    // Wiederherstellen für den Observer
+    window.aiState.lastThreadText = preservedThreadText; // <--- Zurückschreiben
+
+    // 3. UI Elemente holen
+    const copilotZone = document.getElementById('tradeo-ai-copilot-zone');
+    const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
+    const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    const inputArea = document.getElementById('tradeo-ai-input');
+    const mainContainer = document.getElementById('conv-layout-main');
+
+    // 4. UI Reset durchführen
+    if (copilotZone && mainContainer) {
+        // Zwingend wieder ganz nach oben schieben (falls FreeScout was davor geschoben hat)
+        mainContainer.prepend(copilotZone);
+        
+        // Einklappen (Overlay und Expand-Button wieder aktivieren)
+        copilotZone.classList.add('tradeo-collapsed');
+    }
+
+    if (dummyDraft) {
+        // Platzhalter anzeigen
+        dummyDraft.innerHTML = '<em>🤖 Neuer Thread erkannt! Analysiere Ticket neu...</em>';
+        dummyDraft.style.display = 'block';
+        
+        // Visuellen Effekt auslösen
+        flashElement(dummyDraft); 
+    }
+
+    if (historyContainer) {
+        // Chatverlauf komplett leeren
+        historyContainer.innerHTML = '';
+    }
+    
+    if (inputArea) {
+        inputArea.value = '';
+    }
+
+    // 5. Prozess neu anstoßen
+    // Da der Cache gelöscht ist, wird handleStartupSync jetzt runAI(true) feuern -> Live Generierung
+    handleStartupSync(ticketId);
+}
 
 /**
  * Extrahiert die Conversation ID aus der URL.
