@@ -1,6 +1,9 @@
 // --- KONFIGURATION ---
 const API_VERSION = "v1beta";
 const POLL_INTERVAL_MS = 2000; // Alle 2 Sekunden prüfen
+const AI_TIMEOUT_STANDARD = 180000; // 2 Min für Standard-Modelle (Flash, 2.5 Pro)
+const AI_TIMEOUT_SLOW = 600000;     // 10 Min für langsame Modelle (3 Pro)
+
 const DASHBOARD_FOLDERS_TO_SCAN = [
     "https://desk.tradeo.de/mailbox/3/27",  // Servershop24 -> Nicht zugewiesen
     "https://desk.tradeo.de/mailbox/3/155"  // Servershop24 -> Meine
@@ -420,161 +423,149 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     const apiKey = stored.geminiApiKey;
     if (!apiKey) return null;
 
-    // Strengerer Prompt für den Headless Mode
+    // --- TIMEOUT LOGIK (UPDATED) ---
+    const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
+    const isSlowModel = currentModel.includes("gemini-3-pro");
+    // Nutzung der neuen Konstanten:
+    const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : AI_TIMEOUT_STANDARD;
+
     const headlessPrompt = `
     ${SYSTEM_PROMPT}
     === HINTERGRUND-ANALYSE ===
     Dies ist ein automatischer Scan eines Tickets.
-    
     === TICKET VERLAUF ===
     ${contextText}
-    
     === AUFGABE ===
-    1. Analysiere den Text.
-    2. WICHTIG: Wenn eine Bestellnummer (Order ID), Artikelnummer oder Kundennummer vorkommt, NUTZE DIE BEREITGESTELLTEN TOOLS (getOrderDetails, etc.), um echte Daten abzurufen.
-    3. Erfinde KEINE Daten. Wenn du Tools nutzen kannst, tu es.
-    4. Erstelle basierend auf den ECHTEN Daten einen Antwortentwurf im JSON-Format.
+    1. Wenn möglich, nutze Tools für echte Daten.
+    2. Erstelle einen Antwortentwurf JSON.
     `;
 
-    let contents = [{
-        role: "user",
-        parts: [{ text: headlessPrompt }]
-    }];
+    // 1. HAUPT-TASK
+    const primaryTask = async () => {
+        let contents = [{ role: "user", parts: [{ text: headlessPrompt }] }];
+        return await executeHeadlessLoop(contents, apiKey, ticketId, true);
+    };
 
-    const model = window.aiState.currentModel || "gemini-2.5-pro"; 
-    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
-
-    let executedTools = [];
+    // 2. TIMEOUT
+    const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("TIMEOUT")), dynamicTimeoutMs)
+    );
 
     try {
-        let finalResponse = null;
-        let turnCount = 0;
-        const maxTurns = 3; 
-
-        while (turnCount < maxTurns) {
-            const payload = {
-                contents: contents,
-                tools: [{ function_declarations: GEMINI_TOOLS }] 
-            };
-
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error?.message || "Headless API Error");
-
-            const candidate = data.candidates?.[0];
-            
-            // --- HIER WAR DEIN FEHLER IM SCREENSHOT (Log angepasst) ---
-            if (!candidate || !candidate.content || !candidate.content.parts) {
-                console.warn(`[CID: ${ticketId}] Tradeo AI Headless: ⚠️ Antwort blockiert oder leer. FinishReason: ${candidate?.finishReason}`);
-                return null; 
-            }
-
-            const content = candidate.content;
-            const parts = content.parts;
-
-            const functionCallPart = parts.find(p => p.functionCall);
-
-            if (functionCallPart) {
-                const fnName = functionCallPart.functionCall.name;
-                const fnArgs = functionCallPart.functionCall.args;
-                
-                const toolLogText = `⚙️ AI nutzt Tool: ${fnName}(${JSON.stringify(fnArgs)})`;
-                executedTools.push(toolLogText);
-
-                // --- Log angepasst ---
-                console.log(`[CID: ${ticketId}] Tradeo AI Headless: ⚙️ Rufe Tool ${fnName} mit`, fnArgs);
-
-                let functionResult = null;
-                let actionName = '';
-                let actionPayload = {};
-
-                if (fnName === 'getOrderDetails') {
-                    actionName = 'GET_ORDER_FULL';
-                    actionPayload = { orderId: fnArgs.orderId };
-                } else if (fnName === 'getItemDetails') {
-                    actionName = 'GET_ITEM_DETAILS';
-                    actionPayload = { identifier: fnArgs.identifier };
-                } else if (fnName === 'getCustomerDetails') {
-                    actionName = 'GET_CUSTOMER_DETAILS';
-                    actionPayload = { contactId: fnArgs.contactId };
-                } else if (fnName === 'searchItemsByText') {
-                    actionName = 'SEARCH_ITEMS_BY_TEXT';
-                    actionPayload = { 
-                        searchText: fnArgs.searchText,
-                        mode: fnArgs.mode || 'name', 
-                        maxResults: fnArgs.maxResults || 30
-                    };
-                }
-
-                if (actionName) {
-                    const apiResult = await new Promise(resolve => {
-                        chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => {
-                             resolve(response);
-                        });
-                    });
-                    
-                    if(apiResult && apiResult.success) {
-                        functionResult = apiResult.data;
-                        console.log(`[CID: ${ticketId}] Tradeo AI Headless: ✅ Tool ${fnName} erfolgreich.`);
-                    } else {
-                        console.warn(`[CID: ${ticketId}] Tradeo AI Headless: ❌ Tool ${fnName} fehlgeschlagen.`, apiResult);
-                        functionResult = { error: apiResult ? apiResult.error : "Unknown Error" };
-                    }
-                } else {
-                    functionResult = { error: "Tool not implemented" };
-                }
-
-                contents.push(content); 
-                contents.push({
-                    role: "function",
-                    parts: [{
-                        functionResponse: {
-                            name: fnName,
-                            response: { name: fnName, content: functionResult }
-                        }
-                    }]
-                });
-
-                turnCount++;
-                continue; 
-            }
-
-            let rawText = parts[0].text || ""; 
-            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-            
-            try { 
-                finalResponse = JSON.parse(rawText); 
-            } catch(e) { 
-                // --- Log angepasst ---
-                console.warn(`[CID: ${ticketId}] Tradeo AI Headless JSON Parse Error. Fallback auf Raw Text.`);
-                if(rawText) {
-                    finalResponse = { 
-                        draft: rawText.replace(/\n/g, '<br>'), 
-                        feedback: "Automatisch generiert (Formatierung evtl. abweichend)" 
-                    }; 
-                } else {
-                    return null;
-                }
-            }
-            break; 
-        }
-
-        if (finalResponse) {
-            finalResponse.toolLogs = executedTools;
-        }
-
+        const finalResponse = await Promise.race([primaryTask(), timeoutPromise]);
         return finalResponse;
 
-    } catch (e) {
-        // --- Log angepasst ---
-        console.error(`[CID: ${ticketId}] Tradeo AI Headless Error:`, e);
-        return null;
+    } catch (error) {
+        console.warn(`[CID: ${ticketId}] Tradeo AI Headless: Fail/Timeout. Starte Fallback.`, error);
+        
+        // 3. FALLBACK
+        try {
+            const min = Math.round(dynamicTimeoutMs / 60000);
+            const fallbackReason = error.message === "TIMEOUT" ? `Timeout (>${min}min)` : "Fehler";
+            
+            const warningLog = `⚠️ Background-Scan abgebrochen (${fallbackReason}). Fallback-Modus aktiv.`;
+            
+            let contents = [{ role: "user", parts: [{ text: `
+                ${headlessPrompt}
+                ACHTUNG: Tool-Nutzung fehlgeschlagen. 
+                Erstelle Antwort NUR basierend auf Text. Erfinde keine Daten.
+            ` }] }];
+
+            const fallbackResponse = await executeHeadlessLoop(contents, apiKey, ticketId, false);
+            
+            if (fallbackResponse) {
+                if (!fallbackResponse.toolLogs) fallbackResponse.toolLogs = [];
+                fallbackResponse.toolLogs.push(warningLog);
+            }
+            return fallbackResponse;
+
+        } catch (fbError) {
+            console.error(`[CID: ${ticketId}] Headless Fallback failed completely:`, fbError);
+            return null;
+        }
     }
+}
+
+// Helper: Headless Loop
+async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
+    const model = window.aiState.currentModel || "gemini-2.5-pro";
+    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
+    
+    let executedTools = [];
+    let turnCount = 0;
+    const maxTurns = allowTools ? 3 : 1;
+
+    while (turnCount < maxTurns) {
+        const payload = { contents: contents };
+        if (allowTools) payload.tools = [{ function_declarations: GEMINI_TOOLS }];
+
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error?.message || "API Error");
+
+        const candidate = data.candidates?.[0];
+        if (!candidate || !candidate.content) throw new Error("Empty Content");
+
+        const content = candidate.content;
+        const parts = content.parts;
+        const functionCallPart = parts.find(p => p.functionCall);
+
+        if (functionCallPart && allowTools) {
+            const fnName = functionCallPart.functionCall.name;
+            const fnArgs = functionCallPart.functionCall.args;
+            
+            executedTools.push(`⚙️ AI nutzt Tool: ${fnName}(${JSON.stringify(fnArgs)})`);
+            console.log(`[CID: ${ticketId}] Headless Tool: ${fnName}`);
+
+            // Tool Logic
+            let functionResult = null;
+            let actionName = '';
+            let actionPayload = {};
+
+            if (fnName === 'getOrderDetails') { actionName = 'GET_ORDER_FULL'; actionPayload = { orderId: fnArgs.orderId }; }
+            else if (fnName === 'getItemDetails') { actionName = 'GET_ITEM_DETAILS'; actionPayload = { identifier: fnArgs.identifier }; }
+            else if (fnName === 'getCustomerDetails') { actionName = 'GET_CUSTOMER_DETAILS'; actionPayload = { contactId: fnArgs.contactId }; }
+            else if (fnName === 'searchItemsByText') { actionName = 'SEARCH_ITEMS_BY_TEXT'; actionPayload = { searchText: fnArgs.searchText, mode: 'name', maxResults: 30 }; }
+
+            if (actionName) {
+                const apiResult = await new Promise(resolve => {
+                    chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => resolve(response));
+                });
+                functionResult = (apiResult && apiResult.success) ? apiResult.data : { error: "Error" };
+            } else {
+                functionResult = { error: "Unknown" };
+            }
+
+            contents.push(content); 
+            contents.push({
+                role: "function",
+                parts: [{ functionResponse: { name: fnName, response: { name: fnName, content: functionResult } } }]
+            });
+            turnCount++;
+            continue; 
+        }
+
+        let rawText = parts[0].text || ""; 
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        let finalResponse = null;
+        try { 
+            finalResponse = JSON.parse(rawText); 
+        } catch(e) { 
+            if(rawText) finalResponse = { draft: rawText.replace(/\n/g, '<br>'), feedback: "Fallback (Raw Text)" }; 
+        }
+        
+        if (finalResponse) {
+            finalResponse.toolLogs = executedTools;
+            return finalResponse;
+        }
+        break;
+    }
+    return null;
 }
 
 function extractContextFromDOM(docRoot) {
@@ -1028,8 +1019,6 @@ async function runAI(isInitial = false) {
     const btn = document.getElementById('tradeo-ai-send-btn');
     const input = document.getElementById('tradeo-ai-input');
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
-    
-    // ID für Logging holen
     const cid = getTicketIdFromUrl() || "UNKNOWN";
 
     const storageData = await chrome.storage.local.get(['geminiApiKey']);
@@ -1047,27 +1036,31 @@ async function runAI(isInitial = false) {
     }
 
     if (!apiKey) {
-        renderChatMessage('system', "⚠️ Kein API Key gefunden. Bitte in den Einstellungen hinterlegen.");
+        renderChatMessage('system', "⚠️ Kein API Key gefunden.");
         return; 
     }
 
     window.aiState.isGenerating = true;
     if(btn) { btn.disabled = true; btn.innerText = "..."; }
-    
+
     const contextText = extractContextFromDOM(document);
+    const currentDraft = window.aiState.isRealMode ? document.querySelector('.note-editable')?.innerHTML : dummyDraft.innerHTML;
     
-    // History String bauen
     const historyString = window.aiState.chatHistory.map(e => {
         if(e.type === 'draft') return ""; 
         const role = e.type === 'user' ? 'User' : 'AI';
         return `${role}: ${e.content}`;
     }).join("\n");
-    
-    // Aktuellen Draft auslesen (falls vorhanden)
-    const currentDraft = window.aiState.isRealMode ? document.querySelector('.note-editable')?.innerHTML : dummyDraft.innerHTML;
 
-    let contents = [
-        {
+    // --- TIMEOUT LOGIK (UPDATED) ---
+    const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
+    const isSlowModel = currentModel.includes("gemini-3-pro"); // Erkennt 'gemini-3-pro-preview'
+    // Nutzung der neuen Konstanten:
+    const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : AI_TIMEOUT_STANDARD; 
+
+    // 1. HAUPT-TASK
+    const primaryTask = async () => {
+        let contents = [{
             role: "user",
             parts: [{ text: `
                 ${SYSTEM_PROMPT}
@@ -1080,207 +1073,222 @@ async function runAI(isInitial = false) {
                 === ANWEISUNG ===
                 ${userPrompt}
             `}]
-        }
-    ];
+        }];
+        return await executeGeminiLoop(contents, apiKey, cid, true);
+    };
 
-    const model = window.aiState.currentModel || "gemini-2.5-pro";
-    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
+    // 2. TIMEOUT PROMISE
+    const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("TIMEOUT")), dynamicTimeoutMs)
+    );
 
     try {
-        let finalResponse = null;
-        let turnCount = 0;
-        const maxTurns = 3; 
+        // Race: AI vs. Dynamisches Timeout
+        const finalResponse = await Promise.race([primaryTask(), timeoutPromise]);
+        
+        handleAiSuccess(finalResponse, isInitial, input, dummyDraft, cid);
 
-        while (turnCount < maxTurns) {
-            
-            const payload = {
-                contents: contents,
-                tools: [{ function_declarations: GEMINI_TOOLS }]
-            };
-
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            const data = await response.json();
-            
-            if (!response.ok) {
-                throw new Error(data.error?.message || `API Error: ${response.status}`);
-            }
-
-            // --- SAFETY FIX START: Prüfen ob Candidate existiert ---
-            const candidate = data.candidates?.[0];
-            
-            if (!candidate || !candidate.content) {
-                console.warn(`[CID: ${cid}] Tradeo AI: Leere Antwort von Gemini. FinishReason: ${candidate?.finishReason}`);
-                throw new Error(`Die AI hat keine Antwort generiert (Grund: ${candidate?.finishReason || 'Unbekannt'}). Bitte versuchen Sie es erneut.`);
-            }
-            
-            const content = candidate.content;
-            
-            if (!content.parts || content.parts.length === 0) {
-                 console.warn(`[CID: ${cid}] Tradeo AI: Content vorhanden aber 'parts' leer.`);
-                 throw new Error("Leere Antwort erhalten.");
-            }
-            // --- SAFETY FIX END ---
-
-            const parts = content.parts;
-            const functionCallPart = parts.find(p => p.functionCall);
-
-            if (functionCallPart) {
-                const fnName = functionCallPart.functionCall.name;
-                const fnArgs = functionCallPart.functionCall.args;
-                
-                const logText = `⚙️ AI ruft Tool: ${fnName}(${JSON.stringify(fnArgs)})`;
-                
-                renderChatMessage('system', logText);
-                window.aiState.chatHistory.push({ type: "system", content: logText });
-                
-                console.log(`[CID: ${cid}] Tradeo AI: Function Call detected:`, fnName, fnArgs);
-
-                let functionResult = null;
-                let actionName = '';
-                let actionPayload = {};
-
-                // Tool Mapping
-                if (fnName === 'getOrderDetails') {
-                    actionName = 'GET_ORDER_FULL';
-                    actionPayload = { orderId: fnArgs.orderId };
-                } else if (fnName === 'getItemDetails') {
-                    actionName = 'GET_ITEM_DETAILS';
-                    actionPayload = { identifier: fnArgs.identifier };
-                } else if (fnName === 'getCustomerDetails') {
-                    actionName = 'GET_CUSTOMER_DETAILS';
-                    actionPayload = { contactId: fnArgs.contactId };
-                } else if (fnName === 'searchItemsByText') {
-                    actionName = 'SEARCH_ITEMS_BY_TEXT';
-                    actionPayload = { 
-                        searchText: fnArgs.searchText,
-                        mode: fnArgs.mode || 'name', 
-                        maxResults: fnArgs.maxResults || 30
-                    };
-                }
-
-                if (actionName) {
-                    // Auf API Antwort warten
-                    const apiResult = await new Promise(resolve => {
-                        chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => {
-                             // Runtime Error Check
-                             if (chrome.runtime.lastError) {
-                                 resolve({ success: false, error: chrome.runtime.lastError.message });
-                             } else {
-                                 resolve(response);
-                             }
-                        });
-                    });
-                    
-                    if(apiResult && apiResult.success) {
-                        functionResult = apiResult.data;
-                    } else {
-                        functionResult = { error: apiResult ? apiResult.error : "Unknown Error/Timeout" };
-                    }
-                } else {
-                    functionResult = { error: "Tool not implemented in frontend" };
-                }
-
-                // History aufbauen für nächsten Turn
-                contents.push(content); 
-                contents.push({
-                    role: "function",
-                    parts: [{
-                        functionResponse: {
-                            name: fnName,
-                            response: { name: fnName, content: functionResult }
-                        }
-                    }]
-                });
-
-                turnCount++;
-                continue; // Nächster Schleifendurchlauf (neuer Request an Gemini mit Tool-Ergebnis)
-            }
-
-            // Kein Function Call -> Text Antwort parsen
-            let rawText = parts[0].text || "";
-            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-            
-            try { 
-                finalResponse = JSON.parse(rawText); 
-                
-                if(finalResponse.detected_language) {
-                    console.log(`[CID: ${cid}] Tradeo AI Language Detect:`, finalResponse.detected_language);
-                }
-                
-                if(!finalResponse.draft && finalResponse.text) finalResponse.draft = finalResponse.text;
-
-            } catch(e) { 
-                console.warn(`[CID: ${cid}] Tradeo AI JSON Parse Error:`, e);
-                // Fallback wenn kein JSON
-                const fallbackHtml = rawText.replace(/\n/g, '<br>');
-                finalResponse = { 
-                    draft: fallbackHtml, 
-                    feedback: "Achtung: AI Formatierung war fehlerhaft (kein JSON), Rohdaten werden angezeigt." 
-                }; 
-            }
-            break; // Schleife verlassen, da wir eine Antwort haben
+    } catch (error) {
+        console.warn(`[CID: ${cid}] Tradeo AI: Abbruch (${error.message}). Starte Fallback.`);
+        
+        // Unterscheidung für die User-Meldung
+        let reasonText = "Ein Fehler ist aufgetreten";
+        if (error.message === "TIMEOUT") {
+            const min = Math.round(dynamicTimeoutMs / 60000);
+            reasonText = `Zeitüberschreitung (Limit: ${min} Min)`;
         }
 
-        if (finalResponse) {
-            renderDraftMessage(finalResponse.draft);
-            window.aiState.chatHistory.push({ type: "draft", content: finalResponse.draft });
-            
-            if (finalResponse.feedback) {
-                renderChatMessage('ai', finalResponse.feedback);
-                window.aiState.chatHistory.push({ type: "ai", content: finalResponse.feedback });
-            }
-            
-            window.aiState.lastDraft = finalResponse.draft;
-            
-            // Editor Logik
-            if (window.aiState.isRealMode && !window.aiState.preventOverwrite) {
-                const editable = document.querySelector('.note-editable');
-                if (editable) setEditorContent(editable, finalResponse.draft);
-            } else {
-                if(dummyDraft) dummyDraft.innerHTML = finalResponse.draft;
-                if(!window.aiState.preventOverwrite && !window.aiState.isRealMode && dummyDraft) { 
-                    dummyDraft.style.display = 'block'; 
-                    flashElement(dummyDraft); 
-                }
-            }
-            if(!isInitial && input) input.value = '';
+        const warningText = `${reasonText}. Starte Notfall-Modus ohne Tools...`;
+        renderWarningMessage(warningText);
+        window.aiState.chatHistory.push({ type: "system", content: warningText });
 
-            // Speichern
-            const ticketId = getTicketIdFromUrl();
-            if (ticketId) {
-                const storageKey = `draft_${ticketId}`;
-                chrome.storage.local.get([storageKey], function(res) {
-                    const oldData = res[storageKey] || {};
-                    const preservedInboxHash = oldData.inboxHash || oldData.contentHash || "manual_save_" + Date.now();
+        // 3. FALLBACK-LOGIK (Tools verboten)
+        try {
+            let fallbackPrompt = `
+                ACHTUNG: Die vorherige Verarbeitung ist fehlgeschlagen (${error.message}).
+                Bitte erstelle jetzt sofort eine Antwort basierend NUR auf dem Text.
+                Versuche NICHT, Tools zu nutzen.
+                Ursprüngliche Anweisung: ${userPrompt || "Analysiere Ticket"}
+            `;
 
-                    const newData = {
-                        draft: finalResponse.draft,
-                        feedback: finalResponse.feedback,
-                        chatHistory: window.aiState.chatHistory,
-                        timestamp: Date.now(),
-                        inboxHash: preservedInboxHash,
-                        contentHash: preservedInboxHash
-                    };
-                    
-                    const saveObj = {};
-                    saveObj[storageKey] = newData;
-                    chrome.storage.local.set(saveObj);
-                });
-            }
+            let contents = [{
+                role: "user",
+                parts: [{ text: `
+                    ${SYSTEM_PROMPT}
+                    === TICKET VERLAUF ===
+                    ${contextText}
+                    === CHAT HISTORIE ===
+                    ${historyString}
+                    === NOTFALL MODUS ===
+                    ${fallbackPrompt}
+                `}]
+            }];
+
+            const fallbackResponse = await executeGeminiLoop(contents, apiKey, cid, false);
+            handleAiSuccess(fallbackResponse, isInitial, input, dummyDraft, cid);
+
+        } catch (fallbackError) {
+            renderChatMessage('system', "❌ Fallback fehlgeschlagen.");
+            console.error(`[CID: ${cid}] Fallback Error:`, fallbackError);
         }
-
-    } catch(e) {
-        renderChatMessage('system', "❌ Error: " + e.message);
-        console.error(`[CID: ${cid}] Error in runAI:`, e);
     } finally {
         if(btn) { btn.disabled = false; btn.innerText = "Go"; }
         window.aiState.isGenerating = false; 
     }
+}
+
+// Helper: Gemeinsame Erfolgsverarbeitung für Main & Fallback
+function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) {
+    if (!finalResponse) throw new Error("Keine Antwort erhalten");
+
+    renderDraftMessage(finalResponse.draft);
+    window.aiState.chatHistory.push({ type: "draft", content: finalResponse.draft });
+    
+    if (finalResponse.feedback) {
+        renderChatMessage('ai', finalResponse.feedback);
+        window.aiState.chatHistory.push({ type: "ai", content: finalResponse.feedback });
+    }
+    
+    window.aiState.lastDraft = finalResponse.draft;
+    
+    // Editor Logik
+    if (window.aiState.isRealMode && !window.aiState.preventOverwrite) {
+        const editable = document.querySelector('.note-editable');
+        if (editable) setEditorContent(editable, finalResponse.draft);
+    } else {
+        if(dummyDraft) dummyDraft.innerHTML = finalResponse.draft;
+        if(!window.aiState.preventOverwrite && !window.aiState.isRealMode && dummyDraft) { 
+            dummyDraft.style.display = 'block'; 
+            flashElement(dummyDraft); 
+        }
+    }
+    if(!isInitial && input) input.value = '';
+
+    // Speichern
+    if (ticketId) {
+        const storageKey = `draft_${ticketId}`;
+        chrome.storage.local.get([storageKey], function(res) {
+            const oldData = res[storageKey] || {};
+            const preservedInboxHash = oldData.inboxHash || oldData.contentHash || "manual_save_" + Date.now();
+
+            const newData = {
+                draft: finalResponse.draft,
+                feedback: finalResponse.feedback,
+                chatHistory: window.aiState.chatHistory,
+                timestamp: Date.now(),
+                inboxHash: preservedInboxHash,
+                contentHash: preservedInboxHash
+            };
+            
+            const saveObj = {};
+            saveObj[storageKey] = newData;
+            chrome.storage.local.set(saveObj);
+        });
+    }
+}
+
+// Helper: Ausgelagerter Loop (Verwendet von runAI und Fallback)
+async function executeGeminiLoop(contents, apiKey, cid, allowTools) {
+    const model = window.aiState.currentModel || "gemini-2.5-pro";
+    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
+    
+    let turnCount = 0;
+    const maxTurns = allowTools ? 3 : 1; // Ohne Tools nur 1 Turn erlaubt
+
+    while (turnCount < maxTurns) {
+        const payload = { contents: contents };
+        
+        // Tools nur hinzufügen, wenn erlaubt
+        if (allowTools) {
+            payload.tools = [{ function_declarations: GEMINI_TOOLS }];
+        }
+
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error?.message || `API Error: ${response.status}`);
+
+        const candidate = data.candidates?.[0];
+        if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
+        
+        const content = candidate.content;
+        const parts = content.parts;
+        const functionCallPart = parts.find(p => p.functionCall);
+
+        // Wenn Function Call und Tools erlaubt sind
+        if (functionCallPart && allowTools) {
+            const fnName = functionCallPart.functionCall.name;
+            const fnArgs = functionCallPart.functionCall.args;
+            
+            const logText = `⚙️ AI ruft Tool: ${fnName}(${JSON.stringify(fnArgs)})`;
+            renderChatMessage('system', logText);
+            window.aiState.chatHistory.push({ type: "system", content: logText });
+            console.log(`[CID: ${cid}] Tool Exec: ${fnName}`);
+
+            let functionResult = await executeToolAction(fnName, fnArgs, cid);
+
+            contents.push(content); 
+            contents.push({
+                role: "function",
+                parts: [{
+                    functionResponse: {
+                        name: fnName,
+                        response: { name: fnName, content: functionResult }
+                    }
+                }]
+            });
+            turnCount++;
+            continue; 
+        }
+
+        // Kein Function Call oder Tools verboten -> Parsen
+        let rawText = parts[0].text || "";
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        
+        try { 
+            let jsonResp = JSON.parse(rawText);
+            if(!jsonResp.draft && jsonResp.text) jsonResp.draft = jsonResp.text;
+            return jsonResp;
+        } catch(e) { 
+            return { 
+                draft: rawText.replace(/\n/g, '<br>'), 
+                feedback: "Hinweis: AI Formatierung war kein JSON (Rohdaten)." 
+            }; 
+        }
+    }
+    throw new Error("Max Turns erreicht ohne Ergebnis");
+}
+
+// Helper: Tool Ausführung ausgelagert
+async function executeToolAction(fnName, fnArgs, cid) {
+    let actionName = '';
+    let actionPayload = {};
+
+    if (fnName === 'getOrderDetails') {
+        actionName = 'GET_ORDER_FULL'; actionPayload = { orderId: fnArgs.orderId };
+    } else if (fnName === 'getItemDetails') {
+        actionName = 'GET_ITEM_DETAILS'; actionPayload = { identifier: fnArgs.identifier };
+    } else if (fnName === 'getCustomerDetails') {
+        actionName = 'GET_CUSTOMER_DETAILS'; actionPayload = { contactId: fnArgs.contactId };
+    } else if (fnName === 'searchItemsByText') {
+        actionName = 'SEARCH_ITEMS_BY_TEXT';
+        actionPayload = { searchText: fnArgs.searchText, mode: fnArgs.mode || 'name', maxResults: fnArgs.maxResults || 30 };
+    }
+
+    if (!actionName) return { error: "Unknown Tool" };
+
+    const apiResult = await new Promise(resolve => {
+        chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => {
+             if (chrome.runtime.lastError) resolve({ success: false, error: chrome.runtime.lastError.message });
+             else resolve(response);
+        });
+    });
+    
+    return apiResult && apiResult.success ? apiResult.data : { error: apiResult ? apiResult.error : "API Fail" };
 }
 
 // --- STANDARD UTILS ---
@@ -1376,6 +1384,19 @@ function renderChatMessage(role, text) {
         msgDiv.style.fontStyle = 'italic'; 
         msgDiv.innerHTML = text; 
     }
+    
+    historyContainer.appendChild(msgDiv);
+    historyContainer.scrollTop = historyContainer.scrollHeight;
+}
+
+// Render Funktion für Warnungen (Orange Box)
+function renderWarningMessage(text) {
+    const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    if(!historyContainer) return;
+    
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'warning-msg'; 
+    msgDiv.innerHTML = `<strong>⚠️ System-Hinweis</strong>${text}`;
     
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
