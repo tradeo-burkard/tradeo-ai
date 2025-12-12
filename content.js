@@ -146,7 +146,7 @@ window.aiState = {
     isGenerating: false,
     preventOverwrite: false,
     chatHistory: [], // Array von Objekten: { type: 'user'|'ai'|'draft', content: string }
-    currentModel: "gemini-2.5-pro",
+    currentModel: "gemini-2.5-flash",
     // Cache management V3
     knownTickets: new Map(), // Map<TicketID, ContentHash>
     processingQueue: new Set() // Set<TicketID>
@@ -388,14 +388,13 @@ function checkAndQueue(id, currentHash) {
 
 // --- LOGIC: QUEUE MANAGEMENT & PROCESSING ---
 
-// --- LOGIC: QUEUE MANAGEMENT & PROCESSING ---
-
 async function processTicket(id, incomingInboxHash) {
     try {
         // 1. Locking prüfen
         const lockAcquired = await acquireLock(id, 'background');
         if (!lockAcquired) {
-            console.log(`[CID: ${id}] Skip Pre-Fetch: Bereits in Bearbeitung oder Locked.`);
+            // Log Level reduziert, um Konsole sauberer zu halten
+            // console.log(`[CID: ${id}] Skip Pre-Fetch: Locked.`);
             return;
         }
 
@@ -403,10 +402,11 @@ async function processTicket(id, incomingInboxHash) {
         const storedRes = await chrome.storage.local.get([storageKey]);
         const storedData = storedRes[storageKey];
 
+        // Abbruch wenn Inbox-Hash identisch (Preview hat sich nicht geändert)
         if (storedData) {
-            const lastKnownHash = storedData.inboxHash || storedData.contentHash;
-            if (lastKnownHash === incomingInboxHash || (lastKnownHash && lastKnownHash.startsWith('manual_save'))) {
-                await releaseLock(id); // Wichtig: Lock freigeben
+            const lastInboxHash = storedData.inboxHash;
+            if (lastInboxHash === incomingInboxHash) {
+                await releaseLock(id); 
                 return; 
             }
         }
@@ -417,7 +417,10 @@ async function processTicket(id, incomingInboxHash) {
         const text = await response.text();
         const parser = new DOMParser();
         const doc = parser.parseFromString(text, 'text/html');
+        
+        // Nutzt jetzt die neue Logik ohne Zeitstempel
         const contextText = extractContextFromDOM(doc);
+        const realContentHash = generateContentHash(contextText);
 
         if (!contextText || contextText.length < 50) {
             await releaseLock(id);
@@ -442,17 +445,16 @@ async function processTicket(id, incomingInboxHash) {
                 chatHistory: initialHistory,
                 timestamp: Date.now(),
                 inboxHash: incomingInboxHash, 
-                contentHash: incomingInboxHash 
+                contentHash: realContentHash // <--- Hash des bereinigten Textes speichern
             };
             
             await chrome.storage.local.set(data);
-            console.log(`[CID: ${id}] Tradeo AI: ✅ Draft gespeichert.`);
+            console.log(`[CID: ${id}] Tradeo AI: ✅ Draft gespeichert (Hash: ${realContentHash}).`);
         }
 
     } catch (e) {
         console.error(`[CID: ${id}] Fehler bei Verarbeitung:`, e);
     } finally {
-        // IMMER Lock freigeben, auch bei Fehler
         await releaseLock(id);
     }
 }
@@ -465,7 +467,7 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     if (!apiKey) return null;
 
     // --- TIMEOUT LOGIK (UPDATED) ---
-    const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
+    const currentModel = window.aiState.currentModel || "gemini-2.5-flash";
     const isSlowModel = currentModel.includes("gemini-3-pro");
     // Nutzung der neuen Konstanten:
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : AI_TIMEOUT_STANDARD;
@@ -529,7 +531,7 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
 
 // Helper: Headless Loop
 async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
-    const model = window.aiState.currentModel || "gemini-2.5-pro";
+    const model = window.aiState.currentModel || "gemini-2.5-flash";
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
     
     let executedTools = [];
@@ -618,6 +620,10 @@ async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
     return null;
 }
 
+/**
+ * Extrahiert den reinen Text-Kontext für die AI.
+ * WICHTIG: Entfernt Zeitstempel und UI-Elemente für stabilen Hash!
+ */
 function extractContextFromDOM(docRoot) {
     const mainContainer = docRoot.querySelector('#conv-layout-main');
     if (!mainContainer) return "";
@@ -628,60 +634,69 @@ function extractContextFromDOM(docRoot) {
     const myZone = clone.querySelector('#tradeo-ai-copilot-zone');
     if (myZone) myZone.remove();
     
-    // 2. Entferne den Editor-Block (falls sichtbar)
+    // 2. Entferne den Editor-Block
     const editorBlock = clone.querySelector('.conv-reply-block');
     if(editorBlock) editorBlock.remove();
 
-    // 3. NEU: Entferne Dropdown-Menüs und UI-Buttons aus den Nachrichten
+    // 3. Entferne Dropdown-Menüs und UI-Buttons
     clone.querySelectorAll('.dropdown-menu, .thread-options, .conv-action-wrapper').forEach(el => el.remove());
 
-    // 4. NEU: Formatierung bereinigen (Mehrfache Leerzeilen reduzieren)
+    // 4. WICHTIG: Entferne Zeitstempel/Meta-Infos (.thread-info), 
+    // damit "vor 1 Minute" vs "vor 5 Minuten" den Hash nicht ändert!
+    clone.querySelectorAll('.thread-info').forEach(el => el.remove());
+
+    // 5. Formatierung bereinigen
     let cleanText = clone.innerText;
     cleanText = cleanText.replace(/\n\s*\n/g, '\n\n').trim();
 
     return cleanText;
 }
 
-// --- UI LOGIC (TICKET VIEW) ---
-
-// Suche die Funktion initConversationUI und ersetze den Cache-Lade-Block (am Ende der Funktion) oder die ganze Funktion:
-
-// --- NEUE FUNKTION: STARTUP SYNC ---
 async function handleStartupSync(ticketId) {
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
     
-    // 1. Versuchen Lock zu bekommen ('live')
-    // Gibt 'WAIT' zurück, wenn background gerade läuft
+    // 1. Aktuellen Zustand des Tickets im Browser ermitteln (Hash)
+    const currentText = extractContextFromDOM(document);
+    const currentHash = generateContentHash(currentText);
+
+    // console.log(`[CID: ${ticketId}] Startup Check. DOM-Hash: ${currentHash}`);
+
+    // 2. Prüfen, ob Hintergrund-Prozess läuft
     const lockStatus = await acquireLock(ticketId, 'live');
 
-    // SCENARIO A: Background läuft gerade (WAIT)
+    // --- SZENARIO A: Background läuft gerade (WAIT) ---
     if (lockStatus === 'WAIT') {
-        console.log("Tradeo AI: Background Job aktiv. Warte auf Fertigstellung...");
-        renderChatMessage('system', "⏳ <strong>Pre-Fetch läuft...</strong><br>Ein Hintergrundprozess analysiert dieses Ticket gerade. Bitte warten...");
-        dummyDraft.innerHTML = "<em>⏳ Warte auf Hintergrund-Analyse...</em>";
+        console.log(`[CID: ${ticketId}] Background Job aktiv. Warte...`);
+        
+        renderChatMessage('system', "⏳ <strong>Pre-Fetch läuft...</strong><br>Ein Hintergrundprozess analysiert das Ticket.");
+        dummyDraft.innerHTML = "<em>⏳ Warte auf Analyse...</em>";
+        dummyDraft.style.display = 'block';
 
-        // Listener für Changes im Storage
         const changeListener = (changes, area) => {
             if (area === 'local') {
-                // Check 1: Draft wurde erstellt
+                // Draft fertig
                 if (changes[`draft_${ticketId}`]) {
-                    console.log("Tradeo AI: Background fertig (Draft da). Lade...");
-                    chrome.storage.onChanged.removeListener(changeListener);
-                    loadFromCache(ticketId); // Helper Funktion unten
+                    const newData = changes[`draft_${ticketId}`].newValue;
+                    // Hash Vergleich (sollte jetzt dank Timestamp-Fix passen!)
+                    if (newData && newData.contentHash === currentHash) {
+                        console.log(`[CID: ${ticketId}] Sync OK. Lade Cache.`);
+                        chrome.storage.onChanged.removeListener(changeListener);
+                        loadFromCache(ticketId);
+                    } else if (newData) {
+                        console.warn(`[CID: ${ticketId}] Sync Mismatch nach Wait (Stored: ${newData.contentHash} vs DOM: ${currentHash}).`);
+                    }
                 }
-                // Check 2: Lock wurde entfernt (Fertig oder Error)
+                // Lock weg
                 else if (changes[`processing_${ticketId}`] && !changes[`processing_${ticketId}`].newValue) {
-                    console.log("Tradeo AI: Background fertig (Lock weg). Prüfe Ergebnis...");
                     chrome.storage.onChanged.removeListener(changeListener);
-                    
-                    // Kurz warten, damit Write sicher durch ist
                     setTimeout(async () => {
-                        const hasDraft = await checkDraftExists(ticketId);
-                        if (hasDraft) {
+                        const res = await chrome.storage.local.get([`draft_${ticketId}`]);
+                        const cached = res[`draft_${ticketId}`];
+                        if (cached && cached.contentHash === currentHash) {
                             loadFromCache(ticketId);
                         } else {
-                            renderChatMessage('system', "⚠️ Background Scan abgebrochen. Starte Live-Analyse.");
-                            runAI(true); // Fallback auf Live
+                            console.warn(`[CID: ${ticketId}] Background fertig, aber Daten veraltet. Starte Live.`);
+                            runAI(true);
                         }
                     }, 500);
                 }
@@ -691,15 +706,37 @@ async function handleStartupSync(ticketId) {
         return; 
     }
 
-    // SCENARIO B: Wir haben den Lock (oder es gab keinen) -> Prüfen ob Cache da ist
-    // Zuerst Lock wieder freigeben, da loadFromCache nichts tut und runAI sich selbst lockt
+    // --- SZENARIO B: Wir haben den Lock (Kein Background aktiv) ---
     await releaseLock(ticketId);
 
-    const hasDraft = await checkDraftExists(ticketId);
-    if (hasDraft) {
-        loadFromCache(ticketId);
+    const storageKey = `draft_${ticketId}`;
+    const res = await chrome.storage.local.get([storageKey]);
+    const cached = res[storageKey];
+
+    if (cached) {
+        // MATCH: Alles gut
+        if (cached.contentHash === currentHash) {
+            console.log(`[CID: ${ticketId}] Cache gültig. Lade...`);
+            loadFromCache(ticketId);
+            return;
+        } 
+        
+        // MISMATCH: Inhalt anders
+        console.log(`[CID: ${ticketId}] Cache veraltet (Stored: ${cached.contentHash} vs DOM: ${currentHash}). Reset.`);
+        
+        // UI Reset
+        dummyDraft.innerHTML = '<em>🤖 Ticket-Update erkannt! Analysiere neu...</em>';
+        dummyDraft.style.display = 'block';
+        flashElement(dummyDraft);
+        const hist = document.getElementById('tradeo-ai-chat-history');
+        if(hist) hist.innerHTML = '';
+        
+        // Live Start
+        runAI(true);
+
     } else {
-        // Kein Draft, kein Background -> Wir starten Live
+        // Kein Cache
+        console.log(`[CID: ${ticketId}] Kein Cache. Starte Live...`);
         runAI(true);
     }
 }
@@ -871,7 +908,7 @@ function initConversationUI(isRestore = false) {
             <button id="tradeo-ai-settings-btn" title="Einstellungen (API Keys)"><i class="glyphicon glyphicon-cog"></i></button>
             
             <div class="tradeo-ai-model-wrapper">
-                <button id="tradeo-ai-model-btn" type="button">2.5 Pro</button>
+                <button id="tradeo-ai-model-btn" type="button">2.5 Flash</button>
                 <div id="tradeo-ai-model-dropdown" class="hidden"></div>
             </div>
 
@@ -1116,6 +1153,18 @@ function expandInterface(acceptingFocus = true) {
 }
 
 // --- HELPERS ---
+
+// --- HELPER: Content Hashing ---
+function generateContentHash(str) {
+    let hash = 0;
+    if (str.length === 0) return 'hash_0';
+    for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash | 0; // Convert to 32bit integer
+    }
+    return 'hash_' + hash;
+}
 
 /**
  * Verschiebt die AI Zone je nach Kontext.
@@ -1404,7 +1453,7 @@ async function runAI(isInitial = false) {
         return `${role}: ${e.content}`;
     }).join("\n");
 
-    const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
+    const currentModel = window.aiState.currentModel || "gemini-2.5-flash";
     const isSlowModel = currentModel.includes("gemini-3-pro"); 
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : AI_TIMEOUT_STANDARD; 
 
@@ -1512,10 +1561,14 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
 
     // Speichern
     if (ticketId) {
+        // HIER: Hash neu berechnen (DOM hat sich evtl. geändert, z.B. User Note)
+        const contextText = extractContextFromDOM(document);
+        const currentHash = generateContentHash(contextText);
+
         const storageKey = `draft_${ticketId}`;
         chrome.storage.local.get([storageKey], function(res) {
             const oldData = res[storageKey] || {};
-            const preservedInboxHash = oldData.inboxHash || oldData.contentHash || "manual_save_" + Date.now();
+            const preservedInboxHash = oldData.inboxHash || "manual_live_" + Date.now();
 
             const newData = {
                 draft: finalResponse.draft,
@@ -1523,7 +1576,7 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
                 chatHistory: window.aiState.chatHistory,
                 timestamp: Date.now(),
                 inboxHash: preservedInboxHash,
-                contentHash: preservedInboxHash
+                contentHash: currentHash // <--- WICHTIG: Hash synchronisieren
             };
             
             const saveObj = {};
@@ -1535,7 +1588,7 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
 
 // Helper: Ausgelagerter Loop (Verwendet von runAI und Fallback)
 async function executeGeminiLoop(contents, apiKey, cid, allowTools) {
-    const model = window.aiState.currentModel || "gemini-2.5-pro";
+    const model = window.aiState.currentModel || "gemini-2.5-flash";
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
     
     let turnCount = 0;
