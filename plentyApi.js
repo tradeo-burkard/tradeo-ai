@@ -698,6 +698,9 @@ async function fetchItemDetails(identifierRaw) {
             // Freitext in der Beschreibung
             tasks.push(searchVariations({ itemDescription: identifier }, "itemDescription"));
 
+            // WICHTIG: Suche im Feld "Model" (für MPNs wie M386A8K40BM2-CTD)
+            tasks.push(searchVariations({ model: identifier }, "model"));
+
             // Lieferantennummer
             tasks.push(searchVariations({ supplierNumber: identifier }, "supplierNumber"));
             tasks.push(searchVariations({ supplierNumberFuzzy: identifier }, "supplierNumberFuzzy"));

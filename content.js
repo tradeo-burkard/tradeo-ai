@@ -550,10 +550,19 @@ async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
         if (!response.ok) throw new Error(data.error?.message || "API Error");
 
         const candidate = data.candidates?.[0];
-        if (!candidate || !candidate.content) throw new Error("Empty Content");
-
+        if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
+        
         const content = candidate.content;
-        const parts = content.parts;
+        // FIX: Sicherstellen, dass parts ein Array ist
+        const parts = content.parts || []; 
+        
+        if (parts.length === 0) {
+            // Manchmal ist parts leer, aber der finishReason sagt was passiert ist.
+            // Wir werfen keinen harten Fehler, sondern geben null zurück, damit der Loop sauber beendet oder retry macht.
+            console.warn("Tradeo AI: Gemini Content Parts sind leer.", candidate);
+            return { draft: "", feedback: "API lieferte leeren Inhalt (evtl. Safety Filter)." };
+        }
+
         const functionCallPart = parts.find(p => p.functionCall);
 
         if (functionCallPart && allowTools) {
@@ -1498,7 +1507,16 @@ async function executeGeminiLoop(contents, apiKey, cid, allowTools) {
         if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
         
         const content = candidate.content;
-        const parts = content.parts;
+        // FIX: Sicherstellen, dass parts ein Array ist
+        const parts = content.parts || []; 
+        
+        if (parts.length === 0) {
+            // Manchmal ist parts leer, aber der finishReason sagt was passiert ist.
+            // Wir werfen keinen harten Fehler, sondern geben null zurück, damit der Loop sauber beendet oder retry macht.
+            console.warn("Tradeo AI: Gemini Content Parts sind leer.", candidate);
+            return { draft: "", feedback: "API lieferte leeren Inhalt (evtl. Safety Filter)." };
+        }
+
         const functionCallPart = parts.find(p => p.functionCall);
 
         // Wenn Function Call und Tools erlaubt sind
