@@ -1094,23 +1094,50 @@ function setupSettingsLogic() {
 }
 
 // Neue Funktion zum Ausklappen mit Scroll-Fix
-function expandInterface() {
+// acceptingFocus: Wenn true (oder Event-Objekt), wird das Input-Feld fokussiert.
+function expandInterface(acceptingFocus = true) {
     const zone = document.getElementById('tradeo-ai-copilot-zone');
     if (zone) {
         zone.classList.remove('tradeo-collapsed');
         
-        // FIX: Scrollen, sobald das Element sichtbar wird
-        // Kleiner Timeout ist wichtig, damit der Browser das 'display: block' erst rendern kann
+        // FIX: Timeout ist wichtig für Rendering
         setTimeout(() => {
-            scrollToBottom();
-            // Fokus ins Eingabefeld setzen (optional, aber nice to have)
-            const input = document.getElementById('tradeo-ai-input');
-            if(input) input.focus();
+            scrollToBottom(); // Scrollt nur den internen Chat-Verlauf
+            
+            // Nur fokussieren, wenn gewünscht (verhindert Focus-War mit Editor)
+            // Prüfen ob acceptingFocus truthy ist (fängt auch das Event-Objekt ab)
+            if (acceptingFocus) {
+                const input = document.getElementById('tradeo-ai-input');
+                // FIX: preventScroll: true verhindert das Springen des ganzen Browsers!
+                if(input) input.focus({ preventScroll: true });
+            }
         }, 50);
     }
 }
 
 // --- HELPERS ---
+
+/**
+ * Verschiebt die AI Zone je nach Kontext.
+ * position = 'top' -> Oben im Chat (Prepend)
+ * position = 'bottom' -> Unter dem Editor-Block (InsertAfter)
+ */
+function repositionCopilotZone(position) {
+    const zone = document.getElementById('tradeo-ai-copilot-zone');
+    const mainContainer = document.getElementById('conv-layout-main');
+    const editorBlock = document.querySelector('.conv-reply-block');
+
+    if (!zone || !mainContainer) return;
+
+    if (position === 'bottom' && editorBlock) {
+        // Verschiebe Zone NACH dem Editor-Block
+        // (InsertAfter Logic via insertBefore + nextSibling)
+        editorBlock.parentNode.insertBefore(zone, editorBlock.nextSibling);
+    } else {
+        // Standard: Schiebe Zone wieder ganz nach oben
+        mainContainer.prepend(zone);
+    }
+}
 
 /**
  * Setzt UI und Speicher zurück, um einen "Frischen Start" zu erzwingen.
@@ -1249,20 +1276,25 @@ function setupButtons(originalReplyBtn) {
     aiBtn.addEventListener('click', function(e) {
         e.preventDefault(); e.stopPropagation();
         
-        expandInterface(); // WICHTIG: Klick auf Blitz öffnet alles!
+        // WICHTIG: false übergeben, damit NICHT ins AI-Input fokussiert wird.
+        // Das verhindert Sprünge, da gleich danach der Editor den Fokus holt.
+        expandInterface(false); 
 
         originalReplyBtn.click();
         window.aiState.isRealMode = true; window.aiState.preventOverwrite = false;
         waitForSummernote(function(editable) {
             const content = window.aiState.lastDraft || document.getElementById('tradeo-ai-dummy-draft').innerHTML;
             setEditorContent(editable, content);
+            // Info: setEditorContent kümmert sich bereits um preventScroll für den Editor
             document.getElementById('tradeo-ai-dummy-draft').style.display = 'none';
         });
     });
 
     // Logic: Original Button Hooks
     originalReplyBtn.addEventListener('click', () => {
-        document.getElementById('tradeo-ai-dummy-draft').style.display = 'none';
+        // ENTFERNT: document.getElementById('tradeo-ai-dummy-draft').style.display = 'none'; 
+        
+        // Wir setzen nur den Modus, den Rest macht der Observer (Verschieben + Anzeigen)
         window.aiState.isRealMode = true;
         if(window.aiState.isGenerating) window.aiState.preventOverwrite = true;
     });
@@ -1278,20 +1310,43 @@ function setupButtons(originalReplyBtn) {
 function setupEditorObserver() {
     const editorBlock = document.querySelector('.conv-reply-block');
     if (!editorBlock) return;
+
+    // Initial Check
+    const isInitiallyHidden = editorBlock.classList.contains('hidden') || editorBlock.style.display === 'none';
+    if (!isInitiallyHidden) {
+        repositionCopilotZone('bottom');
+    }
+
     new MutationObserver((mutations) => {
         mutations.forEach((mutation) => {
             if (mutation.attributeName === 'class' || mutation.attributeName === 'style') {
                 const isHidden = editorBlock.classList.contains('hidden') || editorBlock.style.display === 'none';
+                
+                const dummy = document.getElementById('tradeo-ai-dummy-draft');
+                
                 if (isHidden) {
-                    window.aiState.isRealMode = false; window.aiState.preventOverwrite = false;
-                    const dummy = document.getElementById('tradeo-ai-dummy-draft');
+                    // --- EDITOR IST ZU (Lesemodus) ---
+                    window.aiState.isRealMode = false; 
+                    window.aiState.preventOverwrite = false;
+                    
+                    // Zone nach OBEN schieben
+                    repositionCopilotZone('top');
+
                     if (dummy) {
                         if(window.aiState.lastDraft) dummy.innerHTML = window.aiState.lastDraft;
                         dummy.style.display = 'block';
                     }
                 } else {
-                    const dummy = document.getElementById('tradeo-ai-dummy-draft');
-                    if(dummy) dummy.style.display = 'none';
+                    // --- EDITOR IST OFFEN (Schreibmodus) ---
+                    
+                    // Zone nach UNTEN schieben (unter den Editor)
+                    repositionCopilotZone('bottom');
+
+                    // WICHTIG: Dummy Draft NICHT verstecken, sondern anzeigen (als Referenz)
+                    if(dummy) {
+                        // Optional: Styling anpassen, damit es eher wie eine "Referenz" aussieht
+                        dummy.style.display = 'block'; 
+                    }
                 }
             }
         });
