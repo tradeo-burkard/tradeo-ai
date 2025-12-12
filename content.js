@@ -146,7 +146,7 @@ window.aiState = {
     isGenerating: false,
     preventOverwrite: false,
     chatHistory: [], // Array von Objekten: { type: 'user'|'ai'|'draft', content: string }
-    currentModel: "gemini-2.5-flash",
+    currentModel: "gemini-2.5-pro",
     // Cache management V3
     knownTickets: new Map(), // Map<TicketID, ContentHash>
     processingQueue: new Set() // Set<TicketID>
@@ -467,7 +467,7 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     if (!apiKey) return null;
 
     // --- TIMEOUT LOGIK (UPDATED) ---
-    const currentModel = window.aiState.currentModel || "gemini-2.5-flash";
+    const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
     const isSlowModel = currentModel.includes("gemini-3-pro");
     // Nutzung der neuen Konstanten:
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : AI_TIMEOUT_STANDARD;
@@ -531,7 +531,7 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
 
 // Helper: Headless Loop
 async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
-    const model = window.aiState.currentModel || "gemini-2.5-flash";
+    const model = window.aiState.currentModel || "gemini-2.5-pro";
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
     
     let executedTools = [];
@@ -923,7 +923,7 @@ function initConversationUI(isRestore = false) {
             <button id="tradeo-ai-settings-btn" title="Einstellungen (API Keys)"><i class="glyphicon glyphicon-cog"></i></button>
             
             <div class="tradeo-ai-model-wrapper">
-                <button id="tradeo-ai-model-btn" type="button">2.5 Flash</button>
+                <button id="tradeo-ai-model-btn" type="button">2.5 Pro</button>
                 <div id="tradeo-ai-model-dropdown" class="hidden"></div>
             </div>
 
@@ -1468,7 +1468,7 @@ async function runAI(isInitial = false) {
         return `${role}: ${e.content}`;
     }).join("\n");
 
-    const currentModel = window.aiState.currentModel || "gemini-2.5-flash";
+    const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
     const isSlowModel = currentModel.includes("gemini-3-pro"); 
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : AI_TIMEOUT_STANDARD; 
 
@@ -1603,7 +1603,7 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
 
 // Helper: Ausgelagerter Loop (Verwendet von runAI und Fallback)
 async function executeGeminiLoop(contents, apiKey, cid, allowTools) {
-    const model = window.aiState.currentModel || "gemini-2.5-flash";
+    const model = window.aiState.currentModel || "gemini-2.5-pro";
     const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
     
     let turnCount = 0;
