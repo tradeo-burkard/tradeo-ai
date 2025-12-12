@@ -512,6 +512,81 @@ async function fetchItemDetails(identifierRaw) {
             }
         };
 
+        // --- Helper: kleine Zahl-Utility ---
+        const asNumber = (value) => {
+            const n = parseFloat(value);
+            return Number.isFinite(n) ? n : 0;
+        };
+
+        // --- Helper: Net-Stock aus einem einzelnen Stock-Entry bestimmen ---
+        const computeNetStockEntry = (entry) => {
+            if (!entry || typeof entry !== "object") return 0;
+
+            // 1) Bevorzugt Felder wie netStock / stockNet
+            if (entry.netStock != null) return asNumber(entry.netStock);
+            if (entry.stockNet != null) return asNumber(entry.stockNet);
+
+            // 2) Fallback: physical - reserved
+            const physical = asNumber(
+                entry.physicalStock ??
+                entry.stockPhysical ??
+                entry.physical ??
+                0
+            );
+            const reserved = asNumber(
+                entry.reservedStock ??
+                entry.stockReserved ??
+                entry.reserved ??
+                0
+            );
+
+            if (physical !== 0 || reserved !== 0) {
+                return physical - reserved;
+            }
+
+            // 3) Letzter Fallback: alles andere ignorieren → 0
+            return 0;
+        };
+
+        // --- Helper: Summe über alle Lager (Variante B) ---
+        const loadNetStockAllWarehouses = async (variationId) => {
+            // 1. Versuch: ohne warehouseId → alle Lager
+            let stockData = await makePlentyCall(
+                `/rest/stockmanagement/stock?variationId=${variationId}`
+            );
+            let stockEntries = extractEntries(stockData);
+
+            // Wenn Plenty hier nichts liefert, Fallback auf warehouseId=1
+            if (!stockEntries.length) {
+                stockData = await makePlentyCall(
+                    `/rest/stockmanagement/stock?variationId=${variationId}&warehouseId=1`
+                );
+                stockEntries = extractEntries(stockData);
+            }
+
+            const netStockTotal = stockEntries.reduce((acc, entry) => {
+                return acc + computeNetStockEntry(entry);
+            }, 0);
+
+            // Kleines Debug-Logging, um die Struktur zu sehen
+            if (stockEntries.length) {
+                console.log("Tradeo AI: Stock-Debug", {
+                    variationId,
+                    warehouses: stockEntries.map(e => e.warehouseId),
+                    sampleEntry: stockEntries[0],
+                    netStockTotal
+                });
+            } else {
+                console.log("Tradeo AI: Stock-Debug", {
+                    variationId,
+                    warehouses: [],
+                    netStockTotal: 0
+                });
+            }
+
+            return netStockTotal;
+        };
+
         // --- Helper: /rest/items/variations Suche ---
         const searchVariations = async (params, label) => {
             const qs = new URLSearchParams({
@@ -532,12 +607,14 @@ async function fetchItemDetails(identifierRaw) {
             }
         };
 
-        // --- Helper: Vollständige Daten für eine Variation laden ---
+        // --- Helper: Vollständige Daten für eine Variation laden (Single-Treffer) ---
         const loadFullData = async (variation) => {
             const itemId = variation.itemId;
             const variationId = variation.id;
 
             const [stockData, itemBaseData] = await Promise.all([
+                // hier lässt du das Verhalten wie bisher (nur Lager 1),
+                // damit der Export sich nicht ändert
                 makePlentyCall(`/rest/stockmanagement/stock?variationId=${variationId}&warehouseId=1`),
                 makePlentyCall(`/rest/items/${itemId}`)
             ]);
@@ -615,13 +692,13 @@ async function fetchItemDetails(identifierRaw) {
             // Barcode / EAN
             tasks.push(searchVariations({ barcode: identifier }, "barcode"));
 
-            // Freitext im Artikelnamen (dein Fall: "… - 0JY57X / JY57X")
+            // Freitext im Artikelnamen
             tasks.push(searchVariations({ itemName: identifier }, "itemName"));
 
             // Freitext in der Beschreibung
             tasks.push(searchVariations({ itemDescription: identifier }, "itemDescription"));
 
-            // Lieferantennummer (falls ihr sowas nutzt)
+            // Lieferantennummer
             tasks.push(searchVariations({ supplierNumber: identifier }, "supplierNumber"));
             tasks.push(searchVariations({ supplierNumberFuzzy: identifier }, "supplierNumberFuzzy"));
 
@@ -653,7 +730,7 @@ async function fetchItemDetails(identifierRaw) {
         }
 
         // =====================================================================
-        // 5. MEHRERE TREFFER → Kandidatenliste mit Kontext
+        // 5. MEHRERE TREFFER → Kandidatenliste mit Kontext (Variante B für Net-Stock)
         // =====================================================================
         console.log(`Tradeo AI: Ambige Ergebnisse – ${candidates.length} Treffer. Lade Details für Top 5...`);
 
@@ -670,14 +747,8 @@ async function fetchItemDetails(identifierRaw) {
                         name = t.name1 || t.name2 || t.name3 || "Unbekannt";
                     }
 
-                    const stockData = await makePlentyCall(
-                        `/rest/stockmanagement/stock?variationId=${cand.id}&warehouseId=1`
-                    );
-                    const stockEntries = extractEntries(stockData);
-                    const netStock =
-                        stockEntries && stockEntries.length > 0 && typeof stockEntries[0].netStock !== "undefined"
-                            ? stockEntries[0].netStock
-                            : 0;
+                    // Variante B: Net-Stock über alle Lager summieren
+                    const netStock = await loadNetStockAllWarehouses(cand.id);
 
                     return {
                         id: cand.id,
@@ -717,6 +788,7 @@ async function fetchItemDetails(identifierRaw) {
         throw error;
     }
 }
+
 
 // --- plentyApi.js ---
 
