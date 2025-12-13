@@ -51,7 +51,7 @@ Deine Aufgabe ist es, den Nachrichtenverlauf zu analysieren und einen perfekten,
 
 Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere keine JSON-Werte 1:1, sondern formuliere Sätze.
 
-**A. BEI BESTELLUNGEN (getOrderDetails):**
+**A. BEI BESTELLUNGEN (fetchOrderDetails):**
 1. **Status & Versand:**
    - **Status 7 (Warenausgang):** Das Paket wurde an den Logistiker übergeben.
    - **Tracking:** Prüfe das Feld 'shippingPackages'. Wenn dort eine 'packageNumber' steht, gib diese IMMER an.
@@ -64,10 +64,10 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
    - **Erwartete Laufzeit / Zustelldatum(sbereich):** Schätze das Zustelldatum unter Angabe von "normalerweise" unter Berücksichtigung von Zielland und Versanddatum und Versandart und dessen typische Zustellzeit ins Zielland (recherchieren).
 2. **Warnung:** Sage NIEMALS "ist zugestellt", nur weil Status 7 ist. Status 7 heißt nur "versendet".
 
-**B. BEI ARTIKELN (getItemDetails / searchItemsByText):**
+**B. BEI ARTIKELN (fetchItemDetails / searchItemsByText):**
 
-1. **Identifikator-Suche (getItemDetails):**
-   - Nutze 'getItemDetails' IMMER dann, wenn du eine spezifische Nummer oder Kennung im Text erkennst.
+1. **Identifikator-Suche (fetchItemDetails):**
+   - Nutze 'fetchItemDetails' IMMER dann, wenn du eine spezifische Nummer oder Kennung im Text erkennst.
    - Das Tool prüft in dieser Reihenfolge:
      1. Exakte Variation-ID oder Item-ID.
      2. Exakte Variationsnummer (z.B. 'SVR-12345').
@@ -95,7 +95,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
      * Achte auf Brutto/Netto-Kennzeichnung in den Metadaten.
    - **Filter:** Artikel wie 'Hardware Care Packs' oder 'Upgrade auf' werden von der Suche oft schon ausgefiltert, achte dennoch darauf, keine reinen Service-Artikel als Hardware zu verkaufen.
 
-**C. BEI KUNDEN (getCustomerDetails):**
+**C. BEI KUNDEN (fetchCustomerDetails):**
 1. **Kontext:**
    - Wenn der Kunde fragt "Wo ist meine Bestellung?", aber die letzte Order in der 'recentOrders'-Liste Monate her ist: Frage höflich nach der aktuellen Bestellnummer.
    - Wenn die letzte Order vor 1-3 Tagen war und Status < 7 hat: Informiere, dass sie noch in Bearbeitung ist.
@@ -155,7 +155,7 @@ window.aiState = {
 // TOOL DEFINITION FÜR GEMINI
 const GEMINI_TOOLS = [
     {
-        "name": "getOrderDetails",
+        "name": "fetchOrderDetails",
         "description": "Ruft vollständige Details einer Bestellung ab. ENTHÄLT Tracking-Nummern (Paketnummern), Versanddienstleister (z.B. DHL, UPS) und den genauen Status. Nutze dies immer, wenn nach dem 'Status', 'Wo ist mein Paket' oder einer Bestellnummer gefragt wird.",
         "parameters": {
             "type": "OBJECT",
@@ -169,7 +169,7 @@ const GEMINI_TOOLS = [
         }
     },
     {
-        "name": "getItemDetails",
+        "name": "fetchItemDetails",
         "description": "Ruft detaillierte Artikelinformationen für EINEN Artikel ab, inklusive Variation, Item-Basisdaten und Lagerbestand der Variation. Nutze dies, wenn der Kunde dir eine eindeutige Kennung nennt (Artikelnummer, Item-ID, Variations-ID, EAN/Barcode oder Teilenummer/Modell). Das Tool verwendet eine Heuristik: zuerst 6-stellige interne Nummern, dann IDs, Nummern, Barcodes und Modelle. Bei Mehrtreffern liefert es einen Ambiguity-Status mit Kandidatenliste.",
         "parameters": {
             "type": "OBJECT",
@@ -183,7 +183,7 @@ const GEMINI_TOOLS = [
         }
     },
     {
-        "name": "getCustomerDetails",
+        "name": "fetchCustomerDetails",
         "description": "Ruft Kundenstammdaten (Klasse, Adresse etc.) und die letzten Bestellungen dieses Kunden ab. Nutze dies, wenn eine Kundennummer (Contact ID) genannt wird.",
         "parameters": {
             "type": "OBJECT",
@@ -569,9 +569,9 @@ async function executeHeadlessLoop(contents, apiKeyIgnored, ticketId, allowTools
             let actionName = '';
             let actionPayload = {};
 
-            if (fnName === 'getOrderDetails') { actionName = 'GET_ORDER_FULL'; actionPayload = { orderId: fnArgs.orderId }; }
-            else if (fnName === 'getItemDetails') { actionName = 'GET_ITEM_DETAILS'; actionPayload = { identifier: fnArgs.identifier }; }
-            else if (fnName === 'getCustomerDetails') { actionName = 'GET_CUSTOMER_DETAILS'; actionPayload = { contactId: fnArgs.contactId }; }
+            if (fnName === 'fetchOrderDetails') { actionName = 'GET_ORDER_FULL'; actionPayload = { orderId: fnArgs.orderId }; }
+            else if (fnName === 'fetchItemDetails') { actionName = 'GET_ITEM_DETAILS'; actionPayload = { identifier: fnArgs.identifier }; }
+            else if (fnName === 'fetchCustomerDetails') { actionName = 'GET_CUSTOMER_DETAILS'; actionPayload = { contactId: fnArgs.contactId }; }
             else if (fnName === 'searchItemsByText') { actionName = 'SEARCH_ITEMS_BY_TEXT'; actionPayload = { searchText: fnArgs.searchText, mode: 'name', maxResults: 30 }; }
 
             if (actionName) {
@@ -1726,11 +1726,11 @@ async function executeToolAction(fnName, fnArgs, cid) {
     let actionName = '';
     let actionPayload = {};
 
-    if (fnName === 'getOrderDetails') {
+    if (fnName === 'fetchOrderDetails') {
         actionName = 'GET_ORDER_FULL'; actionPayload = { orderId: fnArgs.orderId };
-    } else if (fnName === 'getItemDetails') {
+    } else if (fnName === 'fetchItemDetails') {
         actionName = 'GET_ITEM_DETAILS'; actionPayload = { identifier: fnArgs.identifier };
-    } else if (fnName === 'getCustomerDetails') {
+    } else if (fnName === 'fetchCustomerDetails') {
         actionName = 'GET_CUSTOMER_DETAILS'; actionPayload = { contactId: fnArgs.contactId };
     } else if (fnName === 'searchItemsByText') {
         actionName = 'SEARCH_ITEMS_BY_TEXT';

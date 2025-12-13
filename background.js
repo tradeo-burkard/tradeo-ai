@@ -14,7 +14,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     // Order Details (Bestehend)
     if (request.action === 'GET_ORDER_FULL') {
-        fetchFullOrderDetails(request.orderId)
+        fetchOrderDetails(request.orderId)
             .then(data => sendResponse({ success: true, data: data }))
             .catch(error => {
                  sendResponse({ success: false, error: error.toString() });

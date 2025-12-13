@@ -142,7 +142,7 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
  */
-async function fetchFullOrderDetails(orderId) {
+async function fetchOrderDetails(orderId) {
     try {
         // 1. Hole Order mit Basis-Relationen + shippingPackages
         const orderData = await makePlentyCall(`/rest/orders/${orderId}?with[]=orderItems&with[]=relations&with[]=amounts&with[]=dates&with[]=addressRelations&with[]=shippingPackages`);
