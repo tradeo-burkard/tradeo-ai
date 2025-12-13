@@ -775,10 +775,15 @@ function loadFromCache(ticketId) {
                     } else if (msg.type === 'user') {
                         renderChatMessage('user', msg.content);
                     } else if (msg.type === 'ai') {
+                        // Legacy Fallback für alte Nachrichten
                         renderChatMessage('ai', msg.content);
+                    } else if (msg.type === 'reasoning') {
+                        // NEU: Reasoning Message
+                        renderReasoningMessage(msg.summary, msg.details);
                     } else if (msg.type === 'system') {
                         renderChatMessage('system', msg.content);
                     } else {
+                        // Generic Fallback
                         renderChatMessage('ai', msg.text || msg.content);
                     }
                 });
@@ -1173,7 +1178,34 @@ function expandInterface(acceptingFocus = true) {
 
 // --- HELPERS ---
 
-// --- HELPER: Content Hashing ---
+// Render Funktion für Reasoning/Feedback (Blaue Box, klickbar)
+function renderReasoningMessage(summary, details) {
+    const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    if(!historyContainer) return;
+
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'reasoning-msg'; 
+    
+    // Fallback falls Reasoning leer ist
+    const safeDetails = details || "Keine detaillierte Begründung verfügbar.";
+
+    msgDiv.innerHTML = `
+        <div class="reasoning-header">AI (Reasoning anzeigen)</div>
+        <div class="reasoning-summary">${summary}</div>
+        <div class="reasoning-body">${safeDetails}</div>
+    `;
+    
+    // Toggle Event
+    msgDiv.onclick = (e) => {
+        // Verhindert, dass Klicks im Body (z.B. beim Kopieren) das Ding zuklappen, falls gewünscht. 
+        // Hier lassen wir es togglen bei Klick auf den Container.
+        msgDiv.classList.toggle('expanded');
+    };
+
+    historyContainer.appendChild(msgDiv);
+    historyContainer.scrollTop = historyContainer.scrollHeight;
+}
+
 function generateContentHash(str) {
     let hash = 0;
     if (str.length === 0) return 'hash_0';
@@ -1555,12 +1587,23 @@ async function runAI(isInitial = false) {
 function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) {
     if (!finalResponse) throw new Error("Keine Antwort erhalten");
 
+    // 1. Draft rendern
     renderDraftMessage(finalResponse.draft);
     window.aiState.chatHistory.push({ type: "draft", content: finalResponse.draft });
     
-    if (finalResponse.feedback) {
-        renderChatMessage('ai', finalResponse.feedback);
-        window.aiState.chatHistory.push({ type: "ai", content: finalResponse.feedback });
+    // 2. Feedback & Reasoning rendern (NEU)
+    if (finalResponse.feedback || finalResponse.reasoning) {
+        const feedbackText = finalResponse.feedback || "Antwort erstellt.";
+        const reasoningText = finalResponse.reasoning || ""; // Kann leer sein
+
+        renderReasoningMessage(feedbackText, reasoningText);
+        
+        // WICHTIG: Wir speichern jetzt ein neues Objekt-Format für den Verlauf
+        window.aiState.chatHistory.push({ 
+            type: "reasoning", 
+            summary: feedbackText, 
+            details: reasoningText 
+        });
     }
     
     window.aiState.lastDraft = finalResponse.draft;
@@ -1580,7 +1623,6 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
 
     // Speichern
     if (ticketId) {
-        // HIER: Hash neu berechnen (DOM hat sich evtl. geändert, z.B. User Note)
         const contextText = extractContextFromDOM(document);
         const currentHash = generateContentHash(contextText);
 
@@ -1591,11 +1633,11 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
 
             const newData = {
                 draft: finalResponse.draft,
-                feedback: finalResponse.feedback,
+                feedback: finalResponse.feedback, // Legacy field
                 chatHistory: window.aiState.chatHistory,
                 timestamp: Date.now(),
                 inboxHash: preservedInboxHash,
-                contentHash: currentHash // <--- WICHTIG: Hash synchronisieren
+                contentHash: currentHash 
             };
             
             const saveObj = {};
