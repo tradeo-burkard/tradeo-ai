@@ -124,9 +124,9 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
 
 ### OUTPUT FORMAT (JSON ONLY):
 {
-  "detected_language": "DE" oder "EN",
+  "response_language": "DE", falls Gesprächsverlauf auf deutsch war, oder "EN", falls englisch oder andere Sprache!
   "reasoning": "Warum so entschieden? (z.B. 'Lagerbestand ist 0 -> informiere Kunde')",
-  "draft": "HTML Antworttext (<p>...</p>)",
+  "draft": "HTML Antworttext in der response_language ermittelten Sprache(<p>...</p>)",
   "feedback": "Kurze Info an Agent (z.B. 'Habe Lagerbestand geprüft: 5 Stück verfügbar')"
 }
 `;
@@ -529,10 +529,10 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     }
 }
 
-// Helper: Headless Loop
-async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
+// Ersetze die Funktion executeHeadlessLoop durch diese Version:
+async function executeHeadlessLoop(contents, apiKeyIgnored, ticketId, allowTools) {
+    // Info: apiKeyIgnored wird nicht mehr genutzt
     const model = window.aiState.currentModel || "gemini-2.5-pro";
-    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
     
     let executedTools = [];
     let turnCount = 0;
@@ -542,25 +542,18 @@ async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
         const payload = { contents: contents };
         if (allowTools) payload.tools = [{ function_declarations: GEMINI_TOOLS }];
 
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error?.message || "API Error");
+        // --- HIER IST DIE ÄNDERUNG: Aufruf über Rotation ---
+        const data = await callGeminiWithRotation(payload, model);
+        // ----------------------------------------------------
 
         const candidate = data.candidates?.[0];
         if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
         
         const content = candidate.content;
-        // FIX: Sicherstellen, dass parts ein Array ist
         const parts = content.parts || []; 
         
         if (parts.length === 0) {
-            // FIX v3.5: Fehler werfen, damit der Headless Fallback greift
-            console.warn("Tradeo AI Headless: Gemini Content Parts sind leer (Safety Filter?). Trigger Fallback.", candidate);
+            console.warn("Tradeo AI Headless: Gemini Content Parts sind leer. Trigger Fallback.", candidate);
             throw new Error("GEMINI_SAFETY_FILTER_TRIGGERED");
         }
 
@@ -571,9 +564,7 @@ async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
             const fnArgs = functionCallPart.functionCall.args;
             
             executedTools.push(`⚙️ AI nutzt Tool: ${fnName}(${JSON.stringify(fnArgs)})`);
-            console.log(`[CID: ${ticketId}] Headless Tool: ${fnName}`);
-
-            // Tool Logic
+            // Tool Logic (gekürzt, da identisch zum Original)
             let functionResult = null;
             let actionName = '';
             let actionPayload = {};
@@ -896,8 +887,9 @@ function initConversationUI(isRestore = false) {
         
         <div id="tradeo-ai-settings-panel">
             <div class="tradeo-setting-row">
-                <label>Gemini API Key</label>
-                <input type="password" id="setting-gemini-key" placeholder="AI Key hier...">
+                <label>Gemini API Keys (Einer pro Zeile)</label>
+                <textarea id="setting-gemini-key" placeholder="Key 1 (Projekt A)&#10;Key 2 (Projekt B)&#10;..." rows="4" style="width:100%; border:1px solid #ccc; border-radius:4px; padding:6px; font-family:monospace; font-size:11px;"></textarea>
+                <div style="font-size:10px; color:#666; margin-top:2px;">Bei "Rate Limit" Fehlern wird automatisch zum nächsten Key gewechselt.</div>
             </div>
             <div class="tradeo-setting-row">
                 <label>Plenty Username</label>
@@ -1100,8 +1092,16 @@ function setupSettingsLogic() {
         panel.classList.toggle('visible');
         if (panel.classList.contains('visible')) {
             // Beim Öffnen Werte laden
-            chrome.storage.local.get(['geminiApiKey', 'plentyUser', 'plentyPass'], (res) => {
-                document.getElementById('setting-gemini-key').value = res.geminiApiKey || '';
+            chrome.storage.local.get(['geminiApiKeys', 'geminiApiKey', 'plentyUser', 'plentyPass'], (res) => {
+                // Migration: Falls alter Single-Key existiert, aber keine Liste -> nutze Single Key
+                let keysToShow = "";
+                if (res.geminiApiKeys && Array.isArray(res.geminiApiKeys)) {
+                    keysToShow = res.geminiApiKeys.join('\n');
+                } else if (res.geminiApiKey) {
+                    keysToShow = res.geminiApiKey;
+                }
+                
+                document.getElementById('setting-gemini-key').value = keysToShow;
                 document.getElementById('setting-plenty-user').value = res.plentyUser || '';
                 document.getElementById('setting-plenty-pass').value = res.plentyPass || '';
             });
@@ -1110,27 +1110,32 @@ function setupSettingsLogic() {
 
     // Save Action
     saveBtn.addEventListener('click', async () => {
-        const geminiKey = document.getElementById('setting-gemini-key').value.trim();
+        const rawKeys = document.getElementById('setting-gemini-key').value;
         const pUser = document.getElementById('setting-plenty-user').value.trim();
         const pPass = document.getElementById('setting-plenty-pass').value.trim();
+
+        // Keys verarbeiten: Splitten, Trimmen, Leere Zeilen entfernen
+        const keyList = rawKeys.split('\n')
+            .map(k => k.trim())
+            .filter(k => k.length > 5); // Mindestlänge Check
 
         statusDiv.innerText = "Speichere...";
         
         // Speichern
         await chrome.storage.local.set({
-            geminiApiKey: geminiKey,
+            geminiApiKeys: keyList,     // Neue Liste speichern
+            geminiApiKey: keyList[0],   // Ersten Key als Fallback für Legacy-Funktionen speichern
             plentyUser: pUser,
             plentyPass: pPass,
-            plentyToken: null // Token resetten bei neuen Daten
+            plentyToken: null 
         });
 
         // Test der Verbindung (optional)
         if (pUser && pPass) {
              statusDiv.innerText = "Teste Plenty Verbindung...";
              try {
-                 // Einfacher Test-Call (z.B. Login erzwingen)
                  await callPlenty('/rest/login', 'POST', { username: pUser, password: pPass });
-                 statusDiv.innerText = "✅ Gespeichert & Verbunden!";
+                 statusDiv.innerText = `✅ Gespeichert (${keyList.length} API Keys) & Plenty Verbunden!`;
                  statusDiv.style.color = "green";
                  setTimeout(() => panel.classList.remove('visible'), 1500);
              } catch (e) {
@@ -1138,7 +1143,7 @@ function setupSettingsLogic() {
                  statusDiv.style.color = "red";
              }
         } else {
-            statusDiv.innerText = "✅ Gespeichert (Nur Gemini)";
+            statusDiv.innerText = `✅ Gespeichert (${keyList.length} Gemini Keys)`;
             setTimeout(() => panel.classList.remove('visible'), 1000);
         }
     });
@@ -1600,47 +1605,38 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
     }
 }
 
-// Helper: Ausgelagerter Loop (Verwendet von runAI und Fallback)
-async function executeGeminiLoop(contents, apiKey, cid, allowTools) {
+// Ersetze die Funktion executeGeminiLoop durch diese Version:
+async function executeGeminiLoop(contents, apiKeyIgnored, cid, allowTools) {
+    // Info: 'apiKeyIgnored' wird nicht mehr genutzt, wir holen die Liste intern in callGeminiWithRotation
     const model = window.aiState.currentModel || "gemini-2.5-pro";
-    const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${apiKey}`;
     
     let turnCount = 0;
-    const maxTurns = allowTools ? 3 : 1; // Ohne Tools nur 1 Turn erlaubt
+    const maxTurns = allowTools ? 3 : 1; 
 
     while (turnCount < maxTurns) {
         const payload = { contents: contents };
         
-        // Tools nur hinzufügen, wenn erlaubt
         if (allowTools) {
             payload.tools = [{ function_declarations: GEMINI_TOOLS }];
         }
 
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error?.message || `API Error: ${response.status}`);
+        // --- HIER IST DIE ÄNDERUNG: Aufruf über Rotation ---
+        const data = await callGeminiWithRotation(payload, model);
+        // ----------------------------------------------------
 
         const candidate = data.candidates?.[0];
         if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
         
         const content = candidate.content;
-        // FIX: Sicherstellen, dass parts ein Array ist
         const parts = content.parts || []; 
         
         if (parts.length === 0) {
-            // FIX v3.5: Nicht nur warnen, sondern FEHLER werfen, damit der Fallback ausgelöst wird!
             console.warn("Tradeo AI: Gemini Content Parts sind leer (Safety Filter?). Trigger Fallback.", candidate);
             throw new Error("GEMINI_SAFETY_FILTER_TRIGGERED");
         }
 
         const functionCallPart = parts.find(p => p.functionCall);
 
-        // Wenn Function Call und Tools erlaubt sind
         if (functionCallPart && allowTools) {
             const fnName = functionCallPart.functionCall.name;
             const fnArgs = functionCallPart.functionCall.args;
@@ -1666,7 +1662,6 @@ async function executeGeminiLoop(contents, apiKey, cid, allowTools) {
             continue; 
         }
 
-        // Kein Function Call oder Tools verboten -> Parsen
         let rawText = parts[0].text || "";
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
         
@@ -1900,6 +1895,69 @@ function setupResizeHandler() {
             document.addEventListener('mouseup', stopDrag);
         });
     }
+}
+
+/**
+ * Führt einen Gemini API Call mit Key-Rotation durch.
+ * Wenn ein Key ein Rate-Limit (429) hat, wird der nächste versucht.
+ */
+async function callGeminiWithRotation(payload, model) {
+    // 1. Keys aus Storage holen
+    const storage = await chrome.storage.local.get(['geminiApiKeys', 'geminiApiKey']);
+    let keys = storage.geminiApiKeys;
+
+    // Fallback für alte Installationen
+    if (!keys || !Array.isArray(keys) || keys.length === 0) {
+        if (storage.geminiApiKey) keys = [storage.geminiApiKey];
+        else throw new Error("Kein Gemini API Key gefunden. Bitte in den Einstellungen hinterlegen.");
+    }
+
+    let lastError = null;
+
+    // 2. Loop durch die Keys
+    for (let i = 0; i < keys.length; i++) {
+        const currentKey = keys[i];
+        const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${currentKey}`;
+
+        try {
+            // console.log(`Tradeo AI: Versuche API Key ${i + 1}/${keys.length}...`); // Optionales Debugging
+            
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            // 3. Fehlerbehandlung
+            if (!response.ok) {
+                // WICHTIG: 429 = Resource Exhausted (Rate Limit)
+                if (response.status === 429) {
+                    console.warn(`Tradeo AI: Key ${i+1} Rate Limit (429). Wechsle zum nächsten Key...`);
+                    continue; // Springe zum nächsten Key im Loop
+                }
+                
+                // Bei anderen Fehlern (z.B. 400 Bad Request) bringt Key-Wechsel nichts -> Fehler werfen
+                const errData = await response.json();
+                throw new Error(errData.error?.message || `API Error: ${response.status}`);
+            }
+
+            // 4. Erfolg!
+            return await response.json();
+
+        } catch (error) {
+            lastError = error;
+            // Wenn es ein Netzwerkfehler war, ggf. auch rotieren? 
+            // Hier rotieren wir nur bei explizitem 429 im Response-Block oben, 
+            // oder wenn fetch failed (z.B. Offline).
+            // Wir machen weiter im Loop, wenn es kein "harter" Logik-Fehler ist.
+            if (error.message.includes("API Error") && !error.message.includes("429")) {
+                 throw error; // Harter API Fehler (z.B. Bad Request) -> Abbruch
+            }
+        }
+    }
+
+    // Wenn wir hier ankommen, haben alle Keys versagt
+    throw new Error(`Alle ${keys.length} API Keys fehlgeschlagen. Letzter Fehler: ${lastError?.message}`);
 }
 
 // --- BOOTSTRAP ---
