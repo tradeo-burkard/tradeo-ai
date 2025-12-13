@@ -2190,7 +2190,7 @@ function initPlentyItemSearchDebugButton() {
 
     // 2. Button: Item Details (Identifier) - Darüber
     createBtn("tradeo-plenty-details-btn", "📦 debugPlentyItemDetails Debug", 50, async () => {
-        const defaultId = "MTA18ASF4G72PDZ"; // Default Input wie angefordert
+        const defaultId = "HMAA4GR7AJR8N-XN"; // Default Input wie angefordert
         const last = window.__lastPlentyDebugDetails || defaultId;
         const input = prompt("Plenty Item Details Debug – Identifier eingeben (ID, Nummer, MPN):", last);
         if (!input) return;
