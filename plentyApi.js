@@ -1,7 +1,34 @@
 // plentyApi.js - Dynamische Authentifizierung
 
 const PLENTY_BASE_URL = "https://p7843.my.plentysystems.com";
+
 const COUNTRY_MAP={1:"Germany",2:"Austria",3:"Belgium",4:"Switzerland",5:"Cyprus",6:"Czech Republic",7:"Denmark",8:"Spain",9:"Estonia",10:"France",11:"Finland",12:"United Kingdom",13:"Greece",14:"Hungary",15:"Italy",16:"Ireland",17:"Luxembourg",18:"Latvia",19:"Malta",20:"Norway",21:"Netherlands",22:"Portugal",23:"Poland",24:"Sweden",25:"Singapore",26:"Slovakia",27:"Slovenia",28:"USA",29:"Australia",30:"Canada",31:"China",32:"Japan",33:"Lithuania",34:"Liechtenstein",35:"Monaco",36:"Mexico",37:"Canary Islands",38:"India",39:"Brazil",40:"Russia",41:"Romania",42:"Ceuta",43:"Melilla",44:"Bulgaria",45:"Kosovo",46:"Kyrgyzstan",47:"Kazakhstan",48:"Belarus",49:"Uzbekistan",50:"Morocco",51:"Armenia",52:"Albania",53:"Egypt",54:"Croatia",55:"Maldives",56:"Malaysia",57:"Hong Kong",58:"Yemen",59:"Israel",60:"Taiwan",61:"Guadeloupe",62:"Thailand",63:"Turkey",64:"Greek Islands",65:"Balearic Islands",66:"New Zealand",67:"Afghanistan",68:"Aland Islands",69:"Algeria",70:"American Samoa",71:"Andorra",72:"Angola",73:"Anguilla",74:"Antarctica",75:"Antigua and Barbuda",76:"Argentina",77:"Aruba",78:"Azerbaijan",79:"The Bahamas",80:"Bahrain",81:"Bangladesh",82:"Barbados",83:"Belize",84:"Benin",85:"Bermuda",86:"Bhutan",87:"Bolivia",88:"Bosnia and Herzegovina",89:"Botswana",90:"Bouvet Island",91:"British Indian Ocean Territory",92:"Brunei Darussalam",93:"Burkina Faso",94:"Burundi",95:"Cambodia",96:"Cameroon",97:"Cape Verde",98:"Cayman Islands",99:"Central African Republic",100:"Chad",101:"Chile",102:"Christmas Island",103:"Cocos Islands/Keeling Islands",104:"Columbia",105:"Comoros",106:"Congo",107:"Democratic Republic of the Congo",108:"Cook Islands",109:"Costa Rica",110:"Ivory coast",112:"Cuba",113:"Djibouti",114:"Dominica",115:"Dominican Republic",116:"Ecuador",117:"El Salvador",118:"Equatorial Guinea",119:"Eritrea",120:"Ethiopia",121:"Falkland Islands",122:"Faroe Islands",123:"Fiji",124:"French Guiana",125:"French Polynesia",126:"French Southern and Antarctic Lands",127:"Gabon",128:"Gambia",129:"Georgia",130:"Ghana",131:"Gibraltar",132:"Greenland",133:"Grenada",134:"Guam",135:"Guatemala",136:"Guernsey",137:"Guinea",138:"Guinea-Bissau",139:"Guyana",140:"Haiti",141:"Heard Island and McDonald Islands",142:"Vatican City",143:"Honduras",144:"Iceland",145:"Indonesia",146:"Iran",147:"Iraq",148:"Isle of Man",149:"Jamaica",150:"Jersey",151:"Jordan",152:"Kenya",153:"Kiribati",154:"Democratic People’s Republic of Korea",155:"Republic of Korea",156:"Kuwait",158:"Laos",159:"Lebanon",160:"Lesotho",161:"Liberia",162:"Libya",163:"Macao",164:"Macedonia",165:"Madagascar",166:"Malawi",168:"Mali",169:"Marshall Islands",170:"Martinique",171:"Mauritania",172:"Mauritius",173:"Mayotte",174:"Micronesia",175:"Moldova",176:"Mongolia",177:"Montenegro",178:"Montserrat",179:"Mozambique",180:"Myanmar",181:"Namibia",182:"Nauru",183:"Nepal",184:"Netherlands Antilles",185:"New Caledonia",186:"Nicaragua",187:"Niger",188:"Nigeria",189:"Niue",190:"Norfolk Island",191:"Northern Mariana Islands",192:"Oman",193:"Pakistan",194:"Palau",195:"Palestinian territories",196:"Panama",197:"Papua New Guinea",198:"Paraguay",199:"Peru",200:"Philippines",201:"Pitcairn Islands",202:"Puerto Rico",203:"Qatar",204:"Reunion",205:"Rwanda",206:"Saint Helena",207:"Saint Kitts and Nevis",208:"Saint Lucia",209:"Saint Pierre and Miquelon",210:"Saint Vincent and the Grenadines",211:"Samoa",212:"San Marino",213:"Sao Tome and Principe",214:"Saudi Arabia",215:"Senegal",216:"Serbia",217:"Seychelles",218:"Sierra Leone",219:"Solomon Islands",220:"Somalia",221:"South Africa",222:"South Georgia and the South Sandwich Islands",223:"Sri Lanka",224:"Sudan",225:"Suriname",226:"Spitsbergen and Jan Mayen",227:"Swaziland",228:"Syria",229:"Tajikistan",230:"Tanzania",231:"Timor-Leste",232:"Togo",233:"Tokelau",234:"Tonga",235:"Trinidad and Tobago",236:"Tunisia",237:"Turkmenistan",238:"Turks and Caicos Islands",239:"Tuvalu",240:"Uganda",241:"Ukraine",242:"United States Minor Outlying Islands",243:"Uruguay",244:"Vanuatu",245:"Venezuela",246:"Vietnam",247:"British Virgin Islands",248:"United States Virgin Islands",249:"Wallis and Futuna",250:"Western Sahara",252:"Zambia",253:"Zimbabwe",254:"United Arab Emirates",255:"Helgoland",256:"Buesingen",258:"Curaçao",259:"Sint Maarten",260:"BES Islands",261:"Saint Barthélemy",262:"Livigno",263:"Campione d’Italia",264:"Lake Lugano from Ponte Tresa to Porto Ceresio",265:"Northern Ireland",0:"Unknown"};
+
+const CUSTOMER_CLASS_MAP = {
+    9: "Standard-Endkunden",
+    10: "Standard-Firmenkunden",
+    7: "Bestandskunden (dyn. mit Kauf)",
+    4: "Oeffentliche Einrichtungen",
+    11: "Rechnung freigegeben (ungeprüft)",
+    5: "Rechnung freigegeben (incl. Credit Check)",
+    16: "Kunde mit 30 Tage Zahlungsziel",
+    15: "Kunde mit 60 Tagen Zahlungsziel",
+    6: "KEINE Rechnung möglich",
+    8: "Kunden mit 10% Rabatt",
+    3: "Kunden mit 20% Rabatt",
+    14: "Gesperrt"
+};
+
+const ORDER_TYPES = {
+    1: "Auftrag (Order)",
+    2: "Lieferauftrag (Delivery)",
+    3: "Retoure (Return)",
+    4: "Gutschrift (Credit Note)",
+    5: "Gewährleistung (Warranty)",
+    6: "Reparatur (Repair)",
+    7: "Angebot (Offer)",
+    8: "Vorbestellung (Advance Order)"
+};
 
 /**
  * Holt Credentials aus dem Speicher, loggt sich ein und gibt den Token zurück.
@@ -215,6 +242,7 @@ async function fetchFullOrderDetails(orderId) {
 /**
  * Holt Kundendaten und die letzten Bestellungen (Stripped Version).
  * UPDATED: Erweitertes Contact-Objekt inkl. Blocked-Status, Rating, Login-Daten etc.
+ * UPDATED: Wandelt classId in lesbaren className um.
  */
 async function fetchCustomerDetails(contactId) {
     try {
@@ -239,6 +267,10 @@ async function fetchCustomerDetails(contactId) {
         // --- DATA STRIPPING (Optimierung für AI Kontext) ---
 
         // A. Kontakt bereinigen (Erweitert um alle angeforderten Felder)
+        // Mapping der Kundenklasse
+        const rawClassId = contactData.classId;
+        const resolvedClassName = CUSTOMER_CLASS_MAP[rawClassId] || `Unbekannt (ID: ${rawClassId})`;
+
         const cleanContact = {
             id: contactData.id,
             typeId: contactData.typeId, 
@@ -247,7 +279,10 @@ async function fetchCustomerDetails(contactId) {
             gender: contactData.gender,
             title: contactData.title,
             formOfAddress: contactData.formOfAddress,
-            classId: contactData.classId,
+            
+            // HIER IST DIE ÄNDERUNG: className statt classId
+            className: resolvedClassName,
+
             blocked: contactData.blocked,
             rating: contactData.rating,
             bookAccount: contactData.bookAccount,
