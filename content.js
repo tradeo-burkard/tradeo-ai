@@ -2179,7 +2179,7 @@ function initPlentyItemSearchDebugButton() {
     };
 
     // 1. Button: Search Items (Textsuche) - Unten
-    createBtn("tradeo-plenty-debug-btn", "🧪 Plenty Search Debug", 10, async () => {
+    createBtn("tradeo-plenty-debug-btn", "🧪 debugPlentyItemSearch Debug", 10, async () => {
         const defaultSearch = "1.8tb 12g sas 10k festplatte dell 14g";
         const last = window.__lastPlentyDebugSearch || defaultSearch;
         const input = prompt("Plenty Artikelsuche Debug – Suchtext eingeben:", last);
@@ -2189,8 +2189,8 @@ function initPlentyItemSearchDebugButton() {
     });
 
     // 2. Button: Item Details (Identifier) - Darüber
-    createBtn("tradeo-plenty-details-btn", "📦 Plenty Details Debug", 50, async () => {
-        const defaultId = "00WRRF"; // Default Input wie angefordert
+    createBtn("tradeo-plenty-details-btn", "📦 debugPlentyItemDetails Debug", 50, async () => {
+        const defaultId = "MTA18ASF4G72PDZ"; // Default Input wie angefordert
         const last = window.__lastPlentyDebugDetails || defaultId;
         const input = prompt("Plenty Item Details Debug – Identifier eingeben (ID, Nummer, MPN):", last);
         if (!input) return;
