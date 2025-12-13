@@ -213,7 +213,8 @@ async function fetchFullOrderDetails(orderId) {
 }
 
 /**
- * Holt Kundendaten und die letzten Bestellungen.
+ * Holt Kundendaten und die letzten Bestellungen (Stripped Version).
+ * UPDATED: Mit Kreditlimit, Order-Beträgen & Typ-Erkennung.
  */
 async function fetchCustomerDetails(contactId) {
     try {
@@ -221,17 +222,76 @@ async function fetchCustomerDetails(contactId) {
         const contactData = await makePlentyCall(`/rest/accounts/contacts/${contactId}`);
         
         // 2. Letzte 5 Bestellungen holen (absteigend sortiert)
-        // itemsPerPage=5, sortierte nach ID desc (neueste zuerst)
         const orderHistory = await makePlentyCall(`/rest/orders?contactId=${contactId}&itemsPerPage=5&sortBy=id&sortOrder=desc`);
 
-        // 3. Rechnungsadresse(n) holen (optional, aber nützlich für Kontext)
-        // Wir nehmen hier vereinfacht an, dass wir die Adressen aus den Orders oder separat laden könnten.
-        // Um API-Calls zu sparen, verlassen wir uns erstmal auf die Stammdaten und Orders.
+        // --- HELPER: Order Typen Mapping ---
+        const ORDER_TYPES = {
+            1: "Auftrag (Order)",
+            2: "Lieferauftrag (Delivery)",
+            3: "Retoure (Return)",
+            4: "Gutschrift (Credit Note)",
+            5: "Gewährleistung (Warranty)",
+            6: "Reparatur (Repair)",
+            7: "Angebot (Offer)",
+            8: "Vorbestellung (Advance Order)"
+        };
+
+        // --- DATA STRIPPING (Optimierung für AI Kontext) ---
+
+        // A. Kontakt bereinigen
+        const cleanContact = {
+            id: contactData.id,
+            typeId: contactData.typeId, 
+            firstName: contactData.firstName,
+            lastName: contactData.lastName,
+            gender: contactData.gender,
+            lang: contactData.lang,
+            email: contactData.email,
+            privatePhone: contactData.privatePhone,
+            privateMobile: contactData.privateMobile,
+            ebayName: contactData.ebayName,
+            createdAt: contactData.createdAt,
+            classId: contactData.classId,
+            
+            // Accounts: Jetzt mit Finanzdaten (Limit, Zahlungsziel)
+            accounts: (contactData.accounts || []).map(acc => ({
+                id: acc.id,
+                companyName: acc.companyName,
+                taxIdNumber: acc.taxIdNumber,
+                // WICHTIG: Finanzielle Limits & Ziele wieder drin
+                dealerMinOrderValue: acc.dealerMinOrderValue, // "Kreditlimit" / Mindestbestellwert
+                valuta: acc.valuta, // Valuta in Tagen
+                timeForPaymentAllowedDays: acc.timeForPaymentAllowedDays, // Zahlungsziel in Tagen
+                deliveryTime: acc.deliveryTime
+            }))
+        };
+
+        // B. Orders bereinigen (Erweitert um Finanzdaten & Typ)
+        const cleanOrders = (orderHistory.entries || []).map(o => {
+            // Beträge extrahieren (nehmen den ersten Amount-Eintrag, meist Systemwährung)
+            const amt = (o.amounts && o.amounts.length > 0) ? o.amounts[0] : {};
+
+            return {
+                id: o.id,
+                // Typ: ID und lesbarer Name
+                typeId: o.typeId,
+                typeName: ORDER_TYPES[o.typeId] || `Andere (ID: ${o.typeId})`,
+                statusName: o.statusName,
+                createdAt: o.createdAt,
+                
+                // Finanz-Details der Order
+                invoiceTotal: amt.invoiceTotal || 0,
+                paidAmount: amt.paidAmount || 0, // Wichtig um zu sehen ob bezahlt
+                currency: amt.currency || "EUR",
+                exchangeRate: amt.exchangeRate || 1,
+                isNet: amt.isNet || false // Sagt uns ob Netto oder Brutto
+            };
+        });
 
         return {
             meta: { type: "PLENTY_CUSTOMER_EXPORT", timestamp: new Date().toISOString() },
-            contact: contactData,
-            recentOrders: orderHistory.entries || [] 
+            contact: cleanContact,
+            recentOrders: cleanOrders
         };
 
     } catch (error) {

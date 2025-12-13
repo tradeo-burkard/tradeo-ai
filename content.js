@@ -2062,41 +2062,71 @@ function initPlentyItemSearchDebugButton() {
     if (window.__plentyDebugBtnInit) return;
     window.__plentyDebugBtnInit = true;
 
-    const btn = document.createElement("button");
-    btn.id = "tradeo-plenty-debug-btn";
-    btn.textContent = "🧪 Plenty Search Debug";
-    btn.style.cssText = `
-        position: fixed;
-        bottom: 10px;
-        right: 10px;
-        z-index: 99999;
-        padding: 6px 10px;
-        font-size: 11px;
-        background: #222;
-        color: #fff;
-        border-radius: 4px;
-        border: 1px solid #555;
-        cursor: pointer;
-        opacity: 0.7;
-        font-family: system-ui, sans-serif;
-    `;
+    // Helper zum Erstellen von Buttons
+    const createBtn = (id, text, bottomPx, onClick) => {
+        const btn = document.createElement("button");
+        btn.id = id;
+        btn.textContent = text;
+        btn.style.cssText = `
+            position: fixed;
+            bottom: ${bottomPx}px;
+            right: 10px;
+            z-index: 99999;
+            padding: 6px 10px;
+            font-size: 11px;
+            background: #222;
+            color: #fff;
+            border-radius: 4px;
+            border: 1px solid #555;
+            cursor: pointer;
+            opacity: 0.7;
+            font-family: system-ui, sans-serif;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            text-align: left;
+            min-width: 180px;
+        `;
+        btn.addEventListener("mouseenter", () => btn.style.opacity = "1");
+        btn.addEventListener("mouseleave", () => btn.style.opacity = "0.7");
+        btn.addEventListener("click", onClick);
+        document.body.appendChild(btn);
+    };
 
-    btn.addEventListener("mouseenter", () => btn.style.opacity = "1");
-    btn.addEventListener("mouseleave", () => btn.style.opacity = "0.7");
-
-    btn.addEventListener("click", async () => {
-        // PATCH: Default-Wert setzen
+    // 1. Button: Search Items (Textsuche) - Ganz unten
+    createBtn("tradeo-plenty-debug-btn", "🧪 Item Search Debug", 10, async () => {
         const defaultSearch = "1.8tb 12g sas 10k festplatte dell 14g";
         const last = window.__lastPlentyDebugSearch || defaultSearch;
-        
         const input = prompt("Plenty Artikelsuche Debug – Suchtext eingeben:", last);
         if (!input) return;
-        
         window.__lastPlentyDebugSearch = input;
         await window.debugPlentyItemSearch(input);
     });
 
-    document.body.appendChild(btn);
+    // 2. Button: Item Details (Identifier) - Mitte
+    createBtn("tradeo-plenty-details-btn", "📦 Item Details Debug", 50, async () => {
+        const defaultId = "HMAA4GR7AJR8N-XN"; 
+        const last = window.__lastPlentyDebugDetails || defaultId;
+        const input = prompt("Plenty Item Details Debug – Identifier eingeben (ID, Nummer, MPN):", last);
+        if (!input) return;
+        window.__lastPlentyDebugDetails = input;
+        await window.debugPlentyItemDetails(input);
+    });
+
+    // 3. Button: Customer Details (Contact ID) - Oben
+    createBtn("tradeo-plenty-customer-btn", "👤 Customer Details Debug", 90, async () => {
+        // Versuchen, eine Customer ID aus dem DOM zu extrahieren (als Default)
+        let defaultId = "278542";
+        const customerLink = document.querySelector('.customer-name');
+        if (customerLink) {
+            const match = customerLink.href.match(/customers\/(\d+)/);
+            if (match) defaultId = match[1];
+        }
+
+        const last = window.__lastPlentyCustomerDebug || defaultId;
+        const input = prompt("Plenty Customer Debug – Contact ID eingeben:", last);
+        if (!input) return;
+        window.__lastPlentyCustomerDebug = input;
+        await window.debugCustomerDetails(input);
+    });
 }
 
 window.debugPlentyItemSearch = async function(rawSearch) {
@@ -2244,60 +2274,6 @@ window.debugPlentyItemSearch = async function(rawSearch) {
         console.error("Debug Error:", err);
     }
 };
-
-// --- DEBUGGING TOOLS (UPDATED) ---
-
-function initPlentyItemSearchDebugButton() {
-    if (window.__plentyDebugBtnInit) return;
-    window.__plentyDebugBtnInit = true;
-
-    // Helper zum Erstellen von Buttons
-    const createBtn = (id, text, bottomPx, onClick) => {
-        const btn = document.createElement("button");
-        btn.id = id;
-        btn.textContent = text;
-        btn.style.cssText = `
-            position: fixed;
-            bottom: ${bottomPx}px;
-            right: 10px;
-            z-index: 99999;
-            padding: 6px 10px;
-            font-size: 11px;
-            background: #222;
-            color: #fff;
-            border-radius: 4px;
-            border: 1px solid #555;
-            cursor: pointer;
-            opacity: 0.7;
-            font-family: system-ui, sans-serif;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-        `;
-        btn.addEventListener("mouseenter", () => btn.style.opacity = "1");
-        btn.addEventListener("mouseleave", () => btn.style.opacity = "0.7");
-        btn.addEventListener("click", onClick);
-        document.body.appendChild(btn);
-    };
-
-    // 1. Button: Search Items (Textsuche) - Unten
-    createBtn("tradeo-plenty-debug-btn", "🧪 debugPlentyItemSearch Debug", 10, async () => {
-        const defaultSearch = "1.8tb 12g sas 10k festplatte dell 14g";
-        const last = window.__lastPlentyDebugSearch || defaultSearch;
-        const input = prompt("Plenty Artikelsuche Debug – Suchtext eingeben:", last);
-        if (!input) return;
-        window.__lastPlentyDebugSearch = input;
-        await window.debugPlentyItemSearch(input);
-    });
-
-    // 2. Button: Item Details (Identifier) - Darüber
-    createBtn("tradeo-plenty-details-btn", "📦 debugPlentyItemDetails Debug", 50, async () => {
-        const defaultId = "HMAA4GR7AJR8N-XN"; // Default Input wie angefordert
-        const last = window.__lastPlentyDebugDetails || defaultId;
-        const input = prompt("Plenty Item Details Debug – Identifier eingeben (ID, Nummer, MPN):", last);
-        if (!input) return;
-        window.__lastPlentyDebugDetails = input;
-        await window.debugPlentyItemDetails(input);
-    });
-}
 
 /**
  * NEUE DEBUG FUNKTION FÜR ITEM DETAILS
@@ -2508,4 +2484,58 @@ window.debugPlentyItemSearch = async function(rawSearch) {
     } catch (err) {
         console.error("Debug Error:", err);
     }
+};
+
+/**
+ * NEUE DEBUG FUNKTION FÜR CUSTOMER DETAILS
+ * Simuliert den Tool-Call, den die AI machen würde, um Kundendaten zu holen.
+ */
+window.debugCustomerDetails = async function(contactId) {
+    console.clear();
+    console.group(`🚀 DEBUG: fetchCustomerDetails für Contact ID "${contactId}"`);
+    console.log("⏳ Sende Anfrage an Background Script...");
+
+    try {
+        const response = await new Promise(resolve => {
+            chrome.runtime.sendMessage({ 
+                action: 'GET_CUSTOMER_DETAILS', 
+                contactId: contactId 
+            }, (res) => resolve(res));
+        });
+
+        if (response && response.success) {
+            console.log("✅ API Success! Rückgabe an die AI:");
+            console.dir(response.data); // Interaktives Objekt
+            
+            // Kurze Übersicht
+            if (response.data.contact) {
+                console.group("👤 Kontakt-Check");
+                console.log("ID:", response.data.contact.id);
+                console.log("Name:", response.data.contact.firstName, response.data.contact.lastName);
+                console.log("E-Mail:", response.data.contact.email);
+                console.groupEnd();
+            }
+
+            if (response.data.recentOrders && Array.isArray(response.data.recentOrders)) {
+                console.group(`📦 Letzte Bestellungen (${response.data.recentOrders.length})`);
+                response.data.recentOrders.forEach(o => {
+                    console.log(`Order ${o.id} vom ${new Date(o.createdAt).toLocaleDateString()} (Status: ${o.statusId})`);
+                });
+                console.groupEnd();
+            }
+
+            console.log("📋 JSON Output (für Copy/Paste):");
+            console.log(JSON.stringify(response.data, null, 2));
+
+        } else {
+            console.error("❌ API Error oder kein Ergebnis:", response);
+            if (response && response.error) {
+                console.error("Details:", response.error);
+            }
+        }
+
+    } catch (e) {
+        console.error("🔥 Critical Error during debug call:", e);
+    }
+    console.groupEnd();
 };
