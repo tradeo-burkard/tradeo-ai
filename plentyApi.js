@@ -817,6 +817,7 @@ async function fetchItemDetails(identifierRaw) {
 
 /**
  * Hilfsfunktion: Führt einen "Pre-Flight" Check für Tokens durch, um die Trefferanzahl zu ermitteln.
+ * UPDATED: Filtert jetzt serverseitig nach aktiven Artikeln (&isActive=true).
  */
 async function getTokenStats(tokens, searchInDescription) {
     const stats = [];
@@ -824,11 +825,13 @@ async function getTokenStats(tokens, searchInDescription) {
     const checks = tokens.map(async (token) => {
         try {
             // Wir fragen nur 1 Item ab, uns interessiert nur 'totalsCount' im Response
-            const p1 = makePlentyCall(`/rest/items/variations?itemsPerPage=1&lang=de&itemName=${encodeURIComponent(token)}`);
+            // WICHTIG: &isActive=true hinzugefügt
+            const p1 = makePlentyCall(`/rest/items/variations?itemsPerPage=1&lang=de&isActive=true&itemName=${encodeURIComponent(token)}`);
             let p2 = Promise.resolve({ totalsCount: 0 });
             
             if (searchInDescription) {
-                p2 = makePlentyCall(`/rest/items/variations?itemsPerPage=1&lang=de&itemDescription=${encodeURIComponent(token)}`);
+                // WICHTIG: &isActive=true hinzugefügt
+                p2 = makePlentyCall(`/rest/items/variations?itemsPerPage=1&lang=de&isActive=true&itemDescription=${encodeURIComponent(token)}`);
             }
             
             const [resName, resDesc] = await Promise.all([p1, p2]);
@@ -836,7 +839,7 @@ async function getTokenStats(tokens, searchInDescription) {
             const countName = resName ? resName.totalsCount : 0;
             const countDesc = resDesc ? resDesc.totalsCount : 0;
             
-            // Wir addieren die Counts als Schätzwert (es könnte Überlappungen geben, aber für die Heuristik reicht es)
+            // Wir addieren die Counts als Schätzwert
             return { 
                 token, 
                 count: countName + countDesc,
@@ -853,11 +856,12 @@ async function getTokenStats(tokens, searchInDescription) {
 
 /**
  * Hilfsfunktion: Lädt ALLE Ergebnisse für ein bestimmtes Kriterium via Pagination.
+ * UPDATED: Filtert standardmäßig nach aktiven Artikeln.
  */
 async function fetchAllVariations(params) {
     let allEntries = [];
     let page = 1;
-    const itemsPerPage = 50; // Plenty Standard-Limit ist oft 50 oder 100
+    const itemsPerPage = 50; 
     let hasMore = true;
 
     while (hasMore) {
@@ -865,6 +869,7 @@ async function fetchAllVariations(params) {
             itemsPerPage: String(itemsPerPage),
             page: String(page),
             lang: 'de',
+            isActive: 'true', // <--- WICHTIG: Nur aktive Varianten laden
             ...params
         });
 
@@ -884,7 +889,6 @@ async function fetchAllVariations(params) {
             }
             
             // Safety Break: Verhindere Endlosschleifen bei extrem vielen Artikeln (> 2000)
-            // Das kann man anpassen, wenn man wirklich ALLES will.
             if (page > 40) { 
                 console.warn("Tradeo AI: Fetch Limit erreicht (2000 Items). Breche ab.");
                 hasMore = false; 
