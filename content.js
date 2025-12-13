@@ -559,10 +559,9 @@ async function executeHeadlessLoop(contents, apiKey, ticketId, allowTools) {
         const parts = content.parts || []; 
         
         if (parts.length === 0) {
-            // Manchmal ist parts leer, aber der finishReason sagt was passiert ist.
-            // Wir werfen keinen harten Fehler, sondern geben null zurück, damit der Loop sauber beendet oder retry macht.
-            console.warn("Tradeo AI: Gemini Content Parts sind leer.", candidate);
-            return { draft: "", feedback: "API lieferte leeren Inhalt (evtl. Safety Filter)." };
+            // FIX v3.5: Fehler werfen, damit der Headless Fallback greift
+            console.warn("Tradeo AI Headless: Gemini Content Parts sind leer (Safety Filter?). Trigger Fallback.", candidate);
+            throw new Error("GEMINI_SAFETY_FILTER_TRIGGERED");
         }
 
         const functionCallPart = parts.find(p => p.functionCall);
@@ -1634,10 +1633,9 @@ async function executeGeminiLoop(contents, apiKey, cid, allowTools) {
         const parts = content.parts || []; 
         
         if (parts.length === 0) {
-            // Manchmal ist parts leer, aber der finishReason sagt was passiert ist.
-            // Wir werfen keinen harten Fehler, sondern geben null zurück, damit der Loop sauber beendet oder retry macht.
-            console.warn("Tradeo AI: Gemini Content Parts sind leer.", candidate);
-            return { draft: "", feedback: "API lieferte leeren Inhalt (evtl. Safety Filter)." };
+            // FIX v3.5: Nicht nur warnen, sondern FEHLER werfen, damit der Fallback ausgelöst wird!
+            console.warn("Tradeo AI: Gemini Content Parts sind leer (Safety Filter?). Trigger Fallback.", candidate);
+            throw new Error("GEMINI_SAFETY_FILTER_TRIGGERED");
         }
 
         const functionCallPart = parts.find(p => p.functionCall);
