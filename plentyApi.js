@@ -269,8 +269,7 @@ async function fetchItemDetails(identifierRaw) {
         // --- Helper: Einheitliche Formatierung (Stripping) ---
         // Dies garantiert, dass Single-Match und Multi-Match exakt gleiche Strukturen liefern
         const formatItemData = (variation, item, stockEntries) => {
-            // 1. Variation bereinigen (nach Vorgabe)
-            // Hinweis: 'number' (SVR-...) wurde hier entfernt, um dem User-Wunsch zu entsprechen
+            // 1. Variation bereinigen
             const cleanVariation = {
                 id: variation.id,
                 itemId: variation.itemId,
@@ -284,10 +283,13 @@ async function fetchItemDetails(identifierRaw) {
                 customsTariffNumber: variation.customsTariffNumber
             };
 
-            // 2. Item bereinigen
+            // 2. Item bereinigen & Country ID auflösen
+            // UPDATED: producingCountryId wird jetzt durch den Klarnamen aus COUNTRY_MAP ersetzt
+            const countryName = COUNTRY_MAP[item.producingCountryId] || `Unknown (ID: ${item.producingCountryId})`;
+
             const cleanItem = {
                 id: item.id,
-                producingCountryId: item.producingCountryId,
+                producingCountry: countryName, // <--- HIER: Name statt ID
                 texts: (item.texts || []).map(t => ({
                     name1: t.name1,
                     description: t.description,
@@ -296,7 +298,6 @@ async function fetchItemDetails(identifierRaw) {
             };
 
             // 3. Stock bereinigen
-            // Wir mappen alle gefundenen Lager-Einträge auf das Format
             const cleanStock = (stockEntries || []).map(s => ({
                 itemId: s.itemId,
                 // Fallback für verschiedene API Feldnamen (netStock vs stockNet)
