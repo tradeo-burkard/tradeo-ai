@@ -1961,6 +1961,15 @@ window.testPlentyConnection = async function() {
 // --- content.js (Debug Update) ---
 
 window.debugPlentyItemSearch = async function(rawSearch) {
+    const stripHtmlToText = (html) => {
+        if (!html) return "";
+        let text = html;
+        text = text.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n');
+        text = text.replace(/<[^>]+>/g, '');
+        text = text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+        return text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
+    };
+
     try {
         const searchText = (typeof rawSearch === 'string' ? rawSearch : '').trim();
         if (!searchText) { alert("Bitte Suchtext eingeben."); return; }
@@ -1968,29 +1977,22 @@ window.debugPlentyItemSearch = async function(rawSearch) {
         console.clear();
         console.group(`🚀 DEBUG: Smart Item Search für "${searchText}"`);
 
-        // 1. Tokens
+        // Tokens
         const tokens = Array.from(new Set(searchText.split(/\s+/).map(t => t.trim()).filter(t => t.length > 1)));
         console.log("📦 1. Tokens:", tokens);
 
-        // 2. Pre-Flight
+        // Pre-Flight
         console.group("📊 2. Token-Analyse (Pre-Flight)");
         const stats = [];
         for (const token of tokens) {
-            console.log(`Prüfe Token: "${token}"...`);
             const p1 = callPlenty(`/rest/items/variations?itemsPerPage=1&lang=de&itemName=${encodeURIComponent(token)}`);
-            const p2 = callPlenty(`/rest/items/variations?itemsPerPage=1&lang=de&itemDescription=${encodeURIComponent(token)}`);
-            
-            const [r1, r2] = await Promise.all([p1, p2]);
+            const [r1] = await Promise.all([p1]);
             const cName = r1 ? r1.totalsCount : 0;
-            const cDesc = r2 ? r2.totalsCount : 0;
-            const total = cName + cDesc;
-            
-            console.log(`   👉 "${token}": Name=${cName}, Desc=${cDesc} | Σ = ${total}`);
-            stats.push({ token, total });
+            console.log(`   👉 "${token}": Hits=${cName}`);
+            stats.push({ token, total: cName });
         }
         console.groupEnd();
 
-        // 3. Gewinner
         const validStats = stats.filter(s => s.total > 0).sort((a, b) => a.total - b.total);
         if (validStats.length === 0) {
             console.warn("❌ Keine Treffer für irgendein Token.");
@@ -1998,71 +2000,102 @@ window.debugPlentyItemSearch = async function(rawSearch) {
             return;
         }
         const winner = validStats[0];
-        console.log(`🏆 3. Gewinner-Token: "${winner.token}" (Kleinste Menge: ${winner.total})`);
+        console.log(`🏆 3. Gewinner-Token: "${winner.token}"`);
 
-        // 4. Fetch Loop
+        // Fetch Loop
         console.group(`📥 4. Lade ALLE Variationen für "${winner.token}"...`);
         let allCandidates = [];
         let page = 1;
         let hasMore = true;
         
         while(hasMore) {
-            console.log(`   Lade Seite ${page}...`);
-            const pName = callPlenty(`/rest/items/variations?itemsPerPage=50&page=${page}&lang=de&itemName=${encodeURIComponent(winner.token)}`);
-            const pDesc = callPlenty(`/rest/items/variations?itemsPerPage=50&page=${page}&lang=de&itemDescription=${encodeURIComponent(winner.token)}`);
-            
-            const [rName, rDesc] = await Promise.all([pName, pDesc]);
-            const entries = [...(rName.entries || []), ...(rDesc.entries || [])];
-            
-            if (entries.length > 0) allCandidates.push(...entries);
-            
-            const lastPageName = rName.isLastPage;
-            const lastPageDesc = rDesc.isLastPage;
-            
-            if (lastPageName && lastPageDesc) hasMore = false;
+            const res = await callPlenty(`/rest/items/variations?itemsPerPage=50&page=${page}&lang=de&itemName=${encodeURIComponent(winner.token)}`);
+            if (res && res.entries) allCandidates.push(...res.entries);
+            if (res.isLastPage || !res.entries || res.entries.length < 50) hasMore = false;
             else page++;
-            
-            if(page > 10) { console.warn("   ⚠️ Debug-Limit erreicht (10 Seiten)"); hasMore = false; }
+            if(page > 20) { hasMore = false; console.warn("   ⚠️ Abbruch: Zu viele Seiten (>20)."); }
         }
         
         const map = new Map();
         allCandidates.forEach(c => map.set(c.id, c));
         const uniqueCandidates = Array.from(map.values());
-        console.log(`✅ Geladen: ${uniqueCandidates.length} einzigartige Kandidaten.`);
+        console.log(`✅ Geladen: ${uniqueCandidates.length} Kandidaten.`);
         console.groupEnd();
 
-        // 5. Filtering
-        console.group("🔍 5. Filterung (Matching)");
+        // Filtering & AI Object Bau
+        console.group("🔍 5. Filterung & AI-Objekt Bau");
         let matches = 0;
-        const limitDebug = 5; 
+        const limitDebug = 10; 
+        // UPDATED FILTER:
+        const bannedRegex = /(hardware\s*care\s*pack|upgrade|bundle)/i;
+        const aiResults = [];
         
         for (const cand of uniqueCandidates) {
-            if (uniqueCandidates.length > 200 && matches < 1) {
-                console.log("   (Zu viele Kandidaten für Detail-Log, zeige nur Zusammenfassung...)");
-            }
-            
-            if (matches < limitDebug) {
-               try {
-                   // Item Details holen für Name Check
-                   const item = await callPlenty(`/rest/items/${cand.itemId}`);
-                   let name = "???";
-                   if(item.texts && item.texts[0]) name = item.texts[0].name1;
-                   
-                   const fullString = JSON.stringify(item).toLowerCase();
-                   const allIn = tokens.every(t => fullString.includes(t.toLowerCase()));
-                   
-                   if (allIn) {
-                       // HIER: Anzeige angepasst, damit du siehst was die AI später als "ArticleNumber" bekommt
-                       console.log(`   ✅ MATCH: [Artikel: ${cand.itemId} | Var: ${cand.id}] ${name}`);
-                       matches++;
+           try {
+               const item = await callPlenty(`/rest/items/${cand.itemId}`);
+               let apiName = "Unbekannt";
+               let apiDesc = "";
+               if(item.texts) {
+                   const t = item.texts.find(x => x.lang === 'de') || item.texts[0];
+                   if(t) {
+                       apiName = [t.name1, t.name2, t.name3].filter(Boolean).join(" ");
+                       apiDesc = t.description || "";
                    }
-               } catch(e) { console.error(e); }
-            } else {
-                matches++;
-            }
+               }
+
+               const fullText = (apiName + " " + apiDesc).toLowerCase();
+               if (bannedRegex.test(fullText)) continue; // Filter Check
+               
+               const allIn = tokens.every(t => fullText.includes(t.toLowerCase()));
+               
+               if (allIn) {
+                   matches++;
+                   if (matches <= limitDebug) {
+                       console.log(`   🔄 Lade Details für Match #${matches}: ${apiName}...`);
+                       
+                       const [stockRes, priceRes] = await Promise.all([
+                           callPlenty(`/rest/items/${cand.itemId}/variations/${cand.id}/stock`).catch(() => []),
+                           callPlenty(`/rest/items/${cand.itemId}/variations/${cand.id}/variation_sales_prices`).catch(() => [])
+                       ]);
+
+                       const stockNet = (stockRes && stockRes.length > 0) ? stockRes[0].netStock : 0;
+                       const price = (priceRes && priceRes.length > 0) ? priceRes[0].price : "N/A";
+                       
+                       // SPLIT LOGIK (Name aus Desc, Desc Rest)
+                       const cleanFullDesc = stripHtmlToText(apiDesc);
+                       const lines = cleanFullDesc.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                       
+                       let derivedName = lines.length > 0 ? lines[0] : apiName;
+                       derivedName = derivedName.replace(/^Beschreibung:\s*/i, '');
+                       const derivedDesc = lines.length > 1 ? lines.slice(1).join('\n') : "";
+
+                       const aiObj = {
+                           articleNumber: String(cand.itemId),
+                           model: cand.model,
+                           name: derivedName,     
+                           description: derivedDesc, 
+                           stockNet: stockNet,
+                           price: price
+                       };
+                       
+                       aiResults.push(aiObj);
+                   } else {
+                       if (matches === limitDebug + 1) console.warn("   ⚠️ Weitere Details übersprungen (Debug Limit)...");
+                   }
+               }
+           } catch(e) { console.error(e); }
         }
-        console.log(`🎉 5. Ergebnis: Ca. ${matches} echte Treffer.`);
         console.groupEnd();
+
+        console.log(`🎉 Ergebnis: ${matches} Treffer gefunden.`);
+        if (aiResults.length > 0) {
+            console.log("👇 WAS DIE AI BEKOMMT (Vorschau Top 10):");
+            console.table(aiResults);
+            if(aiResults[0].description) console.log("📜 Beispiel Description (Plain Text):", aiResults[0].description);
+            else console.log("📜 Beispiel Description: (LEER - war identisch mit Name)");
+        } else {
+            console.warn("⚠️ Keine Ergebnisse für AI.");
+        }
         console.log("✅ DEBUG FINISHED");
         console.groupEnd();
 
@@ -2098,9 +2131,13 @@ function initPlentyItemSearchDebugButton() {
     btn.addEventListener("mouseleave", () => btn.style.opacity = "0.7");
 
     btn.addEventListener("click", async () => {
-        const last = window.__lastPlentyDebugSearch || "";
+        // PATCH: Default-Wert setzen
+        const defaultSearch = "1.8tb 12g sas 10k festplatte dell 14g";
+        const last = window.__lastPlentyDebugSearch || defaultSearch;
+        
         const input = prompt("Plenty Artikelsuche Debug – Suchtext eingeben:", last);
         if (!input) return;
+        
         window.__lastPlentyDebugSearch = input;
         await window.debugPlentyItemSearch(input);
     });
