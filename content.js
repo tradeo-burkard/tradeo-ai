@@ -1958,7 +1958,46 @@ window.testPlentyConnection = async function() {
     }
 };
 
-// --- content.js (Debug Update) ---
+function initPlentyItemSearchDebugButton() {
+    if (window.__plentyDebugBtnInit) return;
+    window.__plentyDebugBtnInit = true;
+
+    const btn = document.createElement("button");
+    btn.id = "tradeo-plenty-debug-btn";
+    btn.textContent = "🧪 Plenty Search Debug";
+    btn.style.cssText = `
+        position: fixed;
+        bottom: 10px;
+        right: 10px;
+        z-index: 99999;
+        padding: 6px 10px;
+        font-size: 11px;
+        background: #222;
+        color: #fff;
+        border-radius: 4px;
+        border: 1px solid #555;
+        cursor: pointer;
+        opacity: 0.7;
+        font-family: system-ui, sans-serif;
+    `;
+
+    btn.addEventListener("mouseenter", () => btn.style.opacity = "1");
+    btn.addEventListener("mouseleave", () => btn.style.opacity = "0.7");
+
+    btn.addEventListener("click", async () => {
+        // PATCH: Default-Wert setzen
+        const defaultSearch = "1.8tb 12g sas 10k festplatte dell 14g";
+        const last = window.__lastPlentyDebugSearch || defaultSearch;
+        
+        const input = prompt("Plenty Artikelsuche Debug – Suchtext eingeben:", last);
+        if (!input) return;
+        
+        window.__lastPlentyDebugSearch = input;
+        await window.debugPlentyItemSearch(input);
+    });
+
+    document.body.appendChild(btn);
+}
 
 window.debugPlentyItemSearch = async function(rawSearch) {
     const stripHtmlToText = (html) => {
@@ -1975,7 +2014,7 @@ window.debugPlentyItemSearch = async function(rawSearch) {
         if (!searchText) { alert("Bitte Suchtext eingeben."); return; }
 
         console.clear();
-        console.group(`🚀 DEBUG: Smart Item Search für "${searchText}"`);
+        console.group(`🚀 DEBUG: Smart Item Search für "${searchText}" (NUR AKTIVE ARTIKEL)`);
 
         // Tokens
         const tokens = Array.from(new Set(searchText.split(/\s+/).map(t => t.trim()).filter(t => t.length > 1)));
@@ -1985,7 +2024,8 @@ window.debugPlentyItemSearch = async function(rawSearch) {
         console.group("📊 2. Token-Analyse (Pre-Flight)");
         const stats = [];
         for (const token of tokens) {
-            const p1 = callPlenty(`/rest/items/variations?itemsPerPage=1&lang=de&itemName=${encodeURIComponent(token)}`);
+            // UPDATED: &isActive=true hinzugefügt
+            const p1 = callPlenty(`/rest/items/variations?itemsPerPage=1&lang=de&isActive=true&itemName=${encodeURIComponent(token)}`);
             const [r1] = await Promise.all([p1]);
             const cName = r1 ? r1.totalsCount : 0;
             console.log(`   👉 "${token}": Hits=${cName}`);
@@ -1995,7 +2035,7 @@ window.debugPlentyItemSearch = async function(rawSearch) {
 
         const validStats = stats.filter(s => s.total > 0).sort((a, b) => a.total - b.total);
         if (validStats.length === 0) {
-            console.warn("❌ Keine Treffer für irgendein Token.");
+            console.warn("❌ Keine Treffer für irgendein Token (bei aktiven Artikeln).");
             console.groupEnd();
             return;
         }
@@ -2009,7 +2049,8 @@ window.debugPlentyItemSearch = async function(rawSearch) {
         let hasMore = true;
         
         while(hasMore) {
-            const res = await callPlenty(`/rest/items/variations?itemsPerPage=50&page=${page}&lang=de&itemName=${encodeURIComponent(winner.token)}`);
+            // UPDATED: &isActive=true hinzugefügt
+            const res = await callPlenty(`/rest/items/variations?itemsPerPage=50&page=${page}&lang=de&isActive=true&itemName=${encodeURIComponent(winner.token)}`);
             if (res && res.entries) allCandidates.push(...res.entries);
             if (res.isLastPage || !res.entries || res.entries.length < 50) hasMore = false;
             else page++;
@@ -2103,44 +2144,3 @@ window.debugPlentyItemSearch = async function(rawSearch) {
         console.error("Debug Error:", err);
     }
 };
-
-function initPlentyItemSearchDebugButton() {
-    if (window.__plentyDebugBtnInit) return;
-    window.__plentyDebugBtnInit = true;
-
-    const btn = document.createElement("button");
-    btn.id = "tradeo-plenty-debug-btn";
-    btn.textContent = "🧪 Plenty Search Debug";
-    btn.style.cssText = `
-        position: fixed;
-        bottom: 10px;
-        right: 10px;
-        z-index: 99999;
-        padding: 6px 10px;
-        font-size: 11px;
-        background: #222;
-        color: #fff;
-        border-radius: 4px;
-        border: 1px solid #555;
-        cursor: pointer;
-        opacity: 0.7;
-        font-family: system-ui, sans-serif;
-    `;
-
-    btn.addEventListener("mouseenter", () => btn.style.opacity = "1");
-    btn.addEventListener("mouseleave", () => btn.style.opacity = "0.7");
-
-    btn.addEventListener("click", async () => {
-        // PATCH: Default-Wert setzen
-        const defaultSearch = "1.8tb 12g sas 10k festplatte dell 14g";
-        const last = window.__lastPlentyDebugSearch || defaultSearch;
-        
-        const input = prompt("Plenty Artikelsuche Debug – Suchtext eingeben:", last);
-        if (!input) return;
-        
-        window.__lastPlentyDebugSearch = input;
-        await window.debugPlentyItemSearch(input);
-    });
-
-    document.body.appendChild(btn);
-}
