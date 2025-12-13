@@ -284,17 +284,20 @@ async function fetchItemDetails(identifierRaw) {
             };
 
             // 2. Item bereinigen & Country ID auflösen
-            // UPDATED: producingCountryId wird jetzt durch den Klarnamen aus COUNTRY_MAP ersetzt
             const countryName = COUNTRY_MAP[item.producingCountryId] || `Unknown (ID: ${item.producingCountryId})`;
+
+            // HTML Cleaning anwenden (wie in searchItemsByText)
+            const cleanTexts = (item.texts || []).map(t => ({
+                name1: t.name1,
+                // WICHTIG: HTML tags entfernen und in lesbaren Text wandeln
+                description: stripHtmlToText(t.description),
+                technicalData: stripHtmlToText(t.technicalData)
+            }));
 
             const cleanItem = {
                 id: item.id,
-                producingCountry: countryName, // <--- HIER: Name statt ID
-                texts: (item.texts || []).map(t => ({
-                    name1: t.name1,
-                    description: t.description,
-                    technicalData: t.technicalData
-                }))
+                producingCountry: countryName,
+                texts: cleanTexts
             };
 
             // 3. Stock bereinigen

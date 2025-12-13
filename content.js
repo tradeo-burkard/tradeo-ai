@@ -76,7 +76,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
      * Analysiere die Kandidaten: Ist einer davon aktiv ('isActive': true) und hat Bestand ('stockNet' > 0)? Bevorzuge diesen.
      * Wenn unklar, liste dem Kunden die Optionen auf.
 
-2. **Freitext-Suche (searchItemsByText - aktuell INAKTIV):**
+2. **Freitext-Suche (searchItemsByText):**
    - Nutze dies nur, wenn der Kunde explizit nach Text sucht (z.B. 'Suche Dell Server mit 128GB RAM').
    - **Logik (Smart Token Intersection):** Das Tool findet nur Artikel, die ALLE Wörter deiner Suchanfrage enthalten (im Namen oder der Beschreibung).
    - **Tipp:** Halte den Suchtext kurz und prägnant (z.B. 'Dell R740 128GB' statt 'Ich suche einen Dell R740 mit 128GB').
@@ -195,7 +195,7 @@ const GEMINI_TOOLS = [
             },
             "required": ["contactId"]
         }
-    }/*,
+    },
     {
         "name": "searchItemsByText",
         "description": "Führt eine textbasierte Artikelsuche in Plentymarkets durch. Nutze dieses Tool nur, wenn der Benutzer EXPLIZIT darum bittet, Artikel anhand eines Textes, Artikelnamens oder Teilstrings zu suchen (z.B. 'DELL 1.8TB 12G 10K SAS'). Das Tool sucht zuerst nach exakten Treffern im Artikelnamen (und optional in der Beschreibung) und fällt dann auf eine Baustein-Suche zurück, bei der alle Wörter des Suchtexts enthalten sein müssen. Es liefert pro Treffer umfangreiche Daten (Variation, Item, Lagerbestand, Verkaufspreise und SalesPrice-Metadaten). Ergebnisse mit 'hardware care pack' oder 'upgrade auf' im Namen/Beschreibung werden intern herausgefiltert.",
@@ -218,7 +218,7 @@ const GEMINI_TOOLS = [
             },
             "required": ["searchText"]
         }
-    }*/
+    }
 ];
 
 async function acquireLock(ticketId, type) {
@@ -2221,6 +2221,23 @@ window.debugPlentyItemDetails = async function(identifier) {
             console.log("✅ API Success! Rückgabe an die AI:");
             console.dir(response.data); // Interaktives Objekt
             
+            // --- NEU: Preview der Text-Bereinigung ---
+            if (response.data.item && response.data.item.texts && response.data.item.texts.length > 0) {
+                const txt = response.data.item.texts[0];
+                console.group("📝 Text Formatting Check");
+                console.log("Name:", txt.name1);
+                console.log("Description (Cleaned):", txt.description);
+                console.log("TechData (Cleaned):", txt.technicalData);
+                console.groupEnd();
+            } else if (response.data.candidates && response.data.candidates.length > 0) {
+                // Bei Multi-Match den ersten Kandidaten prüfen
+                const txt = response.data.candidates[0].item.texts[0];
+                console.group("📝 Text Formatting Check (Candidate 1)");
+                console.log("Description (Cleaned):", txt ? txt.description : "N/A");
+                console.groupEnd();
+            }
+            // -----------------------------------------
+
             console.log("📋 JSON Output (für Copy/Paste):");
             console.log(JSON.stringify(response.data, null, 2));
 
