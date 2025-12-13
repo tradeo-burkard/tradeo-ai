@@ -49,6 +49,26 @@ async function getPlentyToken() {
 }
 
 /**
+ * Hilfsfunktion: Wandelt HTML in reinen Text um, behält aber Zeilenumbrüche.
+ * Funktioniert auch im Service Worker (ohne DOM).
+ */
+function stripHtmlToText(html) {
+    if (!html) return "";
+    let text = html;
+    // 1. Wichtige Block-Breaks in Newlines wandeln
+    text = text.replace(/<br\s*\/?>/gi, '\n');
+    text = text.replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n');
+    // 2. Alle restlichen HTML Tags entfernen
+    text = text.replace(/<[^>]+>/g, '');
+    // 3. Gängige Entities auflösen
+    text = text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    // 4. Whitespace bereinigen (max 2 Newlines hintereinander)
+    text = text.replace(/[ \t]+/g, ' '); // Tabs/Spaces stauchen
+    text = text.replace(/\n\s*\n/g, '\n'); // Leere Zeilen stauchen
+    return text.trim();
+}
+
+/**
  * Führt API Call aus
  */
 async function makePlentyCall(endpoint, method = 'GET', body = null) {
@@ -908,7 +928,7 @@ async function searchItemsByText(searchText, options = {}) {
 
     console.log(`Tradeo AI SmartSearch: Analysiere Tokens: ${JSON.stringify(tokens)}`);
 
-    // 1. STATS: Welches Token liefert die wenigsten Ergebnisse?
+    // 1. STATS
     const stats = await getTokenStats(tokens, searchInDescription);
     const validStats = stats.filter(s => s.count > 0).sort((a, b) => a.count - b.count);
 
@@ -919,7 +939,7 @@ async function searchItemsByText(searchText, options = {}) {
     const winner = validStats[0];
     console.log(`Tradeo AI SmartSearch: Gewinner ist '${winner.token}' mit ca. ${winner.count} Treffern.`);
 
-    // 2. FETCH ALL: Wir laden alles für den Gewinner
+    // 2. FETCH ALL
     const pName = fetchAllVariations({ itemName: winner.token });
     let pDesc = Promise.resolve([]);
     if (searchInDescription) {
@@ -937,11 +957,12 @@ async function searchItemsByText(searchText, options = {}) {
     const candidates = Array.from(candidateMap.values());
     console.log(`Tradeo AI SmartSearch: ${candidates.length} Kandidaten geladen. Starte Filterung...`);
 
-    // 3. FILTERING: Jetzt prüfen wir die restlichen Tokens
+    // 3. FILTERING
     const itemCache = new Map();
     const enrichedResults = [];
-    const allSalesPriceIds = new Set();
-    const bannedRegex = /(hardware\s*care\s*pack|upgrade\s+auf)/i;
+    
+    // UPDATED FILTER REGEX: "bundle" und "upgrade" (solo) verboten
+    const bannedRegex = /(hardware\s*care\s*pack|upgrade|bundle)/i;
 
     const extractNameAndDescription = (item) => {
         let name = "";
@@ -963,7 +984,6 @@ async function searchItemsByText(searchText, options = {}) {
         const itemId = variation.itemId;
         const variationId = variation.id;
 
-        // Item laden (Cache nutzen)
         let item = itemCache.get(itemId);
         if (!item) {
             try {
@@ -972,14 +992,16 @@ async function searchItemsByText(searchText, options = {}) {
             } catch (e) { continue; }
         }
 
-        const { name, description } = extractNameAndDescription(item);
-        const fullText = (name + " " + (searchInDescription ? description : "")).toLowerCase();
+        const { name: apiName, description: apiDesc } = extractNameAndDescription(item);
+        
+        // Suche auf Basis der API-Daten (Original)
+        const fullTextForSearch = (apiName + " " + (searchInDescription ? apiDesc : "")).toLowerCase();
 
         // Ban-Check
-        if (bannedRegex.test(fullText)) continue;
+        if (bannedRegex.test(fullTextForSearch)) continue;
 
-        // TOKEN CHECK: Sind ALLE Tokens enthalten?
-        const allTokensMatch = tokenRegexes.every(rx => rx.test(name) || (searchInDescription && rx.test(description)));
+        // TOKEN CHECK
+        const allTokensMatch = tokenRegexes.every(rx => rx.test(apiName) || (searchInDescription && rx.test(apiDesc)));
 
         if (!allTokensMatch) continue;
 
@@ -993,37 +1015,31 @@ async function searchItemsByText(searchText, options = {}) {
                 makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
             ]);
             stock = Array.isArray(stockRes) ? stockRes : [];
-            if (Array.isArray(vspRes)) {
-                variationSalesPrices = vspRes;
-                vspRes.forEach(sp => { if (sp?.salesPriceId) allSalesPriceIds.add(sp.salesPriceId); });
-            }
+            if (Array.isArray(vspRes)) variationSalesPrices = vspRes;
         } catch (e) { /* ignore */ }
 
-        enrichedResults.push({
-            // WICHTIG: Wir zwingen die AI, itemId als Artikelnummer zu sehen
-            articleNumber: String(itemId), 
-            itemId,
-            variationId,
-            variationNumber: variation.number, // Umbenannt, damit AI nicht verwirrt ist
-            model: variation.model,
-            name,
-            description,
-            variation, // Original behalten wir für Attribute etc.
-            item,
-            stock,
-            variationSalesPrices
-        });
-    }
+        // --- NAMEN & BESCHREIBUNG AUFBEREITEN ---
+        // 1. HTML entfernen
+        const cleanFullDesc = stripHtmlToText(apiDesc);
+        // 2. In Zeilen splitten
+        const lines = cleanFullDesc.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        
+        // 3. Name ableiten (Zeile 1)
+        let derivedName = lines.length > 0 ? lines[0] : apiName; // Fallback auf API Name wenn leer
+        // "Beschreibung:" Prefix entfernen, falls vorhanden
+        derivedName = derivedName.replace(/^Beschreibung:\s*/i, '');
 
-    // SalesPrice Metadaten laden
-    let salesPriceInfo = [];
-    if (allSalesPriceIds.size > 0) {
-        try {
-            const idsParam = Array.from(allSalesPriceIds).join(",");
-            const qp = new URLSearchParams({ ids: idsParam, with: "names,countries,currencies,clients,customerClasses" });
-            const spiRes = await makePlentyCall(`/rest/items/sales_prices?${qp.toString()}`);
-            if (spiRes?.entries) salesPriceInfo = spiRes.entries;
-        } catch (e) { console.warn("Meta-Price Load Error", e); }
+        // 4. Beschreibung ableiten (Restliche Zeilen), um Dopplung zu vermeiden
+        const derivedDesc = lines.length > 1 ? lines.slice(1).join('\n') : "";
+
+        enrichedResults.push({
+            articleNumber: String(itemId),
+            model: variation.model,
+            name: derivedName,     // AI Name = Zeile 1 der Beschreibung
+            description: derivedDesc, // AI Desc = Rest der Beschreibung
+            stockNet: (stock && stock.length > 0) ? stock[0].netStock : 0,
+            price: (variationSalesPrices && variationSalesPrices.length > 0) ? variationSalesPrices[0].price : "N/A"
+        });
     }
 
     const finalResults = enrichedResults.slice(0, maxResults);
@@ -1036,7 +1052,6 @@ async function searchItemsByText(searchText, options = {}) {
             matchesFound: enrichedResults.length,
             timestamp: new Date().toISOString()
         },
-        salesPriceInfo,
         results: finalResults
     };
 }
@@ -1048,3 +1063,4 @@ async function searchItemsByNameText(searchString) {
 async function searchItemsByNameAndDescriptionText(searchString) {
     return searchItemsByText(searchString, { mode: "nameAndDescription" });
 }
+
