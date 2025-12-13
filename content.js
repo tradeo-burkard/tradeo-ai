@@ -2005,7 +2005,7 @@ async function callGeminiWithRotation(payload, model) {
 // --- BOOTSTRAP ---
 function bootstrapTradeo() {
     startHeartbeat();                 // deine bestehende Logik (AI-UI etc.)
-    initPlentyItemSearchDebugButton(); // unser neuer Debug-Button
+    initPlentyApiDebugButtons(); // unser neuer Debug-Button
 }
 
 if (document.readyState === 'loading') {
@@ -2058,7 +2058,7 @@ window.testPlentyConnection = async function() {
     }
 };
 
-function initPlentyItemSearchDebugButton() {
+function initPlentyApiDebugButtons() {
     if (window.__plentyDebugBtnInit) return;
     window.__plentyDebugBtnInit = true;
 
@@ -2101,7 +2101,7 @@ function initPlentyItemSearchDebugButton() {
         await window.debugPlentyItemSearch(input);
     });
 
-    // 2. Button: Item Details (Identifier) - Mitte
+    // 2. Button: Item Details (Identifier) - Mitte unten
     createBtn("tradeo-plenty-details-btn", "📦 Item Details Debug", 50, async () => {
         const defaultId = "HMAA4GR7AJR8N-XN"; 
         const last = window.__lastPlentyDebugDetails || defaultId;
@@ -2111,7 +2111,7 @@ function initPlentyItemSearchDebugButton() {
         await window.debugPlentyItemDetails(input);
     });
 
-    // 3. Button: Customer Details (Contact ID) - Oben
+    // 3. Button: Customer Details (Contact ID) - Mitte oben
     createBtn("tradeo-plenty-customer-btn", "👤 Customer Details Debug", 90, async () => {
         // Versuchen, eine Customer ID aus dem DOM zu extrahieren (als Default)
         let defaultId = "278542";
@@ -2126,6 +2126,16 @@ function initPlentyItemSearchDebugButton() {
         if (!input) return;
         window.__lastPlentyCustomerDebug = input;
         await window.debugCustomerDetails(input);
+    });
+
+    // 4. Button: Order Details (Order ID) - Oben
+    createBtn("tradeo-plenty-order-btn", "🛒 Order Details Debug", 130, async () => {
+        const defaultId = "581769"; // Beispiel ID
+        const last = window.__lastPlentyOrderDebug || defaultId;
+        const input = prompt("Plenty Order Debug – Order ID eingeben:", last);
+        if (!input) return;
+        window.__lastPlentyOrderDebug = input;
+        await window.debugOrderDetails(input);
     });
 }
 
@@ -2526,6 +2536,74 @@ window.debugCustomerDetails = async function(contactId) {
 
             console.log("📋 JSON Output (für Copy/Paste):");
             console.log(JSON.stringify(response.data, null, 2));
+
+        } else {
+            console.error("❌ API Error oder kein Ergebnis:", response);
+            if (response && response.error) {
+                console.error("Details:", response.error);
+            }
+        }
+
+    } catch (e) {
+        console.error("🔥 Critical Error during debug call:", e);
+    }
+    console.groupEnd();
+};
+
+/**
+ * NEUE DEBUG FUNKTION FÜR ORDER DETAILS
+ * Simuliert den Tool-Call für Bestellinformationen.
+ */
+window.debugOrderDetails = async function(orderId) {
+    console.clear();
+    console.group(`🚀 DEBUG: fetchOrderDetails für Order ID "${orderId}"`);
+    console.log("⏳ Sende Anfrage an Background Script...");
+
+    try {
+        const response = await new Promise(resolve => {
+            chrome.runtime.sendMessage({ 
+                action: 'GET_ORDER_FULL', 
+                orderId: orderId 
+            }, (res) => resolve(res));
+        });
+
+        if (response && response.success) {
+            console.log("✅ API Success! Rückgabe an die AI:");
+            const data = response.data;
+            console.dir(data); // Interaktives Objekt
+            
+            // Kurze Übersicht für schnellen Check
+            if (data.order) {
+                console.group("🛒 Order Check");
+                console.log("ID:", data.order.id);
+                console.log("Status:", `${data.order.statusId} (${data.order.statusName})`);
+                console.log("Erstellt am:", new Date(data.order.createdAt).toLocaleString());
+                console.groupEnd();
+            }
+
+            if (data.shippingInfo) {
+                console.group("🚚 Versand & Tracking");
+                console.log("Provider:", data.shippingInfo.provider);
+                console.log("Profil:", data.shippingInfo.profileName);
+                console.log("Zielland:", data.shippingInfo.destinationCountry);
+                if (data.order.shippingPackages && data.order.shippingPackages.length > 0) {
+                    console.table(data.order.shippingPackages.map(p => ({ PakrNr: p.packageNumber, Gewicht: p.weightG + 'g' })));
+                } else {
+                    console.warn("⚠️ Keine Paketnummern (shippingPackages) gefunden.");
+                }
+                console.groupEnd();
+            }
+
+            if (data.addresses && Array.isArray(data.addresses)) {
+                console.group(`🏠 Adressen (${data.addresses.length})`);
+                data.addresses.forEach(addr => {
+                    console.log(`[${addr.relationType}] ${addr.name1 || ''} ${addr.name2 || ''}, ${addr.town} (${addr.countryName})`);
+                });
+                console.groupEnd();
+            }
+
+            console.log("📋 JSON Output (für Copy/Paste):");
+            console.log(JSON.stringify(data, null, 2));
 
         } else {
             console.error("❌ API Error oder kein Ergebnis:", response);
