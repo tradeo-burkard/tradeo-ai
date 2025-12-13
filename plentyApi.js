@@ -141,6 +141,7 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
+ * UPDATED: Data-Stripper V4 - Sortierte Properties (typeName direkt unter typeId).
  */
 async function fetchOrderDetails(orderId) {
     try {
@@ -151,6 +152,7 @@ async function fetchOrderDetails(orderId) {
 
         const result = {
             meta: { type: "PLENTY_ORDER_FULL_EXPORT", orderId: orderId, timestamp: new Date().toISOString() },
+            // Wird unten überschrieben durch bereinigte Version
             order: orderData,
             stocks: [],
             addresses: [],
@@ -230,6 +232,78 @@ async function fetchOrderDetails(orderId) {
                 result.shippingInfo.error = e.toString();
             }
         }
+
+        // --- 5. DATA STRIPPING (Optimiert) ---
+        
+        // Helper: Entfernt 'orderId' aus einem Objekt
+        const removeOrderId = (obj) => {
+            if (!obj || typeof obj !== 'object') return obj;
+            const { orderId, ...rest } = obj;
+            return rest;
+        };
+
+        // Helper: Mappt Arrays und entfernt orderId
+        const cleanList = (list) => (list || []).map(removeOrderId);
+
+        // Spezieller Cleaner für Relations: Filtert Warehouse raus UND entfernt orderId
+        const cleanRelations = (orderData.relations || [])
+            .filter(r => r.referenceType !== 'warehouse')
+            .map(removeOrderId);
+
+        // Spezieller Cleaner für Properties: Fügt sprechende Namen hinzu & SORTIERT
+        const PROPERTY_NAMES = {
+            3: "Zahlungsart",
+            6: "Auftragssprache",
+            7: "Externe Auftragsnummer"
+        };
+
+        const cleanProperties = (list) => (list || []).map(p => {
+            if (!p) return p;
+            // 1. Destructuring: orderId wegwerfen, typeId separieren
+            const { orderId, typeId, ...rest } = p;
+            
+            // 2. Neuaufbau für korrekte Reihenfolge (typeId oben)
+            const newObj = { typeId };
+            
+            // 3. typeName direkt darunter einfügen
+            if (PROPERTY_NAMES[typeId]) {
+                newObj.typeName = PROPERTY_NAMES[typeId];
+            }
+            
+            // 4. Den Rest (value, createdAt etc.) anhängen
+            return { ...newObj, ...rest };
+        });
+
+        // Spezieller Cleaner für Items: Entfernt orderId auch aus dem Item selbst
+        const cleanItems = (orderData.orderItems || []).map(item => {
+            const cleanItem = removeOrderId(item);
+            if (cleanItem.properties) cleanItem.properties = cleanProperties(cleanItem.properties); // Props auch hier reinigen
+            if (cleanItem.amounts) cleanItem.amounts = cleanList(cleanItem.amounts);
+            return cleanItem;
+        });
+
+        const cleanOrder = {
+            id: orderData.id,
+            statusName: orderData.statusName,
+            statusId: orderData.statusId,
+            typeId: orderData.typeId,
+            lockStatus: orderData.lockStatus,
+            createdAt: orderData.createdAt,
+            updatedAt: orderData.updatedAt,
+            ownerId: orderData.ownerId,
+            
+            // Bereinigte Listen
+            relations: cleanRelations,
+            properties: cleanProperties(orderData.properties), // Hier nutzen wir den neuen Cleaner
+            dates: cleanList(orderData.dates),
+            amounts: cleanList(orderData.amounts),
+            orderReferences: cleanList(orderData.orderReferences),
+            orderItems: cleanItems,
+            addressRelations: cleanList(orderData.addressRelations),
+            shippingPackages: cleanList(orderData.shippingPackages)
+        };
+
+        result.order = cleanOrder;
 
         return result;
 
