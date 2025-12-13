@@ -214,7 +214,7 @@ async function fetchFullOrderDetails(orderId) {
 
 /**
  * Holt Kundendaten und die letzten Bestellungen (Stripped Version).
- * UPDATED: Mit Kreditlimit, Order-Beträgen & Typ-Erkennung.
+ * UPDATED: Erweitertes Contact-Objekt inkl. Blocked-Status, Rating, Login-Daten etc.
  */
 async function fetchCustomerDetails(contactId) {
     try {
@@ -238,30 +238,47 @@ async function fetchCustomerDetails(contactId) {
 
         // --- DATA STRIPPING (Optimierung für AI Kontext) ---
 
-        // A. Kontakt bereinigen
+        // A. Kontakt bereinigen (Erweitert um alle angeforderten Felder)
         const cleanContact = {
             id: contactData.id,
             typeId: contactData.typeId, 
             firstName: contactData.firstName,
             lastName: contactData.lastName,
             gender: contactData.gender,
+            title: contactData.title,
+            formOfAddress: contactData.formOfAddress,
+            classId: contactData.classId,
+            blocked: contactData.blocked,
+            rating: contactData.rating,
+            bookAccount: contactData.bookAccount,
             lang: contactData.lang,
+            referrerId: contactData.referrerId,
+            userId: contactData.userId,
+            
+            // Zeitstempel & Status
+            lastLoginAt: contactData.lastLoginAt,
+            lastOrderAt: contactData.lastOrderAt,
+            createdAt: contactData.createdAt,
+            updatedAt: contactData.updatedAt,
+            
+            // Kontakt
             email: contactData.email,
             privatePhone: contactData.privatePhone,
             privateMobile: contactData.privateMobile,
             ebayName: contactData.ebayName,
-            createdAt: contactData.createdAt,
-            classId: contactData.classId,
             
-            // Accounts: Jetzt mit Finanzdaten (Limit, Zahlungsziel)
+            // Zahlungsziel (Root Level)
+            timeForPaymentAllowedDays: contactData.timeForPaymentAllowedDays,
+
+            // Accounts: Firmendaten & Finanzdaten
             accounts: (contactData.accounts || []).map(acc => ({
                 id: acc.id,
                 companyName: acc.companyName,
                 taxIdNumber: acc.taxIdNumber,
-                // WICHTIG: Finanzielle Limits & Ziele wieder drin
-                dealerMinOrderValue: acc.dealerMinOrderValue, // "Kreditlimit" / Mindestbestellwert
-                valuta: acc.valuta, // Valuta in Tagen
-                timeForPaymentAllowedDays: acc.timeForPaymentAllowedDays, // Zahlungsziel in Tagen
+                // Wir behalten die Finanzdaten drin, falls verfügbar, da sie für den Support wichtig sind
+                dealerMinOrderValue: acc.dealerMinOrderValue, 
+                valuta: acc.valuta, 
+                timeForPaymentAllowedDays: acc.timeForPaymentAllowedDays, 
                 deliveryTime: acc.deliveryTime
             }))
         };
