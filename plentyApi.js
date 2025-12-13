@@ -499,23 +499,32 @@ async function fetchItemDetails(identifierRaw) {
                 try {
                     const itemBase = await makePlentyCall(`/rest/items/${cand.itemId}`);
                     let name = "Unbekannt";
+                    let description = "";
 
+                    // Namen & Beschreibung extrahieren (bevorzugt DE)
                     if (itemBase && itemBase.texts && itemBase.texts.length > 0) {
-                        const t = itemBase.texts[0];
+                        const t = itemBase.texts.find(text => text.lang === 'de') || itemBase.texts[0];
                         name = t.name1 || t.name2 || t.name3 || "Unbekannt";
+                        description = t.description || "";
                     }
 
                     // Variante B: Net-Stock über alle Lager summieren
                     const netStock = await loadNetStockAllWarehouses(cand.id);
 
                     return {
+                        // Standard Fields (angereichert)
                         id: cand.id,
                         itemId: cand.itemId,
                         number: cand.number,
-                        model: cand.model, // kommt aus Variation-Objekt
-                        name,
+                        model: cand.model,
+                        name: name,
+                        description: description, // WICHTIG: Description für AI Entscheidung
                         stockNet: netStock,
-                        isActive: cand.isActive
+                        isActive: cand.isActive,
+                        
+                        // Full Data Payloads (damit es "ausführlich" ist, wie beim Single-Match)
+                        variation: cand,
+                        item: itemBase
                     };
                 } catch (e) {
                     console.warn("Tradeo AI: Kandidat-Detailabruf fehlgeschlagen:", e);
