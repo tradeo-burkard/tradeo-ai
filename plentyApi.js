@@ -323,29 +323,15 @@ async function fetchItemDetails(identifierRaw) {
                 return acc + computeNetStockEntry(entry);
             }, 0);
 
-            // Kleines Debug-Logging, um die Struktur zu sehen
-            if (stockEntries.length) {
-                console.log("Tradeo AI: Stock-Debug", {
-                    variationId,
-                    warehouses: stockEntries.map(e => e.warehouseId),
-                    sampleEntry: stockEntries[0],
-                    netStockTotal
-                });
-            } else {
-                console.log("Tradeo AI: Stock-Debug", {
-                    variationId,
-                    warehouses: [],
-                    netStockTotal: 0
-                });
-            }
-
             return netStockTotal;
         };
 
         // --- Helper: /rest/items/variations Suche ---
+        // UPDATE: Hier wird jetzt standardmäßig isActive=true gesetzt!
         const searchVariations = async (params, label) => {
             const qs = new URLSearchParams({
                 itemsPerPage: "50",
+                isActive: "true", // <--- WICHTIG: Nur aktive Varianten
                 ...params
             }).toString();
 
@@ -368,8 +354,6 @@ async function fetchItemDetails(identifierRaw) {
             const variationId = variation.id;
 
             const [stockData, itemBaseData] = await Promise.all([
-                // hier lässt du das Verhalten wie bisher (nur Lager 1),
-                // damit der Export sich nicht ändert
                 makePlentyCall(`/rest/stockmanagement/stock?variationId=${variationId}&warehouseId=1`),
                 makePlentyCall(`/rest/items/${itemId}`)
             ]);
@@ -395,7 +379,7 @@ async function fetchItemDetails(identifierRaw) {
         // 1. PRIORISIERTE SUCHE: Variation-ID / Item-ID / numberExact
         // =====================================================================
         if (isNumeric) {
-            console.log(`Tradeo AI: Numerischer Identifier '${identifier}' – prüfe ID-Varianten...`);
+            console.log(`Tradeo AI: Numerischer Identifier '${identifier}' – prüfe ID-Varianten (nur aktive)...`);
 
             // a) Variation-ID direkt
             await searchVariations({ id: identifier }, "priority:variationId");
@@ -410,11 +394,12 @@ async function fetchItemDetails(identifierRaw) {
                 await searchVariations({ numberExact: identifier }, "priority:numberExact");
             }
 
-            // d) HARDCODED-FALLBACK: /rest/items/{itemId}/variations → Item-ID aus UI
+            // d) HARDCODED-FALLBACK: /rest/items/{itemId}/variations
+            // UPDATE: Auch hier ?isActive=true angehängt
             if (candidates.length === 0) {
                 try {
-                    console.log(`Tradeo AI: Fallback: /rest/items/${identifier}/variations ...`);
-                    const res = await makePlentyCall(`/rest/items/${identifier}/variations`);
+                    console.log(`Tradeo AI: Fallback: /rest/items/${identifier}/variations?isActive=true ...`);
+                    const res = await makePlentyCall(`/rest/items/${identifier}/variations?isActive=true`);
                     const entries = extractEntries(res);
                     console.log(`Tradeo AI: /rest/items/${identifier}/variations → ${entries.length} Treffer`);
                     addCandidates(entries);
@@ -432,11 +417,10 @@ async function fetchItemDetails(identifierRaw) {
         }
 
         // =====================================================================
-        // 2. BREITE SUCHE:
-        //    numberExact/numberFuzzy, barcode, itemName, itemDescription, supplierNumber, supplierNumberFuzzy, sku
+        // 2. BREITE SUCHE (searchVariations nutzt oben bereits isActive=true)
         // =====================================================================
         if (candidates.length === 0) {
-            console.log(`Tradeo AI: Starte breite Suche für '${identifier}'...`);
+            console.log(`Tradeo AI: Starte breite Suche für '${identifier}' (nur aktive)...`);
 
             const tasks = [];
 
@@ -475,7 +459,7 @@ async function fetchItemDetails(identifierRaw) {
         // =====================================================================
         if (candidates.length === 0) {
             throw new Error(
-                `Artikel/Variation '${identifier}' konnte nicht gefunden werden (weder via Variation-ID, Item-ID, Nummer, Barcode, Name, Beschreibung noch Supplier/SKU).`
+                `Artikel/Variation '${identifier}' konnte nicht gefunden werden (Suche auf AKTIVE Artikel beschränkt).`
             );
         }
 
@@ -488,7 +472,7 @@ async function fetchItemDetails(identifierRaw) {
         }
 
         // =====================================================================
-        // 5. MEHRERE TREFFER → Kandidatenliste mit Kontext (Variante B für Net-Stock)
+        // 5. MEHRERE TREFFER
         // =====================================================================
         console.log(`Tradeo AI: Ambige Ergebnisse – ${candidates.length} Treffer. Lade Details für Top 5...`);
 
@@ -518,11 +502,11 @@ async function fetchItemDetails(identifierRaw) {
                         number: cand.number,
                         model: cand.model,
                         name: name,
-                        description: description, // WICHTIG: Description für AI Entscheidung
+                        description: description,
                         stockNet: netStock,
-                        isActive: cand.isActive,
+                        isActive: cand.isActive, // Sollte jetzt immer true sein
                         
-                        // Full Data Payloads (damit es "ausführlich" ist, wie beim Single-Match)
+                        // Full Data Payloads
                         variation: cand,
                         item: itemBase
                     };
@@ -547,7 +531,7 @@ async function fetchItemDetails(identifierRaw) {
                 searchMethod,
                 timestamp: new Date().toISOString()
             },
-            message: `Es wurden ${candidates.length} passende Artikel gefunden (Suche nach '${identifier}').`,
+            message: `Es wurden ${candidates.length} passende aktive Artikel gefunden (Suche nach '${identifier}').`,
             candidates: candidatesWithContext
         };
     } catch (error) {
