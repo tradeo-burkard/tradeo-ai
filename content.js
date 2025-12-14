@@ -170,6 +170,8 @@ window.aiState = {
     processingQueue: new Set() // Set<TicketID>
 };
 
+const USE_NATIVE_FUNCTION_CALLING = false; // Planner-Worker: LLM ruft keine Tools direkt auf
+
 // TOOL DEFINITION FÜR GEMINI
 const GEMINI_TOOLS = [
     {
@@ -479,74 +481,125 @@ async function processTicket(id, incomingInboxHash) {
 
 // --- API FUNCTIONS ---
 
+
 async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     const stored = await chrome.storage.local.get(['geminiApiKey']);
     const apiKey = stored.geminiApiKey;
     if (!apiKey) return null;
 
-    // --- TIMEOUT LOGIK (UPDATED) ---
     const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
     const isSlowModel = currentModel.includes("gemini-3-pro");
-    
-    // FIX: Timeout mal Turns nehmen (außer bei Slow Model, da ist es ein Hard-Cap)
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
-    const headlessPrompt = `
-    ${SYSTEM_PROMPT}
-    === HINTERGRUND-ANALYSE ===
-    Dies ist ein automatischer Scan eines Tickets.
-    === TICKET VERLAUF ===
-    ${contextText}
-    === AUFGABE ===
-    1. Wenn möglich, nutze Tools für echte Daten.
-    2. Erstelle einen Antwortentwurf JSON.
-    `;
+    const headlessUserPrompt = "Analysiere das Ticket und erstelle einen Entwurf.";
 
-    // 1. HAUPT-TASK
     const primaryTask = async () => {
-        let contents = [{ role: "user", parts: [{ text: headlessPrompt }] }];
-        return await executeHeadlessLoop(contents, apiKey, ticketId, true);
+        // PHASE 1: PLAN
+        const plan = await analyzeToolPlan(contextText, headlessUserPrompt, ticketId);
+
+        // Tool Logs fürs spätere UI
+        const toolLogs = [];
+        if (plan.tool_calls?.length) {
+            const info = plan.tool_calls.map(c => {
+                if (c.name === 'fetchOrderDetails') return `Order #${c.args?.orderId || "?"}`;
+                if (c.name === 'fetchCustomerDetails') return `Kunde #${c.args?.contactId || "?"}`;
+                if (c.name === 'fetchItemDetails') return `Artikel ${c.args?.identifier || "?"}`;
+                if (c.name === 'searchItemsByText') return `Suche "${c.args?.searchText || "?"}"`;
+                return c.name;
+            }).join(' · ');
+            toolLogs.push(`⚙️ Hintergrund: Lade Daten: ${info}`);
+        } else {
+            toolLogs.push(`✅ Hintergrund: Keine Datenabfrage nötig.`);
+        }
+
+        // PHASE 2: EXECUTE
+        const gatheredData = await executePlannedToolCalls(plan.tool_calls || [], ticketId);
+
+        // PHASE 3: GENERATE
+        const generatorPrompt = `
+${SYSTEM_PROMPT}
+
+=== HINTERGRUND-ANALYSE ===
+Dies ist ein automatischer Scan eines Tickets.
+WICHTIG: Du darfst KEINE Tools/Funktionen aufrufen – die Datenbeschaffung ist abgeschlossen.
+
+=== HINTERGRUND-DATEN (PLENTY API ERGEBNISSE) ===
+${JSON.stringify(gatheredData, null, 2)}
+
+=== TICKET VERLAUF ===
+${contextText}
+
+=== AUFGABE ===
+Erstelle einen Antwortentwurf im JSON-Format:
+{
+  "draft": "<html>...</html>",
+  "reasoning": "kurze interne Begründung",
+  "feedback": "kurzer Status/Headline"
+}
+`;
+
+        const payload = {
+            contents: [{ role: "user", parts: [{ text: generatorPrompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+        };
+
+        const response = await callGeminiWithRotation(payload, currentModel);
+        let rawText = response?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        rawText = stripGeminiJson(rawText);
+
+        let finalResponse;
+        try {
+            finalResponse = JSON.parse(rawText);
+            if(!finalResponse.draft && finalResponse.text) finalResponse.draft = finalResponse.text;
+        } catch (e) {
+            finalResponse = { 
+                draft: rawText.replace(/\n/g, '<br>'), 
+                feedback: "Hinweis: AI Formatierung war kein JSON (Rohdaten)." 
+            };
+        }
+
+        finalResponse.toolLogs = toolLogs;
+        return finalResponse;
     };
 
-    // 2. TIMEOUT
     const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error("TIMEOUT")), dynamicTimeoutMs)
     );
 
     try {
-        const finalResponse = await Promise.race([primaryTask(), timeoutPromise]);
-        return finalResponse;
-
+        return await Promise.race([primaryTask(), timeoutPromise]);
     } catch (error) {
-        console.warn(`[CID: ${ticketId}] Tradeo AI Headless: Fail/Timeout. Starte Fallback.`, error);
-        
-        // 3. FALLBACK
+        console.warn(`[CID: ${ticketId}] Headless: Abbruch (${error.message}). Starte Fallback (ohne Tools).`);
+
         try {
-            const min = Math.round(dynamicTimeoutMs / 60000);
-            const fallbackReason = error.message === "TIMEOUT" ? `Timeout (>${min}min)` : "Fehler";
-            
-            const warningLog = `⚠️ Background-Scan abgebrochen (${fallbackReason}). Fallback-Modus aktiv.`;
-            
-            let contents = [{ role: "user", parts: [{ text: `
-                ${headlessPrompt}
-                ACHTUNG: Tool-Nutzung fehlgeschlagen. 
-                Erstelle Antwort NUR basierend auf Text. Erfinde keine Daten.
-            ` }] }];
+            let contents = [{
+                role: "user",
+                parts: [{ text: `
+${SYSTEM_PROMPT}
+=== HINTERGRUND-ANALYSE ===
+Automatischer Scan. Fallback ohne Datenabfrage.
+
+=== TICKET VERLAUF ===
+${contextText}
+
+=== AUFGABE ===
+Erstelle einen Antwortentwurf im JSON-Format (kein Tool-Calling).
+`}]
+            }];
 
             const fallbackResponse = await executeHeadlessLoop(contents, apiKey, ticketId, false);
-            
             if (fallbackResponse) {
                 if (!fallbackResponse.toolLogs) fallbackResponse.toolLogs = [];
-                fallbackResponse.toolLogs.push(warningLog);
+                fallbackResponse.toolLogs.push("⚠️ Hintergrund: Fallback ohne Datenabfrage (Planner/Worker fehlgeschlagen).");
             }
             return fallbackResponse;
-
         } catch (fbError) {
             console.error(`[CID: ${ticketId}] Headless Fallback failed completely:`, fbError);
             return null;
         }
     }
 }
+
 
 async function executeHeadlessLoop(contents, apiKeyIgnored, ticketId, allowTools) {
     // Info: apiKeyIgnored wird nicht mehr genutzt
@@ -559,7 +612,7 @@ async function executeHeadlessLoop(contents, apiKeyIgnored, ticketId, allowTools
 
     while (turnCount < maxTurns) {
         const payload = { contents: contents };
-        if (allowTools) payload.tools = [{ function_declarations: GEMINI_TOOLS }];
+        if (allowTools && USE_NATIVE_FUNCTION_CALLING) payload.tools = [{ function_declarations: GEMINI_TOOLS }];
 
         // --- HIER IST DIE ÄNDERUNG: Aufruf über Rotation ---
         const data = await callGeminiWithRotation(payload, model);
@@ -1592,29 +1645,26 @@ function setupEditorObserver() {
 
 // Suche die Funktion runAI und ersetze sie durch diese Version:
 
+
 async function runAI(isInitial = false) {
     const btn = document.getElementById('tradeo-ai-send-btn');
     const input = document.getElementById('tradeo-ai-input');
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
     const cid = getTicketIdFromUrl() || "UNKNOWN";
 
-    // --- LOCK SETZEN FÜR LIVE MODUS ---
-    // Wir setzen den Lock ohne Prüfung auf 'WAIT', da runAI() die aktive Ausführung ist.
-    // Falls ein Background-Prozess läuft, wurde das vorher in initConversationUI abgefangen.
-    // Hier sagen wir explizit: "Ich bin jetzt der Chef".
+    // Live Lock
     await acquireLock(cid, 'live'); 
 
     const storageData = await chrome.storage.local.get(['geminiApiKey']);
     const apiKey = storageData.geminiApiKey;
 
     let userPrompt = "";
-
     if (isInitial) {
-        userPrompt = "Analysiere das Ticket. Wenn eine Bestellnummer zu finden ist, prüfe deren Status. Erstelle dann einen Antwortentwurf.";
+        userPrompt = "Analysiere das Ticket und erstelle einen Entwurf.";
     } else { 
         userPrompt = input.value.trim();
         if (!userPrompt) {
-            await releaseLock(cid); // Lock weg bei leerer Eingabe
+            await releaseLock(cid);
             return; 
         }
         renderChatMessage('user', userPrompt); 
@@ -1628,11 +1678,11 @@ async function runAI(isInitial = false) {
     }
 
     window.aiState.isGenerating = true;
-    if(btn) { btn.disabled = true; btn.innerText = "..."; }
+    if(btn) { btn.disabled = true; btn.innerText = "⏳"; }
 
     const contextText = extractContextFromDOM(document);
     const currentDraft = window.aiState.isRealMode ? document.querySelector('.note-editable')?.innerHTML : dummyDraft.innerHTML;
-    
+
     const historyString = window.aiState.chatHistory.map(e => {
         if(e.type === 'draft') return ""; 
         const role = e.type === 'user' ? 'User' : 'AI';
@@ -1641,27 +1691,82 @@ async function runAI(isInitial = false) {
 
     const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
     const isSlowModel = currentModel.includes("gemini-3-pro"); 
-    
-    // FIX: Timeout mal Turns nehmen
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
-    // 1. HAUPT-TASK
     const primaryTask = async () => {
-        let contents = [{
-            role: "user",
-            parts: [{ text: `
-                ${SYSTEM_PROMPT}
-                === TICKET VERLAUF ===
-                ${contextText}
-                === AKTUELLER ENTWURF ===
-                "${currentDraft}"
-                === CHAT HISTORIE ===
-                ${historyString}
-                === ANWEISUNG ===
-                ${userPrompt}
-            `}]
-        }];
-        return await executeGeminiLoop(contents, apiKey, cid, true);
+        // --- PHASE 1: PLAN ---
+        renderChatMessage('system', "🔍 Analysiere Bedarf...");
+        const plan = await analyzeToolPlan(contextText, userPrompt, cid);
+
+        // Plan-Info (UI)
+        const planInfo = [];
+        if (plan.tool_calls?.some(c => c.name === 'fetchOrderDetails')) {
+            const oc = plan.tool_calls.find(c => c.name === 'fetchOrderDetails');
+            if (oc?.args?.orderId) planInfo.push(`Order #${oc.args.orderId}`);
+        }
+        const itemCalls = (plan.tool_calls || []).filter(c => c.name === 'fetchItemDetails');
+        if (itemCalls.length) planInfo.push(`Artikel: ${itemCalls.map(c => c.args?.identifier).filter(Boolean).join(', ')}`);
+        const searchCall = (plan.tool_calls || []).find(c => c.name === 'searchItemsByText');
+        if (searchCall?.args?.searchText) planInfo.push(`Suche: "${searchCall.args.searchText}"`);
+        const custCall = (plan.tool_calls || []).find(c => c.name === 'fetchCustomerDetails');
+        if (custCall?.args?.contactId) planInfo.push(`Kunde #${custCall.args.contactId}`);
+
+        if (planInfo.length) renderChatMessage('system', `⚙️ Lade Daten: ${planInfo.join(' · ')}...`);
+        else renderChatMessage('system', "✅ Keine Datenabfrage nötig.");
+
+        // --- PHASE 2: EXECUTE (JS) ---
+        const gatheredData = await executePlannedToolCalls(plan.tool_calls || [], cid);
+
+        // --- PHASE 3: GENERATE ---
+        const generatorPrompt = `
+${SYSTEM_PROMPT}
+
+=== HINTERGRUND-DATEN (PLENTY API ERGEBNISSE) ===
+Die folgenden Daten wurden bereits von der Extension aus Plentymarkets geladen.
+Nutze diese Daten als Faktenbasis. Wenn Felder fehlen oder ok=false ist, sage das kurz und frage gezielt nach.
+WICHTIG: Du darfst KEINE Tools/Funktionen aufrufen – die Datenbeschaffung ist abgeschlossen.
+${JSON.stringify(gatheredData, null, 2)}
+
+=== TICKET VERLAUF ===
+${contextText}
+
+=== CHAT HISTORIE (Kontext) ===
+${historyString}
+
+=== AKTUELLER ENTWURF ===
+"${currentDraft}"
+
+=== ANWEISUNG ===
+${userPrompt}
+
+AUFGABE:
+Gib NUR ein JSON-Objekt zurück im Format:
+{
+  "draft": "<html>...</html>",
+  "reasoning": "kurze interne Begründung",
+  "feedback": "kurzer Status/Headline"
+}
+`;
+
+        const payload = {
+            contents: [{ role: "user", parts: [{ text: generatorPrompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+        };
+
+        const response = await callGeminiWithRotation(payload, currentModel);
+        let rawText = response?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        rawText = stripGeminiJson(rawText);
+
+        try {
+            const jsonResp = JSON.parse(rawText);
+            if(!jsonResp.draft && jsonResp.text) jsonResp.draft = jsonResp.text;
+            return jsonResp;
+        } catch (e) {
+            return { 
+                draft: rawText.replace(/\n/g, '<br>'), 
+                feedback: "Hinweis: AI Formatierung war kein JSON (Rohdaten)."
+            };
+        }
     };
 
     const timeoutPromise = new Promise((_, reject) => 
@@ -1674,36 +1779,26 @@ async function runAI(isInitial = false) {
 
     } catch (error) {
         console.warn(`[CID: ${cid}] Tradeo AI: Abbruch (${error.message}). Starte Fallback.`);
-        
-        let reasonText = "Ein Fehler ist aufgetreten";
-        if (error.message === "TIMEOUT") {
-            const min = Math.round(dynamicTimeoutMs / 60000);
-            reasonText = `Zeitüberschreitung (Limit: ${min} Min)`;
-        }
-
-        const warningText = `${reasonText}. Starte Notfall-Modus ohne Tools...`;
-        renderWarningMessage(warningText);
-        window.aiState.chatHistory.push({ type: "system", content: warningText });
 
         try {
             let fallbackPrompt = `
-                ACHTUNG: Die vorherige Verarbeitung ist fehlgeschlagen (${error.message}).
-                Bitte erstelle jetzt sofort eine Antwort basierend NUR auf dem Text.
-                Versuche NICHT, Tools zu nutzen.
-                Ursprüngliche Anweisung: ${userPrompt || "Analysiere Ticket"}
-            `;
+ACHTUNG: Die vorherige Verarbeitung ist fehlgeschlagen (${error.message}).
+Bitte erstelle jetzt sofort eine Antwort basierend NUR auf dem Text.
+Versuche NICHT, Tools zu nutzen.
+Ursprüngliche Anweisung: ${userPrompt || "Analysiere Ticket"}
+`;
 
             let contents = [{
                 role: "user",
                 parts: [{ text: `
-                    ${SYSTEM_PROMPT}
-                    === TICKET VERLAUF ===
-                    ${contextText}
-                    === CHAT HISTORIE ===
-                    ${historyString}
-                    === NOTFALL MODUS ===
-                    ${fallbackPrompt}
-                `}]
+${SYSTEM_PROMPT}
+=== TICKET VERLAUF ===
+${contextText}
+=== CHAT HISTORIE ===
+${historyString}
+=== NOTFALL MODUS ===
+${fallbackPrompt}
+`}]
             }];
 
             const fallbackResponse = await executeGeminiLoop(contents, apiKey, cid, false);
@@ -1716,9 +1811,10 @@ async function runAI(isInitial = false) {
     } finally {
         if(btn) { btn.disabled = false; btn.innerText = "Go"; }
         window.aiState.isGenerating = false; 
-        await releaseLock(cid); // Lock freigeben
+        await releaseLock(cid);
     }
 }
+
 
 // Helper: Gemeinsame Erfolgsverarbeitung für Main & Fallback
 function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) {
@@ -1796,7 +1892,7 @@ async function executeGeminiLoop(contents, apiKeyIgnored, cid, allowTools) {
     while (turnCount < maxTurns) {
         const payload = { contents: contents };
         
-        if (allowTools) {
+        if (allowTools && USE_NATIVE_FUNCTION_CALLING) {
             payload.tools = [{ function_declarations: GEMINI_TOOLS }];
         }
 
@@ -1885,6 +1981,145 @@ async function executeToolAction(fnName, fnArgs, cid) {
     });
     
     return apiResult && apiResult.success ? apiResult.data : { error: apiResult ? apiResult.error : "API Fail" };
+}
+
+
+
+// =============================================================================
+// Planner-Worker Helpers (LLM plant, Extension führt aus)
+// =============================================================================
+
+function stripGeminiJson(rawText) {
+    if (!rawText) return "";
+    return rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+}
+
+function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
+
+/**
+ * SCHRITT 1: Planner / Analyzer
+ * Gibt NUR einen Plan zurück: welche vorhandenen Tools (fetchOrderDetails, fetchItemDetails, fetchCustomerDetails, searchItemsByText)
+ * sollen mit welchen Args aufgerufen werden.
+ */
+async function analyzeToolPlan(contextText, userPrompt, cid) {
+    const model = window.aiState.currentModel || "gemini-2.5-pro";
+
+    const plannerPrompt = `
+Du bist ein Planner für eine Support-Extension. Du darfst KEINE API-Calls machen.
+Du entscheidest nur, ob und welche Tools ausgeführt werden sollen, um die Anfrage zu beantworten.
+
+WICHTIG:
+- Gib NUR JSON zurück. Kein Markdown, kein Text davor/danach.
+- Erfinde keine IDs. Extrahiere nur aus Ticket/Chat/Entwurf.
+- Wenn du keine Tools brauchst: tool_calls muss [] sein.
+- Maximal 6 Tool-Calls.
+
+Verfügbare Tools (genau diese Namen benutzen):
+1) fetchOrderDetails({ "orderId": "STRING" })
+2) fetchItemDetails({ "identifier": "STRING" })
+3) fetchCustomerDetails({ "contactId": "STRING" })
+4) searchItemsByText({ "searchText": "STRING", "mode": "name"|"nameAndDescription", "maxResults": NUMBER })
+
+OUTPUT FORMAT:
+{
+  "type": "plan",
+  "schema_version": "plan.v1",
+  "tool_calls": [
+    { "call_id": "c1", "name": "fetchOrderDetails", "args": { "orderId": "581769" }, "purpose": "..." }
+  ],
+  "notes": "kurze Begründung",
+  "needs_more_info": ["..."] 
+}
+
+=== TICKET VERLAUF ===
+${contextText}
+
+=== USER ANWEISUNG ===
+${userPrompt}
+`;
+
+    const payload = {
+        contents: [{ role: "user", parts: [{ text: plannerPrompt }] }],
+        generationConfig: { responseMimeType: "application/json" }
+    };
+
+    const response = await callGeminiWithRotation(payload, model);
+    const raw = response?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const cleaned = stripGeminiJson(raw);
+
+    let plan;
+    try { plan = JSON.parse(cleaned); }
+    catch (e) {
+        console.error(`[CID: ${cid}] Planner JSON parse failed:`, e, cleaned);
+        return { type: "plan", schema_version: "plan.v1", tool_calls: [], notes: "JSON_PARSE_ERROR", needs_more_info: [] };
+    }
+
+    // Minimal Validation / Sanitization
+    if (!isPlainObject(plan)) plan = { type: "plan", schema_version: "plan.v1", tool_calls: [] };
+    if (!Array.isArray(plan.tool_calls)) plan.tool_calls = [];
+
+    const allowed = new Set(["fetchOrderDetails","fetchItemDetails","fetchCustomerDetails","searchItemsByText"]);
+    plan.tool_calls = plan.tool_calls
+        .filter(c => isPlainObject(c) && allowed.has(c.name) && isPlainObject(c.args))
+        .slice(0, 6)
+        .map((c, idx) => ({
+            call_id: typeof c.call_id === 'string' && c.call_id ? c.call_id : `c${idx+1}`,
+            name: c.name,
+            args: c.args,
+            purpose: typeof c.purpose === 'string' ? c.purpose : ""
+        }));
+
+    if (!Array.isArray(plan.needs_more_info)) plan.needs_more_info = [];
+    if (typeof plan.notes !== 'string') plan.notes = "";
+    plan.type = "plan";
+    plan.schema_version = plan.schema_version || "plan.v1";
+
+    return plan;
+}
+
+/**
+ * SCHRITT 2: Worker / Executor
+ * Führt die Tool-Calls parallel aus (über bestehendes executeToolAction).
+ * Liefert ein kompaktes Ergebnisobjekt für den Generator.
+ */
+async function executePlannedToolCalls(toolCalls, cid) {
+    const gathered = {
+        meta: { executedAt: new Date().toISOString(), cid },
+        order: null,
+        customer: null,
+        items: [],
+        searchResults: null,
+        raw: [] // für Debug
+    };
+
+    if (!Array.isArray(toolCalls) || toolCalls.length === 0) return gathered;
+
+    // Dedup (name + args)
+    const seen = new Set();
+    const unique = [];
+    for (const c of toolCalls) {
+        const key = `${c.name}::${JSON.stringify(c.args)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(c);
+    }
+
+    const results = await Promise.all(unique.map(async (c) => {
+        const data = await executeToolAction(c.name, c.args, cid);
+        const ok = !(data && typeof data === 'object' && data.error);
+        return { call_id: c.call_id, name: c.name, args: c.args, ok, data };
+    }));
+
+    gathered.raw = results;
+
+    for (const r of results) {
+        if (r.name === 'fetchOrderDetails') gathered.order = r;
+        else if (r.name === 'fetchCustomerDetails') gathered.customer = r;
+        else if (r.name === 'fetchItemDetails') gathered.items.push(r);
+        else if (r.name === 'searchItemsByText') gathered.searchResults = r;
+    }
+
+    return gathered;
 }
 
 // --- STANDARD UTILS ---
