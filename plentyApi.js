@@ -800,7 +800,7 @@ async function fetchAllVariations(params) {
 async function searchItemsByText(searchText, options = {}) {
     __ensureDbCache();
 
-    // ---- Optionen / Modi parsen (kompatibel zu deinem Tool-Call) ---- :contentReference[oaicite:2]{index=2}
+    // ---- Optionen / Modi parsen (kompatibel zu deinem Tool-Call) ----
     let mode = "nameAndDescription";
     let maxResults = 25;
 
@@ -870,22 +870,33 @@ async function searchItemsByText(searchText, options = {}) {
         };
     }
 
-    // 3) Sort + TopN
+    // 3) Sortieren
     hits.sort((a, b) => a.score - b.score);
-    const top = hits.slice(0, maxResults);
+
+    // --- NEU: FILTERING vor dem Slicing (Blacklist) ---
+    // Wir filtern anhand des Original-Namens (__NAME)
+    const FORBIDDEN_TERMS = ["-upgrade", "hardware care pack", "-bundle"];
+    
+    const validHits = hits.filter(hit => {
+        const rawName = (__NAME[hit.i] || "").toLowerCase();
+        // Wenn einer der Begriffe enthalten ist -> rausfiltern
+        return !FORBIDDEN_TERMS.some(term => rawName.includes(term));
+    });
+
+    // Jetzt erst TopN nehmen (damit wir maxResults *gültige* Treffer bekommen)
+    const top = validHits.slice(0, maxResults);
 
     const tMatchEnd = (typeof performance !== "undefined" ? performance.now() : Date.now());
 
     // 4) Enrichment (nur TopN): Item + Varianten -> Stock + Price
-    // Da deine CSV kein variationId enthält: wir holen pro Item einmal das Item inkl. Variationen.
     const enrichOne = async (hit) => {
         const idx = hit.i;
         const itemId = __ITEM_ID[idx];
         const dbName = __NAME[idx];
         const dbDescHtml = __DESC[idx];
 
-        // Item inkl. Variationen laden (1 Call pro Treffer)
-        const item = await makePlentyCall(`/rest/items/${itemId}?with[]=variations&lang=de`);
+        // FIX: 'with=variations' (String) statt 'with[]=variations' (Array)
+        const item = await makePlentyCall(`/rest/items/${itemId}?with=variations&lang=de`);
 
         const vars = Array.isArray(item?.variations) ? item.variations : [];
         // Nimm am liebsten: active+main, sonst active, sonst erste
@@ -923,7 +934,7 @@ async function searchItemsByText(searchText, options = {}) {
         let description = (lines.length > 1) ? lines.slice(1).join("\n") : "";
 
         return {
-            articleNumber: String(itemId),
+            itemNumber: String(itemId), // NEU: itemNumber statt articleNumber
             model,
             name,
             description,
@@ -932,7 +943,7 @@ async function searchItemsByText(searchText, options = {}) {
         };
     };
 
-    const results = await __mapLimit(top, 8, enrichOne);
+    const results = await __mapLimit(top, 50, enrichOne);
 
     const tEnd = (typeof performance !== "undefined" ? performance.now() : Date.now());
 
@@ -942,7 +953,8 @@ async function searchItemsByText(searchText, options = {}) {
             mode,
             tokens,
             dbSize: hayArr.length,
-            matchesFound: hits.length,
+            matchesFound: hits.length, // Roh-Matches vor Filterung
+            validMatches: validHits.length, // Matches nach Filterung
             returned: results.length,
             matchMs: Math.round(tMatchEnd - t0),
             enrichMs: Math.round(tEnd - tMatchEnd),

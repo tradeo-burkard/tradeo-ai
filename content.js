@@ -2215,13 +2215,25 @@ WICHTIG:
   => tool_calls MUSS [] sein.
 - Tool-Calls sind nur erlaubt, wenn der User explizit neue Fakten verlangt ("prüf", "suche", "check", "aktuell", "nochmal", etc.)
   oder wenn im aktuellen Entwurf erkennbar Fakten fehlen (z.B. "kann ich nicht prüfen" / "unbekannt").
-- Maximal 6 Tool-Calls.
+- Maximal 10 Tool-Calls. Priorisiere, falls du andernfalls mehr als 10 Tools callen wollen würdest.
 
-Verfügbare Tools (genau diese Namen benutzen):
+Verfügbare Tools:
 1) fetchOrderDetails({ "orderId": "STRING" })
+   - Nur nutzen, wenn eine konkrete Bestellnummer (z.B. 581...) bekannt ist.
+   - orderIds sind immer 6-stellige Zahlen.
+   - Kunden und auch Mitarbeiter sagen gerne "OID 581222" oder falls es eine Retoure ist auch "Retoure 581222".
 2) fetchItemDetails({ "identifier": "STRING" })
+   - Für EXAKTE Kennungen: Artikelnummer, EAN, Barcode, Herstellernummer oder Variation-ID.
+   - NICHT für Suchbegriffe wie "Dell Server" nutzen!
 3) fetchCustomerDetails({ "contactId": "STRING" })
+   - Nur nutzen, wenn eine konkrete Contact-ID bekannt ist.
+   - Es ist immer eine sechsstellige Zahl.
+   - "Kundennummer 223232" / "Kunde 223232" / "Customer 223232" sind gängige Ausdrücke.
 4) searchItemsByText({ "searchText": "STRING", "mode": "name"|"nameAndDescription", "maxResults": NUMBER })
+   - Für Freitextsuche (z.B. "Dell R740", "Festplatte 900GB").
+   - bei SSDs fordern die Kunden oft "1 TB" als Größe, das musst du als "960GB" suchen. Gleiches für 2TB - 1.92TB usw. Falls der Kunde nach 3 - 4 TB SSDs fragt, musst halt das/die nächste/n nehmen, z.B. 3.84TB und 6.4TB.
+   - Größenangaben immer ohne Leerzeichen: Wenn der Kunde nach "32 GB Registered RAM" fragt, muss daraus "32GB" im Funktionsaufruf werden.
+   - Nutze mode="name", wenn der Begriff im Titel stehen muss.
 
 OUTPUT FORMAT:
 {
