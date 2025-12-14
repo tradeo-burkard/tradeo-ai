@@ -1,7 +1,0 @@
-Fixen:
-
-Neu:
-- Tools nicht mehr von AI ausführen lassen sondern:
-  AI analysiert, welche Tools mit welchen Parametern.
-  Gibt's an Extension zurück, die macht alles parallel im Hintergurnd.
-  Dann wird das Resultat der API Calls back an die AI geliefert.
