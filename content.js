@@ -172,77 +172,6 @@ window.aiState = {
     processingQueue: new Set() // Set<TicketID>
 };
 
-const USE_NATIVE_FUNCTION_CALLING = false; // Planner-Worker: LLM ruft keine Tools direkt auf
-
-// TOOL DEFINITION FÜR GEMINI
-const GEMINI_TOOLS = [
-    {
-        "name": "fetchOrderDetails",
-        "description": "Ruft vollständige Details einer Bestellung ab. ENTHÄLT Tracking-Nummern (Paketnummern), Versanddienstleister (z.B. DHL, UPS) und den genauen Status. Nutze dies immer, wenn nach dem 'Status', 'Wo ist mein Paket' oder einer Bestellnummer gefragt wird.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "orderId": {
-                    "type": "STRING",
-                    "description": "Die ID der Bestellung, z.B. 581769."
-                }
-            },
-            "required": ["orderId"]
-        }
-    },
-    {
-        "name": "fetchItemDetails",
-        "description": "Ruft detaillierte Artikelinformationen für EINEN Artikel ab, inklusive Variation, Item-Basisdaten und Lagerbestand der Variation. Nutze dies, wenn der Kunde dir eine eindeutige Kennung nennt (Artikelnummer, Item-ID, Variations-ID, EAN/Barcode oder Teilenummer/Modell). Das Tool verwendet eine Heuristik: zuerst 6-stellige interne Nummern, dann IDs, Nummern, Barcodes und Modelle. Bei Mehrtreffern liefert es einen Ambiguity-Status mit Kandidatenliste.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "identifier": {
-                    "type": "STRING",
-                    "description": "Eindeutige Kennung: interne Artikelnummer (z.B. 105400), Item-ID, Variations-ID, EAN/Barcode oder Teilenummer/Modell (z.B. '0JY57X')."
-                }
-            },
-            "required": ["identifier"]
-        }
-    },
-    {
-        "name": "fetchCustomerDetails",
-        "description": "Ruft Kundenstammdaten (Klasse, Adresse etc.) und die letzten Bestellungen dieses Kunden ab. Nutze dies, wenn eine Kundennummer (Contact ID) genannt wird.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "contactId": {
-                    "type": "STRING",
-                    "description": "Die ID des Kunden (Contact ID)."
-                }
-            },
-            "required": ["contactId"]
-        }
-    },
-    {
-        "name": "searchItemsByText",
-        "description": "Führt eine textbasierte Artikelsuche in Plentymarkets durch. Nutze dieses Tool nur, wenn der Benutzer EXPLIZIT darum bittet, Artikel anhand eines Textes, Artikelnamens oder Teilstrings zu suchen (z.B. 'DELL 1.8TB 12G 10K SAS'). Das Tool sucht zuerst nach exakten Treffern im Artikelnamen (und optional in der Beschreibung) und fällt dann auf eine Baustein-Suche zurück, bei der alle Wörter des Suchtexts enthalten sein müssen. Es liefert pro Treffer umfangreiche Daten (Variation, Item, Lagerbestand, Verkaufspreise und SalesPrice-Metadaten). Ergebnisse mit 'hardware care pack' oder 'upgrade auf' im Namen/Beschreibung werden intern herausgefiltert.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "searchText": {
-                    "type": "STRING",
-                    "description": "Der relevante Suchtext, z.B. 'DELL 1.8TB 12G 10K SAS' oder eine Teilenummer wie '0JY57X'. NICHT den gesamten Satz übergeben, sondern nur den eigentlichen Suchbegriff."
-                },
-                "mode": {
-                    "type": "STRING",
-                    "description": "Suchmodus: 'name' durchsucht nur Artikelnamen; 'nameAndDescription' durchsucht Artikelnamen UND Artikelbeschreibungen.",
-                    "enum": ["name", "nameAndDescription"]
-                },
-                "maxResults": {
-                    "type": "NUMBER",
-                    "description": "(Optional) Maximale Anzahl Treffer, die zurückgegeben werden sollen. Standard ist 30."
-                }
-            },
-            "required": ["searchText"]
-        }
-    }
-];
-
 async function acquireLock(ticketId, type) {
     const lockKey = `processing_${ticketId}`;
     const result = await chrome.storage.local.get([lockKey]);
@@ -593,7 +522,9 @@ Erstelle einen Antwortentwurf im JSON-Format (kein Tool-Calling).
 `}]
             }];
 
-            const fallbackResponse = await executeHeadlessLoop(contents, apiKey, ticketId, false);
+            // ÄNDERUNG: Parameter für Tools entfernt
+            const fallbackResponse = await executeHeadlessLoop(contents, ticketId);
+            
             if (fallbackResponse) {
                 if (!fallbackResponse.toolLogs) fallbackResponse.toolLogs = [];
                 fallbackResponse.toolLogs.push("⚠️ Hintergrund: Fallback ohne Datenabfrage (Planner/Worker fehlgeschlagen).");
@@ -607,22 +538,14 @@ Erstelle einen Antwortentwurf im JSON-Format (kein Tool-Calling).
 }
 
 
-async function executeHeadlessLoop(contents, apiKeyIgnored, ticketId, allowTools) {
-    // Info: apiKeyIgnored wird nicht mehr genutzt
+async function executeHeadlessLoop(contents, ticketId) {
     const model = window.aiState.currentModel || "gemini-2.5-pro";
     
-    let executedTools = [];
-    let turnCount = 0;
-    // FIX: Konstante nutzen
-    const maxTurns = allowTools ? MAX_TURNS : 1;
+    // Kein Loop mehr, keine Tools Payload -> Einfacher Call
+    const payload = { contents: contents };
 
-    while (turnCount < maxTurns) {
-        const payload = { contents: contents };
-        if (allowTools && USE_NATIVE_FUNCTION_CALLING) payload.tools = [{ function_declarations: GEMINI_TOOLS }];
-
-        // --- HIER IST DIE ÄNDERUNG: Aufruf über Rotation ---
+    try {
         const data = await callGeminiWithRotation(payload, model);
-        // ----------------------------------------------------
 
         const candidate = data.candidates?.[0];
         if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
@@ -631,47 +554,13 @@ async function executeHeadlessLoop(contents, apiKeyIgnored, ticketId, allowTools
         const parts = content.parts || []; 
         
         if (parts.length === 0) {
-            console.warn("Tradeo AI Headless: Gemini Content Parts sind leer. Trigger Fallback.", candidate);
+            console.warn("Tradeo AI Headless: Gemini Content Parts sind leer.", candidate);
             throw new Error("GEMINI_SAFETY_FILTER_TRIGGERED");
-        }
-
-        const functionCallPart = parts.find(p => p.functionCall);
-
-        if (functionCallPart && allowTools) {
-            const fnName = functionCallPart.functionCall.name;
-            const fnArgs = functionCallPart.functionCall.args;
-            
-            executedTools.push(`⚙️ AI nutzt Tool: ${fnName}(${JSON.stringify(fnArgs)})`);
-            // Tool Logic (gekürzt, da identisch zum Original)
-            let functionResult = null;
-            let actionName = '';
-            let actionPayload = {};
-
-            if (fnName === 'fetchOrderDetails') { actionName = 'GET_ORDER_FULL'; actionPayload = { orderId: fnArgs.orderId }; }
-            else if (fnName === 'fetchItemDetails') { actionName = 'GET_ITEM_DETAILS'; actionPayload = { identifier: fnArgs.identifier }; }
-            else if (fnName === 'fetchCustomerDetails') { actionName = 'GET_CUSTOMER_DETAILS'; actionPayload = { contactId: fnArgs.contactId }; }
-            else if (fnName === 'searchItemsByText') { actionName = 'SEARCH_ITEMS_BY_TEXT'; actionPayload = { searchText: fnArgs.searchText, mode: 'name', maxResults: 30 }; }
-
-            if (actionName) {
-                const apiResult = await new Promise(resolve => {
-                    chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => resolve(response));
-                });
-                functionResult = (apiResult && apiResult.success) ? apiResult.data : { error: "Error" };
-            } else {
-                functionResult = { error: "Unknown" };
-            }
-
-            contents.push(content); 
-            contents.push({
-                role: "function",
-                parts: [{ functionResponse: { name: fnName, response: { name: fnName, content: functionResult } } }]
-            });
-            turnCount++;
-            continue; 
         }
 
         let rawText = parts[0].text || ""; 
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        
         let finalResponse = null;
         try { 
             finalResponse = JSON.parse(rawText); 
@@ -679,13 +568,12 @@ async function executeHeadlessLoop(contents, apiKeyIgnored, ticketId, allowTools
             if(rawText) finalResponse = { draft: rawText.replace(/\n/g, '<br>'), feedback: "Fallback (Raw Text)" }; 
         }
         
-        if (finalResponse) {
-            finalResponse.toolLogs = executedTools;
-            return finalResponse;
-        }
-        break;
+        return finalResponse;
+
+    } catch (e) {
+        console.error(`[CID: ${ticketId}] Headless Loop Error:`, e);
+        return null;
     }
-    return null;
 }
 
 // =============================================================================
@@ -1925,10 +1813,8 @@ ${historyString}
 ${fallbackPrompt}
 `}]
             }];
-
-            const fallbackResponse = await executeGeminiLoop(contents, apiKey, cid, false);
+            const fallbackResponse = await executeGeminiLoop(contents, cid);
             handleAiSuccess(fallbackResponse, isInitial, input, dummyDraft, cid);
-
         } catch (fallbackError) {
             renderChatMessage('system', "❌ Fallback fehlgeschlagen.");
             console.error(`[CID: ${cid}] Fallback Error:`, fallbackError);
@@ -2007,79 +1893,38 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
     }
 }
 
-// Ersetze die Funktion executeGeminiLoop durch diese Version:
-async function executeGeminiLoop(contents, apiKeyIgnored, cid, allowTools) {
-    // Info: 'apiKeyIgnored' wird nicht mehr genutzt, wir holen die Liste intern in callGeminiWithRotation
+async function executeGeminiLoop(contents, cid) {
     const model = window.aiState.currentModel || "gemini-2.5-pro";
     
-    let turnCount = 0;
-    // FIX: Konstante nutzen
-    const maxTurns = allowTools ? MAX_TURNS : 1; 
+    // Einfacher Aufruf ohne Tools
+    const payload = { contents: contents };
 
-    while (turnCount < maxTurns) {
-        const payload = { contents: contents };
-        
-        if (allowTools && USE_NATIVE_FUNCTION_CALLING) {
-            payload.tools = [{ function_declarations: GEMINI_TOOLS }];
-        }
+    const data = await callGeminiWithRotation(payload, model);
 
-        // --- HIER IST DIE ÄNDERUNG: Aufruf über Rotation ---
-        const data = await callGeminiWithRotation(payload, model);
-        // ----------------------------------------------------
-
-        const candidate = data.candidates?.[0];
-        if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
-        
-        const content = candidate.content;
-        const parts = content.parts || []; 
-        
-        if (parts.length === 0) {
-            console.warn("Tradeo AI: Gemini Content Parts sind leer (Safety Filter?). Trigger Fallback.", candidate);
-            throw new Error("GEMINI_SAFETY_FILTER_TRIGGERED");
-        }
-
-        const functionCallPart = parts.find(p => p.functionCall);
-
-        if (functionCallPart && allowTools) {
-            const fnName = functionCallPart.functionCall.name;
-            const fnArgs = functionCallPart.functionCall.args;
-            
-            const logText = `⚙️ AI ruft Tool: ${fnName}(${JSON.stringify(fnArgs)})`;
-            renderChatMessage('system', logText);
-            window.aiState.chatHistory.push({ type: "system", content: logText });
-            console.log(`[CID: ${cid}] Tool Exec: ${fnName}`);
-
-            let functionResult = await executeToolAction(fnName, fnArgs, cid);
-
-            contents.push(content); 
-            contents.push({
-                role: "function",
-                parts: [{
-                    functionResponse: {
-                        name: fnName,
-                        response: { name: fnName, content: functionResult }
-                    }
-                }]
-            });
-            turnCount++;
-            continue; 
-        }
-
-        let rawText = parts[0].text || "";
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-        
-        try { 
-            let jsonResp = JSON.parse(rawText);
-            if(!jsonResp.draft && jsonResp.text) jsonResp.draft = jsonResp.text;
-            return jsonResp;
-        } catch(e) { 
-            return { 
-                draft: rawText.replace(/\n/g, '<br>'), 
-                feedback: "Hinweis: AI Formatierung war kein JSON (Rohdaten)." 
-            }; 
-        }
+    const candidate = data.candidates?.[0];
+    if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
+    
+    const content = candidate.content;
+    const parts = content.parts || []; 
+    
+    if (parts.length === 0) {
+        console.warn("Tradeo AI: Gemini Content Parts sind leer.", candidate);
+        throw new Error("GEMINI_SAFETY_FILTER_TRIGGERED");
     }
-    throw new Error("Max Turns erreicht ohne Ergebnis");
+
+    let rawText = parts[0].text || "";
+    rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+    
+    try { 
+        let jsonResp = JSON.parse(rawText);
+        if(!jsonResp.draft && jsonResp.text) jsonResp.draft = jsonResp.text;
+        return jsonResp;
+    } catch(e) { 
+        return { 
+            draft: rawText.replace(/\n/g, '<br>'), 
+            feedback: "Hinweis: AI Formatierung war kein JSON (Rohdaten)." 
+        }; 
+    }
 }
 
 // Helper: Tool Ausführung ausgelagert
