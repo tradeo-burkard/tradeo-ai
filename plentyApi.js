@@ -5,7 +5,7 @@ const COUNTRY_MAP={1:"Germany",2:"Austria",3:"Belgium",4:"Switzerland",5:"Cyprus
 const CUSTOMER_CLASS_MAP={9:"Standard-Endkunden",10:"Standard-Firmenkunden",7:"Bestandskunden (dyn. mit Kauf)",4:"Oeffentliche Einrichtungen",11:"Rechnung freigegeben (ungeprüft)",5:"Rechnung freigegeben (incl. Credit Check)",16:"Kunde mit 30 Tage Zahlungsziel",15:"Kunde mit 60 Tagen Zahlungsziel",6:"KEINE Rechnung möglich",8:"Kunden mit 10% Rabatt",3:"Kunden mit 20% Rabatt",14:"Gesperrt"};
 const ORDER_TYPES={1:"Auftrag (Order)",2:"Lieferauftrag (Delivery)",3:"Retoure (Return)",4:"Gutschrift (Credit Note)",5:"Gewährleistung (Warranty)",6:"Reparatur (Repair)",7:"Angebot (Offer)",8:"Vorbestellung (Advance Order)"};
 const PAYMENTMETHOD_MAP={"1":"Nachnahme","2":"Rechnung","4":"Barzahlung","6000":"Vorkasse via Bankueberweisung","7001":"mollie: Credit card","7002":"mollie: Apple Pay","7003":"Amazon Pay","7004":"PayPal","7005":"PayPalExpress","7006":"PayPalPlus","7007":"PayPalInstallment","7051":"SOFORT","7052":"mollie: eps","7053":"mollie: iDEAL","7054":"mollie: Bancontact","7055":"mollie: Bank transfer","7056":"mollie: Belfius","7057":"mollie: Direct debit","7058":"mollie: Gift cards","7059":"mollie: Giropay","7060":"mollie: ING HomePay","7061":"mollie: KBC/CBC","7062":"mollie: Klarna Pay Later","7063":"mollie: Klarna Slice it","7064":"mollie: Paypal","7065":"mollie: Paysafecard","7066":"mollie: SOFORT Banking","7067":"mollie: Przelewy24","7072":"mollie: Klarna Pay Now","7075":"mollie: in3","7077":"PAYPAL_CARD","7078":"PAYPAL_UNBRANDED_CARD","7079":"PAYPAL_GIROPAY","7080":"PAYPAL_SEPA","7081":"PAYPAL_SOFORT","7082":"PAYPAL_PAY_LATER","7083":"PAYPAL_BANCONTACT","7084":"PAYPAL_BLIK","7085":"PAYPAL_EPS","7086":"PAYPAL_IDEAL","7087":"PAYPAL_MYBANK","7088":"PAYPAL_PRZELEWY24","7089":"PAYPAL_TRUSTLY","7090":"PAYPAL_PAY_UPON_INVOICE","7098":"mollie: Twint","7109":"PAYPAL_GOOGLE_PAY","7110":"PAYPAL_APPLE_PAY","7111":"mollie: Pay with Klarna","7112":"mollie: BLIK","7113":"mollie: Trustly","7114":"mollie: BANCOMAT Pay","7115":"mollie: Pay by Bank","7126":"Amazon Pay"}
-const SHIPPING_PROFILES={"19":"Standardversand","23":"Palettenversand","24":"ab Lager in 84104, Rudelzhausen","27":"Versand bei Zahlungseingang bis 15 Uhr, Zustellung Werktags (Mo-Fr) bis spätestens 12 Uhr","28":"Versand bei Zahlungseingang bis 15 Uhr, Zustellung Werktags (Mo-Fr) bis spätestens 9 Uhr","29":"Standardversand mit Nachnahme","34":"Economy Express (taggleicher Versand bis 13:00 Uhr möglich)","35":"Economy (taggleicher Versand bis 14:00 Uhr möglich)","36":"Standardversand","39":"(taggleicher Versand bis 14:00 Uhr möglich)","40":"ggf. digitale Zustellung","41":"Versand bei Zahlungseingang bis 14 Uhr, Zustellung Werktags (Mo-Fr) bis spätestens 18 Uhr","43":"Individuelle Versandart","44":"taggleicher Versand bis 13:00 Uhr möglich","45":"Versand bei Zahlungseingang bis 15 Uhr, Zustellung am Samstag bis spätestens 18 Uhr","46":"Swiss Post","48":"Standardversand"};
+const SHIPPING_PROFILES={"19":"DHL Paket (Standard)","23":"Speditionsversand","24":"Selbstabholung","27":"DHL Express (vor 12)","28":"DHL Express (vor 9)","29":"DHL Paket mit Nachnahme","34":"FedEx Economy Express","35":"y FedEx Economy","36":"UPS Standard","39":"DHL Express International","40":"kein Versand","41":"UPS Express Saver","43":"Kundenspezifischer/Individueller Versand","44":"UPS Express","45":"DHL Express (Samstag)","46":"Swiss Post","48":"DHL Standard Europaket"};
 
 /**
  * Holt Credentials aus dem Speicher, loggt sich ein und gibt den Token zurück.
@@ -119,6 +119,7 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
  * UPDATED: Resolves Payment Method Names (Zahlungsart Klartext).
+ * UPDATED: Resolves Shipping Profile Properties (Type ID 2).
  */
 async function fetchOrderDetails(orderId) {
     try {
@@ -191,7 +192,7 @@ async function fetchOrderDetails(orderId) {
             result.stocks = await Promise.all(stockPromises);
         }
 
-        // 4. Versandart-Name auflösen & Provider bestimmen
+        // 4. Versandart-Name auflösen & Provider bestimmen (Vom Shipping Profile auf Order Root Ebene)
         if (orderData.shippingProfileId) {
             try {
                 const profileData = await makePlentyCall(`/rest/orders/shipping/profiles/${orderData.shippingProfileId}`);
@@ -229,6 +230,7 @@ async function fetchOrderDetails(orderId) {
 
         // Spezieller Cleaner für Properties: Fügt sprechende Namen hinzu & SORTIERT
         const PROPERTY_NAMES = {
+            2: "Versandprofil", // <--- NEU HINZUGEFÜGT
             3: "Zahlungsart",
             6: "Auftragssprache",
             7: "Externe Auftragsnummer"
@@ -247,8 +249,19 @@ async function fetchOrderDetails(orderId) {
                 newObj.typeName = PROPERTY_NAMES[typeId];
             }
 
-            // 4. NEU: Zahlungsart (ID 3) auflösen
-            // Wir nutzen die globale PAYMENTMETHOD_MAP um dem Array das Attribut "paymentMethodName" hinzuzufügen
+            // 4. NEU: Versandprofil (ID 2) auflösen
+            // Nutzt die globale SHIPPING_PROFILES Konstante
+            if (typeId === 2) {
+                const resolvedProfile = SHIPPING_PROFILES[String(value)];
+                if (resolvedProfile) {
+                    newObj.versandprofilName = resolvedProfile;
+                } else {
+                    newObj.versandprofilName = `Unbekannt (ID: ${value})`;
+                }
+            }
+
+            // 5. NEU: Zahlungsart (ID 3) auflösen
+            // Wir nutzen die globale PAYMENTMETHOD_MAP
             if (typeId === 3) {
                 const resolvedName = PAYMENTMETHOD_MAP[String(value)];
                 if (resolvedName) {
@@ -256,7 +269,7 @@ async function fetchOrderDetails(orderId) {
                 }
             }
             
-            // 5. Den Rest (value, createdAt etc.) anhängen
+            // 6. Den Rest (value, createdAt etc.) anhängen
             return { ...newObj, value, ...rest };
         });
 
