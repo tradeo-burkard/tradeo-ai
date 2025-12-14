@@ -120,8 +120,8 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
- * UPDATED: Resolves Payment Method Names (Zahlungsart Klartext).
- * UPDATED: Resolves Shipping Profile Properties (Type ID 2).
+ * UPDATED: Stripping optimiert, typeId 1 (Lager) bei Properties entfernt.
+ * UPDATED: Namen für Properties und Dates kommen jetzt aus den Konstanten Maps.
  */
 async function fetchOrderDetails(orderId) {
     try {
@@ -213,7 +213,7 @@ async function fetchOrderDetails(orderId) {
             }
         }
 
-        // --- 5. DATA STRIPPING (Optimiert) ---
+        // --- 5. DATA STRIPPING (Optimiert & Refined) ---
         
         // Helper: Entfernt 'orderId' aus einem Objekt
         const removeOrderId = (obj) => {
@@ -222,7 +222,6 @@ async function fetchOrderDetails(orderId) {
             return rest;
         };
 
-        // Helper: Mappt Arrays und entfernt orderId
         const cleanList = (list) => (list || []).map(removeOrderId);
 
         // Spezieller Cleaner für Relations: Filtert Warehouse raus UND entfernt orderId
@@ -230,56 +229,65 @@ async function fetchOrderDetails(orderId) {
             .filter(r => r.referenceType !== 'warehouse')
             .map(removeOrderId);
 
-        // Spezieller Cleaner für Properties: Fügt sprechende Namen hinzu & SORTIERT
-        const PROPERTY_NAMES = {
-            2: "Versandprofil", // <--- NEU HINZUGEFÜGT
-            3: "Zahlungsart",
-            6: "Auftragssprache",
-            7: "Externe Auftragsnummer"
-        };
+        // --- NEU: DATES Cleaner mit ORDER_DATE_TYPE_MAP ---
+        const cleanDates = (list) => (list || []).map(d => {
+            const { orderId, typeId, ...rest } = d;
+            const newObj = { typeId, ...rest };
+            
+            // Name aus Map auflösen
+            const resolvedName = ORDER_DATE_TYPE_MAP[String(typeId)];
+            if (resolvedName) {
+                newObj.typeName = resolvedName;
+            }
+            return newObj;
+        });
 
-        const cleanProperties = (list) => (list || []).map(p => {
-            if (!p) return p;
-            // 1. Destructuring: orderId wegwerfen, typeId und value separieren
+        // --- NEU: PROPERTIES Cleaner mit ORDER_PROPERTY_TYPE_MAP & Filter ---
+        const cleanProperties = (list) => (list || []).reduce((acc, p) => {
+            if (!p) return acc;
+            
+            // FILTER: TypeId 1 (Lager) komplett ignorieren
+            if (p.typeId == 1) return acc;
+
+            // Destructuring: orderId wegwerfen
             const { orderId, typeId, value, ...rest } = p;
             
-            // 2. Neuaufbau für korrekte Reihenfolge (typeId oben)
+            // Neuaufbau
             const newObj = { typeId };
             
-            // 3. typeName direkt darunter einfügen
-            if (PROPERTY_NAMES[typeId]) {
-                newObj.typeName = PROPERTY_NAMES[typeId];
+            // 1. Namen aus Map auflösen (Generisch)
+            const resolvedTypeName = ORDER_PROPERTY_TYPE_MAP[String(typeId)];
+            if (resolvedTypeName) {
+                newObj.typeName = resolvedTypeName;
             }
 
-            // 4. NEU: Versandprofil (ID 2) auflösen
-            // Nutzt die globale SHIPPING_PROFILES Konstante
+            // 2. Werte auflösen (Spezifisch für wichtige IDs)
+            // ID 2: Versandprofil
             if (typeId === 2) {
                 const resolvedProfile = SHIPPING_PROFILES[String(value)];
-                if (resolvedProfile) {
-                    newObj.versandprofilName = resolvedProfile;
-                } else {
-                    newObj.versandprofilName = `Unbekannt (ID: ${value})`;
-                }
+                newObj.versandprofilName = resolvedProfile || `Unbekannt (ID: ${value})`;
             }
 
-            // 5. NEU: Zahlungsart (ID 3) auflösen
-            // Wir nutzen die globale PAYMENTMETHOD_MAP
+            // ID 3: Zahlungsart
             if (typeId === 3) {
-                const resolvedName = PAYMENTMETHOD_MAP[String(value)];
-                if (resolvedName) {
-                    newObj.paymentMethodName = resolvedName;
+                const resolvedPayment = PAYMENTMETHOD_MAP[String(value)];
+                if (resolvedPayment) {
+                    newObj.paymentMethodName = resolvedPayment;
                 }
             }
             
-            // 6. Den Rest (value, createdAt etc.) anhängen
-            return { ...newObj, value, ...rest };
-        });
+            // Restliche Daten anhängen
+            acc.push({ ...newObj, value, ...rest });
+            return acc;
+        }, []);
+
 
         // Spezieller Cleaner für Items: Entfernt orderId auch aus dem Item selbst
         const cleanItems = (orderData.orderItems || []).map(item => {
             const cleanItem = removeOrderId(item);
             if (cleanItem.properties) cleanItem.properties = cleanProperties(cleanItem.properties); // Props auch hier reinigen
             if (cleanItem.amounts) cleanItem.amounts = cleanList(cleanItem.amounts);
+            if (cleanItem.dates) cleanItem.dates = cleanDates(cleanItem.dates); // Dates auch hier reinigen falls vorhanden
             return cleanItem;
         });
 
@@ -296,7 +304,7 @@ async function fetchOrderDetails(orderId) {
             // Bereinigte Listen
             relations: cleanRelations,
             properties: cleanProperties(orderData.properties), // Hier nutzen wir den neuen Cleaner
-            dates: cleanList(orderData.dates),
+            dates: cleanDates(orderData.dates),              // Hier nutzen wir den neuen Cleaner
             amounts: cleanList(orderData.amounts),
             orderReferences: cleanList(orderData.orderReferences),
             orderItems: cleanItems,

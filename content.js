@@ -2130,7 +2130,7 @@ function initPlentyApiDebugButtons() {
 
     // 4. Button: Order Details (Order ID) - Oben
     createBtn("tradeo-plenty-order-btn", "🛒 Order Details Debug", 130, async () => {
-        const defaultId = "581578"; // Beispiel ID
+        const defaultId = "581866"; // Beispiel ID
         const last = window.__lastPlentyOrderDebug || defaultId;
         const input = prompt("Plenty Order Debug – Order ID eingeben:", last);
         if (!input) return;
