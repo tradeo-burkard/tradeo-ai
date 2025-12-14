@@ -121,7 +121,7 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
- * UPDATED: Adress-Options werden jetzt gestripped (keine IDs/Timestamps) und mit typeName angereichert.
+ * UPDATED: Stripping von Timestamps (Properties, Dates, Amounts) und shippedAt entfernt.
  */
 async function fetchOrderDetails(orderId) {
     try {
@@ -137,16 +137,12 @@ async function fetchOrderDetails(orderId) {
             stocks: [],
             addresses: [],
             shippingInfo: {
-                destinationCountry: "Unknown", // Wird unten befüllt
-                shippedAt: null
+                destinationCountry: "Unknown" 
+                // shippedAt entfernt (Anforderung)
             }
         };
 
-        // Datum des Warenausgangs finden (Status 7 Datum oder exitDate)
-        if (orderData.dates) {
-            const exitDateObj = orderData.dates.find(d => d.typeId === 7); // Warenausgang
-            if (exitDateObj) result.shippingInfo.shippedAt = exitDateObj.date;
-        }
+        // (Logik für shippedAt entfernt)
 
         // 2. Adressen auflösen & Zielland ermitteln
         if (orderData.addressRelations && orderData.addressRelations.length > 0) {
@@ -161,17 +157,13 @@ async function fetchOrderDetails(orderId) {
                     }
 
                     // --- ADDRESS STRIPPING ---
-                    // Wir entfernen die unerwünschten Felder per Destructuring
-                    // 'options' holen wir raus, um sie separat zu behandeln
                     const { 
-                        id, stateId, readOnly, checkedAt, createdAt, updatedAt, title, contactPerson, // Weg damit
-                        options, // Separat verarbeiten
-                        ...cleanAddr // Der Rest bleibt (Name, Straße, PLZ, Ort etc.)
+                        id, stateId, readOnly, checkedAt, createdAt, updatedAt, title, contactPerson, 
+                        options, 
+                        ...cleanAddr 
                     } = addrDetail;
 
                     // --- ADDRESS OPTIONS STRIPPING & MAPPING ---
-                    // id, addressId, position, createdAt, updatedAt entfernen
-                    // typeName hinzufügen
                     const cleanOptions = (options || []).map(opt => ({
                         typeId: opt.typeId,
                         typeName: ADDRESS_OPTION_TYPE_MAP[String(opt.typeId)] || `Unknown (${opt.typeId})`,
@@ -226,26 +218,38 @@ async function fetchOrderDetails(orderId) {
 
         const cleanList = (list) => (list || []).map(removeOrderId);
 
+        // Spezielle Funktion für Amounts (entfernt orderId, createdAt, updatedAt auch in vats)
+        const cleanAmountsList = (list) => (list || []).map(a => {
+            const { orderId, createdAt, updatedAt, vats, ...rest } = a;
+            
+            const cleanVats = (vats || []).map(v => {
+                const { orderAmountId, createdAt: ca, updatedAt: ua, ...vRest } = v;
+                return vRest;
+            });
+
+            return { ...rest, vats: cleanVats };
+        });
+
         // Relations: Filtert Warehouse raus UND entfernt orderId
         const cleanRelations = (orderData.relations || [])
             .filter(r => r.referenceType !== 'warehouse')
             .map(removeOrderId);
 
-        // DATES Cleaner
+        // DATES Cleaner (Stripped createdAt, updatedAt)
         const cleanDates = (list) => (list || []).map(d => {
-            const { orderId, typeId, ...rest } = d;
+            const { orderId, typeId, createdAt, updatedAt, ...rest } = d;
             const newObj = { typeId, ...rest };
             const resolvedName = ORDER_DATE_TYPE_MAP[String(typeId)];
             if (resolvedName) newObj.typeName = resolvedName;
             return newObj;
         });
 
-        // PROPERTIES Cleaner
+        // PROPERTIES Cleaner (Stripped createdAt, updatedAt)
         const cleanProperties = (list) => (list || []).reduce((acc, p) => {
             if (!p) return acc;
             if (p.typeId == 1) return acc; // TypeId 1 (Lager) ignorieren
 
-            const { orderId, typeId, value, ...rest } = p;
+            const { orderId, typeId, value, createdAt, updatedAt, ...rest } = p;
             const newObj = { typeId };
             const resolvedTypeName = ORDER_PROPERTY_TYPE_MAP[String(typeId)];
             if (resolvedTypeName) newObj.typeName = resolvedTypeName;
@@ -264,7 +268,7 @@ async function fetchOrderDetails(orderId) {
         }, []);
 
 
-        // Items: MASSIVE REDUKTION
+        // Items: MASSIVE REDUKTION (Original Logic)
         const cleanItems = (orderData.orderItems || []).map(item => {
             let cleanAmounts = (item.amounts || []).map(amt => ({
                 purchasePrice: amt.purchasePrice,
@@ -310,7 +314,7 @@ async function fetchOrderDetails(orderId) {
             relations: cleanRelations,
             properties: cleanProperties(orderData.properties), 
             dates: cleanDates(orderData.dates),             
-            amounts: cleanList(orderData.amounts),
+            amounts: cleanAmountsList(orderData.amounts), // Neue Funktion genutzt
             orderReferences: cleanList(orderData.orderReferences),
             orderItems: cleanItems, 
             shippingPackages: cleanShippingPackages
