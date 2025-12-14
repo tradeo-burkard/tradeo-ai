@@ -1,4 +1,4 @@
-importScripts('plentyApi.js');
+importScripts('itemDb.generated.js', 'plentyApi.js');
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Generischer API Call

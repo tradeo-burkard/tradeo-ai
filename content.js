@@ -2095,7 +2095,7 @@ async function executeToolAction(fnName, fnArgs, cid) {
         actionName = 'GET_CUSTOMER_DETAILS'; actionPayload = { contactId: fnArgs.contactId };
     } else if (fnName === 'searchItemsByText') {
         actionName = 'SEARCH_ITEMS_BY_TEXT';
-        actionPayload = { searchText: fnArgs.searchText, mode: fnArgs.mode || 'name', maxResults: fnArgs.maxResults || 30 };
+        actionPayload = { searchText: fnArgs.searchText, mode: fnArgs.mode || 'nameAndDescription', maxResults: fnArgs.maxResults || 30 };
     }
 
     if (!actionName) return { error: "Unknown Tool" };
@@ -2734,149 +2734,40 @@ function initPlentyApiDebugButtons() {
 }
 
 window.debugPlentyItemSearch = async function(rawSearch) {
-    const stripHtmlToText = (html) => {
-        if (!html) return "";
-        let text = html;
-        text = text.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n');
-        text = text.replace(/<[^>]+>/g, '');
-        text = text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-        return text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
-    };
+    const searchText = String(rawSearch || "").trim();
+    if (!searchText) { alert("Bitte Suchtext eingeben."); return; }
+
+    console.clear();
+    console.group(`🚀 DEBUG: DB Item Search für "${searchText}"`);
+
+    const t0 = performance.now();
 
     try {
-        const searchText = (typeof rawSearch === 'string' ? rawSearch : '').trim();
-        if (!searchText) { alert("Bitte Suchtext eingeben."); return; }
+        const response = await new Promise(resolve => {
+            chrome.runtime.sendMessage({
+                action: 'SEARCH_ITEMS_BY_TEXT',
+                searchText,
+                mode: 'nameAndDescription', // oder 'name'
+                maxResults: 30
+            }, (res) => resolve(res));
+        });
 
-        console.clear();
-        console.group(`🚀 DEBUG: Smart Item Search für "${searchText}" (NUR AKTIVE ARTIKEL)`);
+        const ms = (performance.now() - t0).toFixed(1);
 
-        // Tokens
-        const tokens = Array.from(new Set(searchText.split(/\s+/).map(t => t.trim()).filter(t => t.length > 1)));
-        console.log("📦 1. Tokens:", tokens);
-
-        // Pre-Flight
-        console.group("📊 2. Token-Analyse (Pre-Flight)");
-        const stats = [];
-        for (const token of tokens) {
-            // UPDATED: &isActive=true hinzugefügt
-            const p1 = callPlenty(`/rest/items/variations?itemsPerPage=1&lang=de&isActive=true&itemName=${encodeURIComponent(token)}`);
-            const [r1] = await Promise.all([p1]);
-            const cName = r1 ? r1.totalsCount : 0;
-            console.log(`   👉 "${token}": Hits=${cName}`);
-            stats.push({ token, total: cName });
-        }
-        console.groupEnd();
-
-        const validStats = stats.filter(s => s.total > 0).sort((a, b) => a.total - b.total);
-        if (validStats.length === 0) {
-            console.warn("❌ Keine Treffer für irgendein Token (bei aktiven Artikeln).");
-            console.groupEnd();
-            return;
-        }
-        const winner = validStats[0];
-        console.log(`🏆 3. Gewinner-Token: "${winner.token}"`);
-
-        // Fetch Loop
-        console.group(`📥 4. Lade ALLE Variationen für "${winner.token}"...`);
-        let allCandidates = [];
-        let page = 1;
-        let hasMore = true;
-        
-        while(hasMore) {
-            // UPDATED: &isActive=true hinzugefügt
-            const res = await callPlenty(`/rest/items/variations?itemsPerPage=50&page=${page}&lang=de&isActive=true&itemName=${encodeURIComponent(winner.token)}`);
-            if (res && res.entries) allCandidates.push(...res.entries);
-            if (res.isLastPage || !res.entries || res.entries.length < 50) hasMore = false;
-            else page++;
-            if(page > 20) { hasMore = false; console.warn("   ⚠️ Abbruch: Zu viele Seiten (>20)."); }
-        }
-        
-        const map = new Map();
-        allCandidates.forEach(c => map.set(c.id, c));
-        const uniqueCandidates = Array.from(map.values());
-        console.log(`✅ Geladen: ${uniqueCandidates.length} Kandidaten.`);
-        console.groupEnd();
-
-        // Filtering & AI Object Bau
-        console.group("🔍 5. Filterung & AI-Objekt Bau");
-        let matches = 0;
-        const limitDebug = 10; 
-        // UPDATED FILTER:
-        const bannedRegex = /(hardware\s*care\s*pack|upgrade|bundle)/i;
-        const aiResults = [];
-        
-        for (const cand of uniqueCandidates) {
-           try {
-               const item = await callPlenty(`/rest/items/${cand.itemId}`);
-               let apiName = "Unbekannt";
-               let apiDesc = "";
-               if(item.texts) {
-                   const t = item.texts.find(x => x.lang === 'de') || item.texts[0];
-                   if(t) {
-                       apiName = [t.name1, t.name2, t.name3].filter(Boolean).join(" ");
-                       apiDesc = t.description || "";
-                   }
-               }
-
-               const fullText = (apiName + " " + apiDesc).toLowerCase();
-               if (bannedRegex.test(fullText)) continue; // Filter Check
-               
-               const allIn = tokens.every(t => fullText.includes(t.toLowerCase()));
-               
-               if (allIn) {
-                   matches++;
-                   if (matches <= limitDebug) {
-                       console.log(`   🔄 Lade Details für Match #${matches}: ${apiName}...`);
-                       
-                       const [stockRes, priceRes] = await Promise.all([
-                           callPlenty(`/rest/items/${cand.itemId}/variations/${cand.id}/stock`).catch(() => []),
-                           callPlenty(`/rest/items/${cand.itemId}/variations/${cand.id}/variation_sales_prices`).catch(() => [])
-                       ]);
-
-                       const stockNet = (stockRes && stockRes.length > 0) ? stockRes[0].netStock : 0;
-                       const price = (priceRes && priceRes.length > 0) ? priceRes[0].price : "N/A";
-                       
-                       // SPLIT LOGIK (Name aus Desc, Desc Rest)
-                       const cleanFullDesc = stripHtmlToText(apiDesc);
-                       const lines = cleanFullDesc.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-                       
-                       let derivedName = lines.length > 0 ? lines[0] : apiName;
-                       derivedName = derivedName.replace(/^Beschreibung:\s*/i, '');
-                       const derivedDesc = lines.length > 1 ? lines.slice(1).join('\n') : "";
-
-                       const aiObj = {
-                           articleNumber: String(cand.itemId),
-                           model: cand.model,
-                           name: derivedName,     
-                           description: derivedDesc, 
-                           stockNet: stockNet,
-                           price: price
-                       };
-                       
-                       aiResults.push(aiObj);
-                   } else {
-                       if (matches === limitDebug + 1) console.warn("   ⚠️ Weitere Details übersprungen (Debug Limit)...");
-                   }
-               }
-           } catch(e) { console.error(e); }
-        }
-        console.groupEnd();
-
-        console.log(`🎉 Ergebnis: ${matches} Treffer gefunden.`);
-        if (aiResults.length > 0) {
-            console.log("👇 WAS DIE AI BEKOMMT (Vorschau Top 10):");
-            console.table(aiResults);
-            if(aiResults[0].description) console.log("📜 Beispiel Description (Plain Text):", aiResults[0].description);
-            else console.log("📜 Beispiel Description: (LEER - war identisch mit Name)");
+        if (response && response.success) {
+            console.log(`✅ Fertig in ${ms}ms`);
+            console.log("META:", response.data?.meta);
+            console.table(response.data?.results || []);
+            console.log("📋 JSON Output:");
+            console.log(JSON.stringify(response.data, null, 2));
         } else {
-            console.warn("⚠️ Keine Ergebnisse für AI.");
+            console.error("❌ Fehler:", response);
         }
-        console.log("✅ DEBUG FINISHED");
-        console.groupEnd();
-
-    } catch (err) {
-        console.error("Debug Error:", err);
+    } catch (e) {
+        console.error("🔥 Critical Error:", e);
     }
+
+    console.groupEnd();
 };
 
 /**
@@ -2948,147 +2839,6 @@ function calculateNetStockDebug(stockEntries) {
         return acc + (isNaN(net) ? 0 : net);
     }, 0);
 }
-
-// (Bestehende Funktion unverändert, hier nur damit der Block komplett ist)
-window.debugPlentyItemSearch = async function(rawSearch) {
-    const stripHtmlToText = (html) => {
-        if (!html) return "";
-        let text = html;
-        text = text.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n');
-        text = text.replace(/<[^>]+>/g, '');
-        text = text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-        return text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
-    };
-
-    try {
-        const searchText = (typeof rawSearch === 'string' ? rawSearch : '').trim();
-        if (!searchText) { alert("Bitte Suchtext eingeben."); return; }
-
-        console.clear();
-        console.group(`🚀 DEBUG: Smart Item Search für "${searchText}" (NUR AKTIVE ARTIKEL)`);
-
-        // Tokens
-        const tokens = Array.from(new Set(searchText.split(/\s+/).map(t => t.trim()).filter(t => t.length > 1)));
-        console.log("📦 1. Tokens:", tokens);
-
-        // Pre-Flight
-        console.group("📊 2. Token-Analyse (Pre-Flight)");
-        const stats = [];
-        for (const token of tokens) {
-            const p1 = callPlenty(`/rest/items/variations?itemsPerPage=1&lang=de&isActive=true&itemName=${encodeURIComponent(token)}`);
-            const [r1] = await Promise.all([p1]);
-            const cName = r1 ? r1.totalsCount : 0;
-            console.log(`   👉 "${token}": Hits=${cName}`);
-            stats.push({ token, total: cName });
-        }
-        console.groupEnd();
-
-        const validStats = stats.filter(s => s.total > 0).sort((a, b) => a.total - b.total);
-        if (validStats.length === 0) {
-            console.warn("❌ Keine Treffer für irgendein Token (bei aktiven Artikeln).");
-            console.groupEnd();
-            return;
-        }
-        const winner = validStats[0];
-        console.log(`🏆 3. Gewinner-Token: "${winner.token}"`);
-
-        // Fetch Loop
-        console.group(`📥 4. Lade ALLE Variationen für "${winner.token}"...`);
-        let allCandidates = [];
-        let page = 1;
-        let hasMore = true;
-        
-        while(hasMore) {
-            const res = await callPlenty(`/rest/items/variations?itemsPerPage=50&page=${page}&lang=de&isActive=true&itemName=${encodeURIComponent(winner.token)}`);
-            if (res && res.entries) allCandidates.push(...res.entries);
-            if (res.isLastPage || !res.entries || res.entries.length < 50) hasMore = false;
-            else page++;
-            if(page > 20) { hasMore = false; console.warn("   ⚠️ Abbruch: Zu viele Seiten (>20)."); }
-        }
-        
-        const map = new Map();
-        allCandidates.forEach(c => map.set(c.id, c));
-        const uniqueCandidates = Array.from(map.values());
-        console.log(`✅ Geladen: ${uniqueCandidates.length} Kandidaten.`);
-        console.groupEnd();
-
-        // Filtering & AI Object Bau
-        console.group("🔍 5. Filterung & AI-Objekt Bau");
-        let matches = 0;
-        const limitDebug = 10; 
-        const bannedRegex = /(hardware\s*care\s*pack|upgrade|bundle)/i;
-        const aiResults = [];
-        
-        for (const cand of uniqueCandidates) {
-           try {
-               const item = await callPlenty(`/rest/items/${cand.itemId}`);
-               let apiName = "Unbekannt";
-               let apiDesc = "";
-               if(item.texts) {
-                   const t = item.texts.find(x => x.lang === 'de') || item.texts[0];
-                   if(t) {
-                       apiName = [t.name1, t.name2, t.name3].filter(Boolean).join(" ");
-                       apiDesc = t.description || "";
-                   }
-               }
-
-               const fullText = (apiName + " " + apiDesc).toLowerCase();
-               if (bannedRegex.test(fullText)) continue; 
-               
-               const allIn = tokens.every(t => fullText.includes(t.toLowerCase()));
-               
-               if (allIn) {
-                   matches++;
-                   if (matches <= limitDebug) {
-                       console.log(`   🔄 Lade Details für Match #${matches}: ${apiName}...`);
-                       
-                       const [stockRes, priceRes] = await Promise.all([
-                           callPlenty(`/rest/items/${cand.itemId}/variations/${cand.id}/stock`).catch(() => []),
-                           callPlenty(`/rest/items/${cand.itemId}/variations/${cand.id}/variation_sales_prices`).catch(() => [])
-                       ]);
-
-                       const stockNet = (stockRes && stockRes.length > 0) ? stockRes[0].netStock : 0;
-                       const price = (priceRes && priceRes.length > 0) ? priceRes[0].price : "N/A";
-                       
-                       const cleanFullDesc = stripHtmlToText(apiDesc);
-                       const lines = cleanFullDesc.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-                       
-                       let derivedName = lines.length > 0 ? lines[0] : apiName;
-                       derivedName = derivedName.replace(/^Beschreibung:\s*/i, '');
-                       const derivedDesc = lines.length > 1 ? lines.slice(1).join('\n') : "";
-
-                       const aiObj = {
-                           articleNumber: String(cand.itemId),
-                           model: cand.model,
-                           name: derivedName,     
-                           description: derivedDesc, 
-                           stockNet: stockNet,
-                           price: price
-                       };
-                       
-                       aiResults.push(aiObj);
-                   } else {
-                       if (matches === limitDebug + 1) console.warn("   ⚠️ Weitere Details übersprungen (Debug Limit)...");
-                   }
-               }
-           } catch(e) { console.error(e); }
-        }
-        console.groupEnd();
-
-        console.log(`🎉 Ergebnis: ${matches} Treffer gefunden.`);
-        if (aiResults.length > 0) {
-            console.log("👇 WAS DIE AI BEKOMMT (Vorschau Top 10):");
-            console.table(aiResults);
-        } else {
-            console.warn("⚠️ Keine Ergebnisse für AI.");
-        }
-        console.log("✅ DEBUG FINISHED");
-        console.groupEnd();
-
-    } catch (err) {
-        console.error("Debug Error:", err);
-    }
-};
 
 /**
  * NEUE DEBUG FUNKTION FÜR CUSTOMER DETAILS

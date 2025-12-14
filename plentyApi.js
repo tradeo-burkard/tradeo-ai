@@ -56,6 +56,90 @@ async function getPlentyToken() {
     return data.access_token;
 }
 
+// =========================
+// LOCAL DB SEARCH (FAST)
+// =========================
+
+let __DB_READY = false;
+let __DB_META = null;
+let __HAY_FULL = null;   // string[]
+let __HAY_NAME = null;   // string[]
+let __ITEM_ID = null;    // number[]
+let __NAME = null;       // string[]
+let __DESC = null;       // string[]
+
+function __normQueryToken(s) {
+    // Muss zur Build-Normalisierung passen (Umlaute -> ae/oe/ue, ß -> ss)
+    return String(s || "")
+        .toLowerCase()
+        .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Sicherheit für Akzente
+        .trim();
+}
+
+function __ensureDbCache() {
+    if (__DB_READY) return;
+
+    const DB = (typeof self !== "undefined" && Array.isArray(self.TRADEO_ITEM_DB)) ? self.TRADEO_ITEM_DB : null;
+    if (!DB || DB.length === 0) {
+        __DB_READY = true;
+        __HAY_FULL = [];
+        __HAY_NAME = [];
+        __ITEM_ID = [];
+        __NAME = [];
+        __DESC = [];
+        __DB_META = (typeof self !== "undefined" ? self.TRADEO_ITEM_DB_META : null) || null;
+        return;
+    }
+
+    __DB_META = (typeof self !== "undefined" ? self.TRADEO_ITEM_DB_META : null) || null;
+
+    const n = DB.length;
+    __HAY_FULL = new Array(n);
+    __HAY_NAME = new Array(n);
+    __ITEM_ID = new Array(n);
+    __NAME = new Array(n);
+    __DESC = new Array(n);
+
+    for (let i = 0; i < n; i++) {
+        const rec = DB[i] || {};
+        const itemId = Number(rec.itemId ?? rec.id ?? rec.i);
+
+        const name = String(rec.name ?? rec.n ?? "");
+        const desc = String(rec.description ?? rec.d ?? "");
+
+        // t ist idealerweise schon: name+desc, html stripped, lowercased, whitespace-normalized
+        // Wenn t fehlt, bauen wir es einmalig aus name+desc.
+        const t = String(rec.t ?? rec.text ?? "").trim();
+        const hayFull = t ? t : __normQueryToken(name + "\n" + stripHtmlToText(desc)).replace(/\s+/g, " ");
+
+        // Für mode:"name" wollen wir wirklich nur den Namen durchsuchen (wenn vorhanden)
+        const hayName = name ? __normQueryToken(name).replace(/\s+/g, " ") : hayFull;
+
+        __ITEM_ID[i] = itemId;
+        __NAME[i] = name;
+        __DESC[i] = desc;
+        __HAY_FULL[i] = hayFull;
+        __HAY_NAME[i] = hayName;
+    }
+
+    __DB_READY = true;
+}
+
+async function __mapLimit(arr, limit, fn) {
+    const out = new Array(arr.length);
+    let idx = 0;
+    const workers = Array.from({ length: Math.min(limit, arr.length) }, async () => {
+        while (true) {
+            const i = idx++;
+            if (i >= arr.length) return;
+            out[i] = await fn(arr[i], i);
+        }
+    });
+    await Promise.all(workers);
+    return out;
+}
+
 /**
  * Hilfsfunktion: Wandelt HTML in reinen Text um, behält aber Zeilenumbrüche.
  * Funktioniert auch im Service Worker (ohne DOM).
@@ -713,160 +797,160 @@ async function fetchAllVariations(params) {
     return allEntries;
 }
 
-// --- plentyApi.js ---
-// (Ersetze die gesamte searchItemsByText Funktion mit dieser Version)
-
 async function searchItemsByText(searchText, options = {}) {
-    // ---- Optionen / Modi parsen ----
-    let mode = "name";
-    let maxResults = 50; 
+    __ensureDbCache();
+
+    // ---- Optionen / Modi parsen (kompatibel zu deinem Tool-Call) ---- :contentReference[oaicite:2]{index=2}
+    let mode = "nameAndDescription";
+    let maxResults = 25;
 
     if (typeof options === "string") {
-        mode = options === "nameAndDescription" ? "nameAndDescription" : "name";
+        mode = (options === "name") ? "name" : "nameAndDescription";
     } else if (options && typeof options === "object") {
-        if (options.mode === "nameAndDescription") mode = "nameAndDescription";
+        if (options.mode === "name") mode = "name";
         if (typeof options.maxResults === "number") maxResults = options.maxResults;
     }
+    maxResults = Math.max(1, Math.min(25, Math.floor(maxResults)));
 
-    const searchInDescription = mode === "nameAndDescription";
+    const q = String(searchText || "").trim();
+    if (!q) return { meta: { type: "EMPTY" }, results: [] };
 
-    // ---- Input validieren ----
-    if (!searchText || typeof searchText !== "string" || !searchText.trim()) {
-        throw new Error("searchItemsByText: Suchstring fehlt oder ist leer.");
-    }
+    const t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
 
-    const searchRaw = searchText.trim();
-    const tokens = Array.from(new Set(searchRaw.split(/\s+/).map(t => t.trim()).filter(t => t.length > 1)));
+    // 1) Tokens bilden + normalisieren
+    let tokens = q.split(/\s+/)
+        .map(__normQueryToken)
+        .filter(t => t.length > 1);
+
+    // Duplikate raus
+    tokens = Array.from(new Set(tokens));
 
     if (tokens.length === 0) return { meta: { type: "EMPTY" }, results: [] };
 
-    console.log(`Tradeo AI SmartSearch: Analysiere Tokens: ${JSON.stringify(tokens)}`);
+    // Heuristik: längste Tokens zuerst => schnelleres "early fail"
+    tokens.sort((a, b) => b.length - a.length);
 
-    // 1. STATS
-    const stats = await getTokenStats(tokens, searchInDescription);
-    const validStats = stats.filter(s => s.count > 0).sort((a, b) => a.count - b.count);
+    // 2) Reiner DB-Scan (direkt, ohne Regex/Norm im Loop)
+    const hayArr = (mode === "name") ? __HAY_NAME : __HAY_FULL;
 
-    if (validStats.length === 0) {
-        return { meta: { type: "NO_MATCH_ANY_TOKEN", searchText: searchRaw }, results: [] };
+    const hits = [];
+    for (let i = 0; i < hayArr.length; i++) {
+        const hay = hayArr[i];
+        if (!hay) continue;
+
+        let ok = true;
+        let score = 0;
+
+        for (let k = 0; k < tokens.length; k++) {
+            const tok = tokens[k];
+            const pos = hay.indexOf(tok);
+            if (pos === -1) { ok = false; break; }
+            score += pos; // simples Ranking: früher im Text = besser
+        }
+        if (!ok) continue;
+
+        hits.push({ i, score });
     }
 
-    const winner = validStats[0];
-    console.log(`Tradeo AI SmartSearch: Gewinner ist '${winner.token}' mit ca. ${winner.count} Treffern.`);
-
-    // 2. FETCH ALL
-    const pName = fetchAllVariations({ itemName: winner.token });
-    let pDesc = Promise.resolve([]);
-    if (searchInDescription) {
-        pDesc = fetchAllVariations({ itemDescription: winner.token });
+    // Keine Treffer
+    if (hits.length === 0) {
+        const t1 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+        return {
+            meta: {
+                type: "PLENTY_ITEM_DB_SEARCH_FAST",
+                mode,
+                tokens,
+                dbSize: hayArr.length,
+                matchesFound: 0,
+                matchMs: Math.round(t1 - t0),
+                dbMeta: __DB_META || null,
+                timestamp: new Date().toISOString()
+            },
+            results: []
+        };
     }
 
-    const [hitsName, hitsDesc] = await Promise.all([pName, pDesc]);
-    
-    // Deduplizieren
-    const candidateMap = new Map();
-    [...hitsName, ...hitsDesc].forEach(v => {
-        if(v && v.id) candidateMap.set(v.id, v);
-    });
+    // 3) Sort + TopN
+    hits.sort((a, b) => a.score - b.score);
+    const top = hits.slice(0, maxResults);
 
-    const candidates = Array.from(candidateMap.values());
-    console.log(`Tradeo AI SmartSearch: ${candidates.length} Kandidaten geladen. Starte Filterung...`);
+    const tMatchEnd = (typeof performance !== "undefined" ? performance.now() : Date.now());
 
-    // 3. FILTERING
-    const itemCache = new Map();
-    const enrichedResults = [];
-    
-    // UPDATED FILTER REGEX: "bundle" und "upgrade" (solo) verboten
-    const bannedRegex = /(hardware\s*care\s*pack|upgrade|bundle)/i;
+    // 4) Enrichment (nur TopN): Item + Varianten -> Stock + Price
+    // Da deine CSV kein variationId enthält: wir holen pro Item einmal das Item inkl. Variationen.
+    const enrichOne = async (hit) => {
+        const idx = hit.i;
+        const itemId = __ITEM_ID[idx];
+        const dbName = __NAME[idx];
+        const dbDescHtml = __DESC[idx];
 
-    const extractNameAndDescription = (item) => {
-        let name = "";
-        let description = "";
-        if (item && Array.isArray(item.texts) && item.texts.length > 0) {
-            const textDe = item.texts.find(t => t.lang === "de") || item.texts[0];
-            if (textDe) {
-                const parts = [textDe.name1, textDe.name2, textDe.name3].filter(Boolean);
-                name = parts.join(" ").trim();
-                description = (textDe.description || "").trim();
-            }
-        }
-        return { name, description };
-    };
+        // Item inkl. Variationen laden (1 Call pro Treffer)
+        const item = await makePlentyCall(`/rest/items/${itemId}?with[]=variations&lang=de`);
 
-    const tokenRegexes = tokens.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
+        const vars = Array.isArray(item?.variations) ? item.variations : [];
+        // Nimm am liebsten: active+main, sonst active, sonst erste
+        let v = vars.find(x => x?.isActive === true && x?.isMain === true)
+             || vars.find(x => x?.isActive === true)
+             || vars[0]
+             || null;
 
-    for (const variation of candidates) {
-        const itemId = variation.itemId;
-        const variationId = variation.id;
+        const variationId = v?.id;
+        const model = v?.model || "";
 
-        let item = itemCache.get(itemId);
-        if (!item) {
-            try {
-                item = await makePlentyCall(`/rest/items/${itemId}`);
-                itemCache.set(itemId, item);
-            } catch (e) { continue; }
-        }
+        let stockNet = 0;
+        let price = "N/A";
 
-        const { name: apiName, description: apiDesc } = extractNameAndDescription(item);
-        
-        // Suche auf Basis der API-Daten (Original)
-        const fullTextForSearch = (apiName + " " + (searchInDescription ? apiDesc : "")).toLowerCase();
-
-        // Ban-Check
-        if (bannedRegex.test(fullTextForSearch)) continue;
-
-        // TOKEN CHECK
-        const allTokensMatch = tokenRegexes.every(rx => rx.test(apiName) || (searchInDescription && rx.test(apiDesc)));
-
-        if (!allTokensMatch) continue;
-
-        // Treffer! Daten anreichern.
-        let stock = [];
-        let variationSalesPrices = [];
-
-        try {
-            const [stockRes, vspRes] = await Promise.all([
+        if (variationId) {
+            const [stockRes, priceRes] = await Promise.all([
                 makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
                 makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
             ]);
-            stock = Array.isArray(stockRes) ? stockRes : [];
-            if (Array.isArray(vspRes)) variationSalesPrices = vspRes;
-        } catch (e) { /* ignore */ }
 
-        // --- NAMEN & BESCHREIBUNG AUFBEREITEN ---
-        // 1. HTML entfernen
-        const cleanFullDesc = stripHtmlToText(apiDesc);
-        // 2. In Zeilen splitten
-        const lines = cleanFullDesc.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-        
-        // 3. Name ableiten (Zeile 1)
-        let derivedName = lines.length > 0 ? lines[0] : apiName; // Fallback auf API Name wenn leer
-        // "Beschreibung:" Prefix entfernen, falls vorhanden
-        derivedName = derivedName.replace(/^Beschreibung:\s*/i, '');
+            stockNet = (Array.isArray(stockRes) && stockRes[0] && (stockRes[0].netStock ?? stockRes[0].stockNet) != null)
+                ? (stockRes[0].netStock ?? stockRes[0].stockNet)
+                : 0;
 
-        // 4. Beschreibung ableiten (Restliche Zeilen), um Dopplung zu vermeiden
-        const derivedDesc = lines.length > 1 ? lines.slice(1).join('\n') : "";
+            price = (Array.isArray(priceRes) && priceRes[0] && priceRes[0].price != null)
+                ? priceRes[0].price
+                : "N/A";
+        }
 
-        enrichedResults.push({
+        // Name/Desc: wir nehmen DB (schnell + konsistent), aber strippen HTML für description
+        const descText = stripHtmlToText(dbDescHtml);
+        const lines = descText.split("\n").map(s => s.trim()).filter(Boolean);
+
+        let name = (dbName || lines[0] || String(itemId)).replace(/^Beschreibung:\s*/i, "").trim();
+        let description = (lines.length > 1) ? lines.slice(1).join("\n") : "";
+
+        return {
             articleNumber: String(itemId),
-            model: variation.model,
-            name: derivedName,     // AI Name = Zeile 1 der Beschreibung
-            description: derivedDesc, // AI Desc = Rest der Beschreibung
-            stockNet: (stock && stock.length > 0) ? stock[0].netStock : 0,
-            price: (variationSalesPrices && variationSalesPrices.length > 0) ? variationSalesPrices[0].price : "N/A"
-        });
-    }
+            model,
+            name,
+            description,
+            stockNet,
+            price
+        };
+    };
 
-    const finalResults = enrichedResults.slice(0, maxResults);
+    const results = await __mapLimit(top, 8, enrichOne);
+
+    const tEnd = (typeof performance !== "undefined" ? performance.now() : Date.now());
 
     return {
         meta: {
-            type: "PLENTY_ITEM_SMART_SEARCH",
-            searchText: searchRaw,
-            strategy: `WinnerToken: ${winner.token} (${winner.count} Hits)`,
-            matchesFound: enrichedResults.length,
+            type: "PLENTY_ITEM_DB_SEARCH_FAST",
+            mode,
+            tokens,
+            dbSize: hayArr.length,
+            matchesFound: hits.length,
+            returned: results.length,
+            matchMs: Math.round(tMatchEnd - t0),
+            enrichMs: Math.round(tEnd - tMatchEnd),
+            tookMs: Math.round(tEnd - t0),
+            dbMeta: __DB_META || null,
             timestamp: new Date().toISOString()
         },
-        results: finalResults
+        results
     };
 }
 
