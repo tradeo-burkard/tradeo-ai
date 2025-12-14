@@ -15,6 +15,18 @@ const SYSTEM_PROMPT = `
 Du bist "Tradeo AI", der technische Support-Assistent für Servershop24.
 Deine Aufgabe ist es, den Nachrichtenverlauf zu analysieren und einen perfekten, fachlich korrekten Antwortentwurf für den Support-Mitarbeiter zu erstellen.
 
+### DATEN-FORMAT (WICHTIG):
+Der Ticket-Verlauf wird dir als **JSON-Array** übergeben. Jedes Objekt darin ist eine Nachricht.
+Felder pro Nachricht:
+- "type": "customer_message" (Kunde), "support_reply" (Wir), "internal_note" (Interne Notiz - NICHT für den Kunden sichtbar!).
+- "sender": Name des Absenders.
+- "recipients": Empfänger und CCs (String).
+- "time": Zeitpunkt.
+- "body": Der Inhalt.
+- "files": Anhänge (Array).
+
+Achte streng darauf, **interne Notizen** ("type": "internal_note") nur als Kontext zu nutzen, aber niemals so zu tun, als hätte der Kunde diese Informationen!
+
 ### FACHWISSEN & UNTERNEHMENSDETAILS:
 
 1. **Geschäftsmodell:**
@@ -615,51 +627,100 @@ async function executeHeadlessLoop(contents, apiKeyIgnored, ticketId, allowTools
     return null;
 }
 
+// =============================================================================
+// FUNKTION: CONTEXT EXTRACTION (JSON V4 - No Drafts)
+// =============================================================================
 /**
- * Extrahiert den reinen Text-Kontext für die AI.
- * FIX v3.4: Entfernt aggressive Zeitstempel (.thread-meta) und Viewer-Listen,
- * damit der Hash stabil bleibt und nicht bei jedem Refresh feuert.
+ * Extrahiert den strukturierten Text-Kontext für die AI als JSON-String.
+ * Updates: 
+ * - Ignoriert Nachrichten, wenn Sender "[Entwurf]" enthält (verhindert Hash-Änderung beim Tippen).
+ * - "msg" statt "body", "cc" als Array.
  */
 function extractContextFromDOM(docRoot) {
     const mainContainer = docRoot.querySelector('#conv-layout-main');
-    if (!mainContainer) return "";
-    
-    const clone = mainContainer.cloneNode(true);
-    
-    // 1. Entferne unsere eigene AI Zone
-    const myZone = clone.querySelector('#tradeo-ai-copilot-zone');
-    if (myZone) myZone.remove();
-    
-    // 2. Entferne den Editor-Block
-    const editorBlock = clone.querySelector('.conv-reply-block');
-    if(editorBlock) editorBlock.remove();
+    if (!mainContainer) return "[]"; 
 
-    // 3. Störfaktoren entfernen (Elemente die sich oft ändern oder unsichtbar sind)
-    const noiseSelectors = [
-        '.dropdown-menu', 
-        '.thread-options', 
-        '.conv-action-wrapper',
-        '.thread-info',    // Zeitstempel der Nachricht ("vor 2 Stunden")
-        '.thread-meta',    // <--- WICHTIG: "Kunde betrachtete vor X Minuten" (Das war der Bug!)
-        '#conv-viewers',   // "Wer schaut gerade zu" (ändert sich dynamisch)
-        '.hidden',         // Unsichtbare Elemente (Background vs Live Diskrepanz)
-        '.hide',           
-        'script',          
-        'style',           
-        '[style*="display: none"]', 
-        '[style*="display:none"]'
-    ];
+    const messages = [];
+    // Reihenfolge im DOM ist meist: Neueste Oben -> Wir drehen um für Chronologie (Alt -> Neu)
+    const threads = Array.from(mainContainer.querySelectorAll('.thread')).reverse();
 
-    clone.querySelectorAll(noiseSelectors.join(', ')).forEach(el => el.remove());
+    threads.forEach(thread => {
+        // 1. SENDER & ZEIT (Zuerst holen für Filter)
+        const personEl = thread.querySelector('.thread-person');
+        const senderName = personEl ? personEl.innerText.trim().replace(/\s+/g, ' ') : "Unbekannt";
 
-    // 4. Formatierung bereinigen
-    let cleanText = clone.innerText;
-    
-    // Leerzeichen normalisieren
-    cleanText = cleanText.replace(/[ \t]+/g, ' '); 
-    cleanText = cleanText.replace(/\n\s*\n/g, '\n\n'); 
-    
-    return cleanText.trim();
+        // --- FILTER: ENTWÜRFE IGNORIEREN ---
+        // Wenn dies ein Entwurf ist, brechen wir hier ab. 
+        // Das verhindert, dass der Content-Hash sich ändert, während ein Agent tippt/speichert.
+        if (senderName.includes("[Entwurf]") || senderName.includes("[Draft]")) {
+            return; 
+        }
+
+        // 2. TYP BESTIMMUNG
+        let type = "unknown";
+        if (thread.classList.contains('thread-type-note')) {
+            type = "internal_note";
+        } else if (thread.classList.contains('thread-type-customer')) {
+            type = "customer_message";
+        } else if (thread.classList.contains('thread-type-message')) {
+            type = "support_reply";
+        }
+
+        const dateEl = thread.querySelector('.thread-date');
+        const timestamp = dateEl ? (dateEl.getAttribute('data-original-title') || dateEl.innerText.trim()) : "";
+
+        // 3. EMPFÄNGER (CC) PARSING
+        // Ziel: ["mail@a.com", "mail@b.com"] ohne "An:" Prefix
+        let recipientsList = [];
+        const recipientsContainer = thread.querySelector('.thread-recipients');
+        if (recipientsContainer) {
+            // Text holen (z.B. "An: a@b.com, c@d.com")
+            let rawText = recipientsContainer.innerText;
+            // Prefixes entfernen (An:, Cc:, Bcc:, Von:)
+            rawText = rawText.replace(/^(An|Cc|Bcc|Von):\s*/gim, '').replace(/\n/g, ',');
+            
+            // Splitten am Komma und bereinigen
+            recipientsList = rawText.split(',')
+                .map(s => s.trim())
+                .filter(s => s.length > 0 && !s.toLowerCase().includes('an:')); // Sicherheitsfilter
+        }
+
+        // 4. NACHRICHTEN-INHALT
+        let bodyText = "";
+        const contentEl = thread.querySelector('.thread-content');
+        if (contentEl) {
+            const clone = contentEl.cloneNode(true);
+            bodyText = clone.innerText.trim();
+        }
+
+        // 5. ANHÄNGE
+        let fileList = [];
+        const attachmentsEl = thread.querySelector('.thread-attachments');
+        if (attachmentsEl) {
+            fileList = Array.from(attachmentsEl.querySelectorAll('li')).map(li => {
+                const link = li.querySelector('a.attachment-link');
+                const sizeSpan = li.querySelector('.text-help'); 
+                const name = link ? link.innerText.trim() : "";
+                const size = sizeSpan ? sizeSpan.innerText.trim() : "";
+                return name ? (size ? `${name} (${size})` : name) : null;
+            }).filter(Boolean);
+        }
+
+        // 6. JSON OBJEKT BAUEN
+        const msgObj = {
+            type: type,
+            sender: senderName,
+            time: timestamp,
+            msg: bodyText
+        };
+
+        if (recipientsList.length > 0) msgObj.cc = recipientsList;
+        if (fileList.length > 0) msgObj.files = fileList;
+
+        messages.push(msgObj);
+    });
+
+    return JSON.stringify(messages);
 }
 
 async function handleStartupSync(ticketId) {
@@ -2622,3 +2683,58 @@ window.debugOrderDetails = async function(orderId) {
     }
     console.groupEnd();
 };
+
+// =============================================================================
+// 🕵️ DEBUG: AI CONTEXT DUMP (PRETTY JSON)
+// =============================================================================
+(function debugDumpContextOnLoad() {
+    const runDump = () => {
+        const ticketView = document.getElementById('conv-layout-main');
+        if (!ticketView) return;
+
+        console.groupCollapsed("🕵️ Tradeo AI DEBUG: Ticket Context Preview");
+
+        try {
+            let ticketId = "UNKNOWN";
+            const match = window.location.href.match(/conversation\/(\d+)/);
+            if(match) ticketId = match[1];
+
+            if (typeof extractContextFromDOM === 'function') {
+                // 1. Den String holen, den die AI bekommt (minified)
+                const rawJsonString = extractContextFromDOM(document);
+                
+                // 2. Für die Konsole hübsch machen (in Objekt zurückwandeln)
+                let prettyData = "Fehler beim Parsen";
+                try {
+                    prettyData = JSON.parse(rawJsonString);
+                } catch (e) {
+                    prettyData = rawJsonString; // Fallback falls kein valides JSON
+                }
+
+                console.log(`%cTicket ID: ${ticketId}`, "font-weight:bold; color: #009fe3; font-size: 12px;");
+                console.log(`%cToken-Effizienz: Gesendet wird MINIFIED JSON (Länge: ${rawJsonString.length} Zeichen).`, "color: #555; font-style: italic;");
+                
+                console.log("%c▼▼▼ AI KONTEXT (PRETTY OBJECT) ▼▼▼", "background: #222; color: #bada55; padding: 4px; font-weight: bold; display: block; margin-top: 10px;");
+                
+                // Hier loggen wir das echte Objekt -> Chrome macht es interaktiv/bunt
+                console.log(prettyData);
+                
+                console.log("%c▲▲▲ ENDE ▲▲▲", "background: #222; color: #ff6b6b; padding: 4px; font-weight: bold; display: block; margin-bottom: 10px;");
+
+            } else {
+                console.error("❌ Funktion 'extractContextFromDOM' nicht gefunden.");
+            }
+
+        } catch (e) {
+            console.error("❌ Fehler beim Debug-Dump:", e);
+        }
+
+        console.groupEnd();
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', runDump);
+    } else {
+        setTimeout(runDump, 1000); 
+    }
+})();
