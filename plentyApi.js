@@ -815,8 +815,6 @@ async function searchItemsByText(searchText, options = {}) {
     const q = String(searchText || "").trim();
     if (!q) return { meta: { type: "EMPTY" }, results: [] };
 
-    const t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
-
     // 1) Tokens bilden + normalisieren
     let tokens = q.split(/\s+/)
         .map(__normQueryToken)
@@ -854,17 +852,14 @@ async function searchItemsByText(searchText, options = {}) {
 
     // Keine Treffer
     if (hits.length === 0) {
-        const t1 = (typeof performance !== "undefined" ? performance.now() : Date.now());
         return {
             meta: {
                 type: "PLENTY_ITEM_DB_SEARCH_FAST",
+                dbSize: hayArr.length,
                 mode,
                 tokens,
-                dbSize: hayArr.length,
                 matchesFound: 0,
-                matchMs: Math.round(t1 - t0),
-                dbMeta: __DB_META || null,
-                timestamp: new Date().toISOString()
+                returned: 0
             },
             results: []
         };
@@ -885,8 +880,6 @@ async function searchItemsByText(searchText, options = {}) {
 
     // Jetzt erst TopN nehmen (damit wir maxResults *gültige* Treffer bekommen)
     const top = validHits.slice(0, maxResults);
-
-    const tMatchEnd = (typeof performance !== "undefined" ? performance.now() : Date.now());
 
     // 4) Enrichment (nur TopN): Item + Varianten -> Stock + Price
     const enrichOne = async (hit) => {
@@ -945,22 +938,15 @@ async function searchItemsByText(searchText, options = {}) {
 
     const results = await __mapLimit(top, 50, enrichOne);
 
-    const tEnd = (typeof performance !== "undefined" ? performance.now() : Date.now());
-
+    // --- CLEAN RETURN OBJECT ---
     return {
         meta: {
             type: "PLENTY_ITEM_DB_SEARCH_FAST",
+            dbSize: hayArr.length,
             mode,
             tokens,
-            dbSize: hayArr.length,
-            matchesFound: hits.length, // Roh-Matches vor Filterung
-            validMatches: validHits.length, // Matches nach Filterung
-            returned: results.length,
-            matchMs: Math.round(tMatchEnd - t0),
-            enrichMs: Math.round(tEnd - tMatchEnd),
-            tookMs: Math.round(tEnd - t0),
-            dbMeta: __DB_META || null,
-            timestamp: new Date().toISOString()
+            matchesFound: hits.length, // Gesamttreffer vor Filterung
+            returned: results.length   // Tatsächliche Ergebnisse nach Filter & Limit
         },
         results
     };
