@@ -1244,6 +1244,50 @@ function expandInterface(acceptingFocus = true) {
 
 // --- HELPERS ---
 
+// =============================================================================
+// HELPER: SINGLE TICKET RESET
+// =============================================================================
+async function performSingleTicketReset() {
+    const ticketId = getTicketIdFromUrl();
+    if (!ticketId) {
+        console.warn("Tradeo AI: Kein Ticket-ID für Reset gefunden.");
+        return;
+    }
+
+    console.log(`🔄 Tradeo AI: Starte Reset für Ticket #${ticketId}...`);
+
+    // 1. Storage NUR für dieses Ticket löschen
+    await chrome.storage.local.remove([`draft_${ticketId}`, `processing_${ticketId}`]);
+
+    // 2. RAM State für dieses Ticket bereinigen
+    if (window.aiState) {
+        window.aiState.knownTickets.delete(ticketId);
+        // Da wir uns gerade in diesem Ticket befinden, leeren wir auch den aktuellen View-State
+        window.aiState.chatHistory = [];
+        window.aiState.lastDraft = "";
+    }
+
+    // 3. UI Resetten
+    const historyDiv = document.getElementById('tradeo-ai-chat-history');
+    if (historyDiv) historyDiv.innerHTML = '';
+    
+    const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
+    if (dummyDraft) {
+        dummyDraft.innerHTML = '<em>🔄 Ticket wird neu eingelesen...</em>';
+        dummyDraft.style.display = 'block';
+    }
+    
+    // Input leeren
+    const input = document.getElementById('tradeo-ai-input');
+    if (input) input.value = '';
+
+    // 4. Neu-Initialisierung anstoßen
+    // Da der Cache gelöscht ist, wird handleStartupSync dies als "neues Ticket" erkennen 
+    // und automatisch runAI(true) feuern.
+    expandInterface(); // UI sicherheitshalber aufklappen
+    handleStartupSync(ticketId);
+}
+
 // Render Funktion für Reasoning/Feedback (Blaue Box, klickbar)
 function renderReasoningMessage(summary, details) {
     const historyContainer = document.getElementById('tradeo-ai-chat-history');
@@ -1409,7 +1453,7 @@ function setupModelSelector() {
 }
 
 function setupButtons(originalReplyBtn) {
-    // 1. AI Button erstellen (wie bisher)
+    // 1. AI Button erstellen (Blitz)
     const aiBtn = originalReplyBtn.cloneNode(true);
     aiBtn.classList.add('tradeo-ai-toolbar-btn');
     aiBtn.setAttribute('title', 'Mit AI Antworten');
@@ -1419,48 +1463,60 @@ function setupButtons(originalReplyBtn) {
     // Einfügen NACH dem Original-Button
     originalReplyBtn.parentNode.insertBefore(aiBtn, originalReplyBtn.nextSibling);
     
-    // 2. Reset Button erstellen
-    const resetBtn = document.createElement('button'); 
-    resetBtn.className = 'btn btn-default tradeo-ai-reset-btn'; 
-    resetBtn.innerHTML = '<i class="glyphicon glyphicon-refresh"></i> Reset';
-    resetBtn.setAttribute('title', 'AI Gedächtnis löschen & neu starten');
+    // 2. Neuer "Reset" Button (Nur aktuelles Ticket)
+    // Soll genau so aussehen wie der alte
+    const singleResetBtn = document.createElement('button'); 
+    singleResetBtn.className = 'btn btn-default tradeo-ai-reset-btn'; 
+    singleResetBtn.innerHTML = '<i class="glyphicon glyphicon-refresh"></i> Reset';
+    singleResetBtn.setAttribute('title', 'Dieses Ticket neu einlesen & AI zurücksetzen');
+    singleResetBtn.style.marginRight = "4px"; // Kleiner Abstand zum Full Reset
     
     // Einfügen NACH dem AI-Button
-    aiBtn.parentNode.insertBefore(resetBtn, aiBtn.nextSibling);
+    aiBtn.parentNode.insertBefore(singleResetBtn, aiBtn.nextSibling);
+
+    // 3. Umbenannter "FULL AI Reset" Button (Alles löschen)
+    const fullResetBtn = document.createElement('button'); 
+    fullResetBtn.className = 'btn btn-default tradeo-ai-reset-btn'; 
+    fullResetBtn.innerHTML = '<i class="glyphicon glyphicon-trash"></i> FULL AI Reset';
+    fullResetBtn.setAttribute('title', 'ACHTUNG: Löscht ALLE gespeicherten Daten aller Tickets (Globaler Reset)');
+    
+    // Einfügen NACH dem Single Reset Button
+    singleResetBtn.parentNode.insertBefore(fullResetBtn, singleResetBtn.nextSibling);
 
     // --- Event Listener ---
 
-    // Logic: Reset Button
-    resetBtn.addEventListener('click', function(e) {
+    // Logic: Single Ticket Reset
+    singleResetBtn.addEventListener('click', function(e) {
         e.preventDefault(); 
         e.stopPropagation();
-        expandInterface(); // Reset soll auch Interface öffnen
-        performFullReset();
+        performSingleTicketReset();
+    });
+
+    // Logic: Full Reset (Global)
+    fullResetBtn.addEventListener('click', function(e) {
+        e.preventDefault(); 
+        e.stopPropagation();
+        // Bestätigung optional, da "destruktiv"
+        if(confirm("Wirklich ALLES zurücksetzen? Dies löscht das Gedächtnis der AI für ALLE Tickets.")) {
+            performFullReset();
+        }
     });
 
     // Logic: AI Button (Blitz)
     aiBtn.addEventListener('click', function(e) {
         e.preventDefault(); e.stopPropagation();
-        
-        // WICHTIG: false übergeben, damit NICHT ins AI-Input fokussiert wird.
-        // Das verhindert Sprünge, da gleich danach der Editor den Fokus holt.
         expandInterface(false); 
-
         originalReplyBtn.click();
         window.aiState.isRealMode = true; window.aiState.preventOverwrite = false;
         waitForSummernote(function(editable) {
             const content = window.aiState.lastDraft || document.getElementById('tradeo-ai-dummy-draft').innerHTML;
             setEditorContent(editable, content);
-            // Info: setEditorContent kümmert sich bereits um preventScroll für den Editor
             document.getElementById('tradeo-ai-dummy-draft').style.display = 'none';
         });
     });
 
     // Logic: Original Button Hooks
     originalReplyBtn.addEventListener('click', () => {
-        // ENTFERNT: document.getElementById('tradeo-ai-dummy-draft').style.display = 'none'; 
-        
-        // Wir setzen nur den Modus, den Rest macht der Observer (Verschieben + Anzeigen)
         window.aiState.isRealMode = true;
         if(window.aiState.isGenerating) window.aiState.preventOverwrite = true;
     });
