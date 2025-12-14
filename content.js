@@ -165,6 +165,8 @@ window.aiState = {
     preventOverwrite: false,
     chatHistory: [], // Array von Objekten: { type: 'user'|'ai'|'draft', content: string }
     currentModel: "gemini-2.5-pro",
+    // Ticket-spezifische, wiederverwendbare Tool-Ergebnisse (für Folgeprompts ohne erneute API Calls)
+    lastToolDataByCid: {},
     // Cache management V3
     knownTickets: new Map(), // Map<TicketID, ContentHash>
     processingQueue: new Set() // Set<TicketID>
@@ -452,7 +454,11 @@ async function processTicket(id, incomingInboxHash) {
 
         if (aiResult) {
             let initialHistory = [];
-            if (aiResult.toolLogs && Array.isArray(aiResult.toolLogs)) {
+            // Structured Tool-Execution Bubble (neu)
+            if (aiResult.toolExec && aiResult.toolExec.summary) {
+                initialHistory.push({ type: 'tool_exec', summary: aiResult.toolExec.summary, details: aiResult.toolExec.details });
+            } else if (aiResult.toolLogs && Array.isArray(aiResult.toolLogs)) {
+                // Legacy Logs (Fallback)
                 aiResult.toolLogs.forEach(logText => initialHistory.push({ type: 'system', content: logText }));
             }
             initialHistory.push({ type: 'draft', content: aiResult.draft });
@@ -463,6 +469,8 @@ async function processTicket(id, incomingInboxHash) {
                 draft: aiResult.draft,
                 feedback: aiResult.feedback,
                 chatHistory: initialHistory,
+                // Für Live-Folgeprompts wiederverwendbare Tool-Ergebnisse
+                lastToolData: aiResult.lastToolData || null,
                 timestamp: Date.now(),
                 inboxHash: incomingInboxHash, 
                 contentHash: realContentHash // <--- Hash des bereinigten Textes speichern
@@ -495,24 +503,19 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
 
     const primaryTask = async () => {
         // PHASE 1: PLAN
-        const plan = await analyzeToolPlan(contextText, headlessUserPrompt, ticketId);
+        const plan = await analyzeToolPlan(contextText, headlessUserPrompt, "", null, ticketId);
 
-        // Tool Logs fürs spätere UI
+        // Tool Logs fürs spätere UI (Legacy) + Structured Tool Exec (neu)
         const toolLogs = [];
-        if (plan.tool_calls?.length) {
-            const info = plan.tool_calls.map(c => {
-                if (c.name === 'fetchOrderDetails') return `Order #${c.args?.orderId || "?"}`;
-                if (c.name === 'fetchCustomerDetails') return `Kunde #${c.args?.contactId || "?"}`;
-                if (c.name === 'fetchItemDetails') return `Artikel ${c.args?.identifier || "?"}`;
-                if (c.name === 'searchItemsByText') return `Suche "${c.args?.searchText || "?"}"`;
-                return c.name;
-            }).join(' · ');
-            toolLogs.push(`⚙️ Hintergrund: Lade Daten: ${info}`);
+        const toolExec = buildToolExecutionInfo(plan.tool_calls || []);
+        if (toolExec) {
+            toolLogs.push(`⚙️ Hintergrund: ${toolExec.summary}`);
         } else {
             toolLogs.push(`✅ Hintergrund: Keine Datenabfrage nötig.`);
         }
 
-        // PHASE 2: EXECUTE
+
+// PHASE 2: EXECUTE
         const gatheredData = await executePlannedToolCalls(plan.tool_calls || [], ticketId);
 
         // PHASE 3: GENERATE
@@ -559,6 +562,9 @@ Erstelle einen Antwortentwurf im JSON-Format:
         }
 
         finalResponse.toolLogs = toolLogs;
+        finalResponse.toolExec = toolExec;
+        // Persistierbar machen, damit Live-Folgeprompts sofort wiederverwenden können
+        finalResponse.lastToolData = gatheredData;
         return finalResponse;
     };
 
@@ -891,6 +897,12 @@ function loadFromCache(ticketId) {
             const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
             window.aiState.lastDraft = cached.draft;
             dummyDraft.innerHTML = cached.draft;
+
+            // Wiederverwendbare Tool-Daten (für Folgeprompts ohne erneute Abfragen)
+            if (cached.lastToolData) {
+                window.aiState.lastToolDataByCid = window.aiState.lastToolDataByCid || {};
+                window.aiState.lastToolDataByCid[ticketId] = cached.lastToolData;
+            }
             
             // UI sichtbar machen, falls noch eingeklappt
             dummyDraft.style.display = 'block'; 
@@ -912,7 +924,11 @@ function loadFromCache(ticketId) {
                     } else if (msg.type === 'reasoning') {
                         // NEU: Reasoning Message
                         renderReasoningMessage(msg.summary, msg.details);
-                    } else if (msg.type === 'system') {
+                    } else if (msg.type === 'tool_exec') {
+                        // NEU: Tool Execution Message (expandable)
+                        renderToolExecutionMessage(msg.summary, msg.details);
+                    }
+                    else if (msg.type === 'system') {
                         renderChatMessage('system', msg.content);
                     } else {
                         // Generic Fallback
@@ -923,6 +939,12 @@ function loadFromCache(ticketId) {
                 const fallbackText = cached.feedback + " (Vorbereitet)";
                 renderChatMessage('ai', fallbackText);
                 window.aiState.chatHistory = [{ type: 'ai', content: fallbackText }];
+            }
+
+            // Letzte Tool-Daten (Facts) für dieses Ticket wiederherstellen (für Folgeprompts ohne neue API Calls)
+            if (cached.lastToolData) {
+                window.aiState.lastToolDataByCid = window.aiState.lastToolDataByCid || {};
+                window.aiState.lastToolDataByCid[ticketId] = cached.lastToolData;
             }
             setTimeout(scrollToBottom, 50);
         }
@@ -1331,6 +1353,10 @@ async function performSingleTicketReset() {
         // Da wir uns gerade in diesem Ticket befinden, leeren wir auch den aktuellen View-State
         window.aiState.chatHistory = [];
         window.aiState.lastDraft = "";
+        // Wichtig: auch ggf. gecachte Tool-Ergebnisse für dieses Ticket löschen
+        if (window.aiState.lastToolDataByCid) {
+            delete window.aiState.lastToolDataByCid[ticketId];
+        }
     }
 
     // 3. UI Resetten
@@ -1377,6 +1403,74 @@ function renderReasoningMessage(summary, details) {
         // Hier lassen wir es togglen bei Klick auf den Container.
         msgDiv.classList.toggle('expanded');
     };
+
+    historyContainer.appendChild(msgDiv);
+    historyContainer.scrollTop = historyContainer.scrollHeight;
+}
+
+// =============================================================================
+// NEU: TOOL EXECUTION MESSAGE (Expandable + Persistent)
+// =============================================================================
+function formatToolCallArgs(args) {
+    if (!args || typeof args !== 'object') return '';
+    const parts = [];
+    for (const [k, v] of Object.entries(args)) {
+        if (v === null || typeof v === 'undefined') continue;
+        if (typeof v === 'string') parts.push(`${k}="${v}"`);
+        else parts.push(`${k}=${JSON.stringify(v)}`);
+    }
+    return parts.join(', ');
+}
+
+function buildToolExecutionInfo(toolCalls) {
+    const calls = Array.isArray(toolCalls) ? toolCalls : [];
+    if (!calls.length) return null;
+
+    const uniqueNames = [];
+    const seen = new Set();
+    for (const c of calls) {
+        const n = c?.name || 'unknownTool';
+        if (!seen.has(n)) { seen.add(n); uniqueNames.push(n); }
+    }
+
+    const summary = `Ausführen: ${uniqueNames.join(', ')}`;
+    const detailsLines = calls.map(c => {
+        const name = c?.name || 'unknownTool';
+        const argsStr = formatToolCallArgs(c?.args);
+        return argsStr ? `${name}(${argsStr})` : `${name}()`;
+    });
+
+    return {
+        summary,
+        details: detailsLines.join('\n'),
+        calls: calls
+    };
+}
+
+function renderToolExecutionMessage(summary, details) {
+    const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    if(!historyContainer) return;
+
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'tool-msg';
+
+    const header = document.createElement('div');
+    header.className = 'tool-header';
+    header.textContent = 'Tool-Ausführung (Details anzeigen)';
+
+    const sum = document.createElement('div');
+    sum.className = 'tool-summary';
+    sum.textContent = summary || 'Ausführen: —';
+
+    const body = document.createElement('div');
+    body.className = 'tool-body';
+    body.textContent = details || 'Keine Details verfügbar.';
+
+    msgDiv.appendChild(header);
+    msgDiv.appendChild(sum);
+    msgDiv.appendChild(body);
+
+    msgDiv.onclick = () => msgDiv.classList.toggle('expanded');
 
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
@@ -1433,6 +1527,10 @@ async function resetUiToLoadingState() {
     window.aiState.lastDraft = "";
     window.aiState.chatHistory = [];
     
+    // Wichtig: auch ggf. gecachte Tool-Ergebnisse für dieses Ticket löschen
+    if (window.aiState.lastToolDataByCid) {
+        delete window.aiState.lastToolDataByCid[ticketId];
+    }
     // Wiederherstellen für den Observer
     window.aiState.lastThreadText = preservedThreadText; // <--- Zurückschreiben
 
@@ -1696,36 +1794,63 @@ async function runAI(isInitial = false) {
     const primaryTask = async () => {
         // --- PHASE 1: PLAN ---
         renderChatMessage('system', "🔍 Analysiere Bedarf...");
-        const plan = await analyzeToolPlan(contextText, userPrompt, cid);
+        window.aiState.chatHistory.push({ type: "system", content: "🔍 Analysiere Bedarf..." });
+        const lastToolData = (window.aiState.lastToolDataByCid && window.aiState.lastToolDataByCid[cid]) ? window.aiState.lastToolDataByCid[cid] : null;
+        const plan = await analyzeToolPlan(contextText, userPrompt, currentDraft, lastToolData, cid);
 
-        // Plan-Info (UI)
-        const planInfo = [];
-        if (plan.tool_calls?.some(c => c.name === 'fetchOrderDetails')) {
-            const oc = plan.tool_calls.find(c => c.name === 'fetchOrderDetails');
-            if (oc?.args?.orderId) planInfo.push(`Order #${oc.args.orderId}`);
+        // "Triggerhappy" Schutz: Bei reinen Umformulierungs-/Ergänzungs-Prompts keine neuen Tools laufen lassen.
+        const forceRefresh = wantsFreshData(userPrompt);
+        const editOnly = isLikelyEditOnly(userPrompt);
+        let toolCallsToExecute = Array.isArray(plan.tool_calls) ? plan.tool_calls : [];
+        // Wenn bereits Tool-Daten aus dem vorherigen Lauf vorhanden sind, dann nur dann neu abfragen,
+        // wenn der User explizit danach fragt (forceRefresh / explicit data request).
+        if (!forceRefresh && lastToolData && toolCallsToExecute.length > 0) {
+            console.log(`[CID: ${cid}] Unterdrücke neue Tool-Abfragen: vorhandene Daten vorhanden und kein expliziter Refresh.`);
+            toolCallsToExecute = [];
+        } else if (!forceRefresh && editOnly && toolCallsToExecute.length > 0) {
+            console.log(`[CID: ${cid}] Planner wollte Tools, aber Prompt ist Edit-Only. Unterdrücke neue Abfragen.`);
+            toolCallsToExecute = [];
         }
-        const itemCalls = (plan.tool_calls || []).filter(c => c.name === 'fetchItemDetails');
-        if (itemCalls.length) planInfo.push(`Artikel: ${itemCalls.map(c => c.args?.identifier).filter(Boolean).join(', ')}`);
-        const searchCall = (plan.tool_calls || []).find(c => c.name === 'searchItemsByText');
-        if (searchCall?.args?.searchText) planInfo.push(`Suche: "${searchCall.args.searchText}"`);
-        const custCall = (plan.tool_calls || []).find(c => c.name === 'fetchCustomerDetails');
-        if (custCall?.args?.contactId) planInfo.push(`Kunde #${custCall.args.contactId}`);
 
-        if (planInfo.length) renderChatMessage('system', `⚙️ Lade Daten: ${planInfo.join(' · ')}...`);
-        else renderChatMessage('system', "✅ Keine Datenabfrage nötig.");
+        const toolExec = buildToolExecutionInfo(toolCallsToExecute);
+        if (toolExec) {
+            renderToolExecutionMessage(toolExec.summary, toolExec.details);
+            window.aiState.chatHistory.push({
+                type: "tool_exec",
+                summary: toolExec.summary,
+                details: toolExec.details,
+                calls: toolExec.calls
+            });
+        } else {
+            if (lastToolData) {
+                renderChatMessage('system', "♻️ Keine neuen Tool-Aufrufe – verwende bereits geladene Daten.");
+                window.aiState.chatHistory.push({ type: "system", content: "♻️ Keine neuen Tool-Aufrufe – verwende bereits geladene Daten." });
+            } else {
+                renderChatMessage('system', "✅ Keine Datenabfrage nötig.");
+                window.aiState.chatHistory.push({ type: "system", content: "✅ Keine Datenabfrage nötig." });
+            }
+        }
 
         // --- PHASE 2: EXECUTE (JS) ---
-        const gatheredData = await executePlannedToolCalls(plan.tool_calls || [], cid);
+        let gatheredData = null;
+        if (toolCallsToExecute.length > 0) {
+            gatheredData = await executePlannedToolCalls(toolCallsToExecute, cid);
+            window.aiState.lastToolDataByCid = window.aiState.lastToolDataByCid || {};
+            window.aiState.lastToolDataByCid[cid] = gatheredData;
+        } else {
+            // Reuse cached data (falls vorhanden)
+            gatheredData = lastToolData;
+        }
 
         // --- PHASE 3: GENERATE ---
         const generatorPrompt = `
 ${SYSTEM_PROMPT}
 
 === HINTERGRUND-DATEN (PLENTY API ERGEBNISSE) ===
-Die folgenden Daten wurden bereits von der Extension aus Plentymarkets geladen.
-Nutze diese Daten als Faktenbasis. Wenn Felder fehlen oder ok=false ist, sage das kurz und frage gezielt nach.
+Falls hier "null" steht, wurden für diese Runde keine neuen Daten abgefragt – nutze dann den aktuellen Entwurf als Faktenbasis.
+Wenn Daten vorhanden sind: Nutze sie als Faktenbasis. Wenn Felder fehlen oder ok=false ist, sage das kurz und frage gezielt nach.
 WICHTIG: Du darfst KEINE Tools/Funktionen aufrufen – die Datenbeschaffung ist abgeschlossen.
-${JSON.stringify(gatheredData, null, 2)}
+${gatheredData ? JSON.stringify(gatheredData, null, 2) : "null"}
 
 === TICKET VERLAUF ===
 ${contextText}
@@ -1868,6 +1993,8 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
                 draft: finalResponse.draft,
                 feedback: finalResponse.feedback, // Legacy field
                 chatHistory: window.aiState.chatHistory,
+                // Letzte Tool-Ergebnisse pro Ticket persistieren, damit Folgeprompts nicht "triggerhappy" neu abfragen
+                lastToolData: (window.aiState.lastToolDataByCid && window.aiState.lastToolDataByCid[ticketId]) ? window.aiState.lastToolDataByCid[ticketId] : null,
                 timestamp: Date.now(),
                 inboxHash: preservedInboxHash,
                 contentHash: currentHash 
@@ -1989,6 +2116,75 @@ async function executeToolAction(fnName, fnArgs, cid) {
 // Planner-Worker Helpers (LLM plant, Extension führt aus)
 // =============================================================================
 
+// Heuristiken, um unnötige Tool-Re-Queries bei Folgeprompts (reine Umformulierungen) zu verhindern.
+// "refresh" Keywords lassen bewusst neue Abfragen zu.
+const FORCE_REFRESH_KEYWORDS_RE = /\b(nochmal|erneut|aktuell|refresh|neu\s*(?:laden|abfragen|prüfen|checken)|verifizieren|abgleichen)\b/i;
+// Wenn der User *explizit* neue Fakten will, dürfen Tools laufen.
+const EXPLICIT_DATA_REQUEST_RE = /\b(bestell(?:status|nummer)?|order|tracking|liefer(?:status)?|versand|paket|lager(?:bestand)?|bestand|verfügbarkeit|preis|kundendaten|adresse|telefon|email|zoll|gewicht|herkunft)\b/i;
+// Typische "nur umformulieren/ergänzen"-Prompts.
+const EDIT_ONLY_RE = /\b(umformulieren|umformulierung|formuliere?n?|schreib\w*\s+um|korrigier\w*|rechtschreib\w*|ton(?:alität)?|freundlicher|kürzer|länger|struktur|format|unverändert|sonst\s+unverändert|nur\s+.*ergänz\w*|bitte\s+.*ergänz\w*|ergänz\w*|hinweis)\b/i;
+
+function wantsFreshData(userPrompt) {
+    const p = (userPrompt || "").trim();
+    if (!p) return false;
+    return FORCE_REFRESH_KEYWORDS_RE.test(p) || EXPLICIT_DATA_REQUEST_RE.test(p);
+}
+
+function isLikelyEditOnly(userPrompt) {
+    const p = (userPrompt || "").trim();
+    if (!p) return false;
+    // Edit-Only nur dann, wenn NICHT gleichzeitig explizit nach neuen Daten gefragt wird.
+    return EDIT_ONLY_RE.test(p) && !wantsFreshData(p);
+}
+
+function containsPlaceholderToken(s) {
+    const str = String(s || "");
+    // Beispiel: "c1.customer_contact_id" oder "c2.order.id" etc.
+    return /\bc\d+\./i.test(str) || /\bfrom\b/i.test(str) || /\b\w+_from\b/i.test(str);
+}
+
+function validateAndNormalizeToolCall(call) {
+    if (!call || typeof call !== 'object') return null;
+    const name = call.name;
+    const args = call.args || {};
+    if (!name || typeof name !== 'string' || typeof args !== 'object') return null;
+
+    // Drop placeholder args (keine "Verweise" zulassen)
+    for (const k of Object.keys(args)) {
+        if (containsPlaceholderToken(args[k])) return null;
+    }
+
+    if (name === 'fetchOrderDetails') {
+        const orderId = String(args.orderId || "").trim();
+        if (!orderId || !/^\d+$/.test(orderId)) return null;
+        return { ...call, args: { orderId } };
+    }
+
+    if (name === 'fetchCustomerDetails') {
+        const contactId = String(args.contactId || "").trim();
+        if (!contactId || !/^\d+$/.test(contactId)) return null;
+        return { ...call, args: { contactId } };
+    }
+
+    if (name === 'fetchItemDetails') {
+        const identifier = String(args.identifier || "").trim();
+        if (!identifier || identifier.length > 96) return null;
+        return { ...call, args: { identifier } };
+    }
+
+    if (name === 'searchItemsByText') {
+        const searchText = String(args.searchText || "").trim();
+        if (!searchText || searchText.length < 3) return null;
+        const mode = (args.mode === 'nameAndDescription' || args.mode === 'name') ? args.mode : 'nameAndDescription';
+        let maxResults = Number(args.maxResults);
+        if (!Number.isFinite(maxResults)) maxResults = 10;
+        maxResults = Math.max(1, Math.min(25, Math.floor(maxResults)));
+        return { ...call, args: { searchText, mode, maxResults } };
+    }
+
+    return null;
+}
+
 function stripGeminiJson(rawText) {
     if (!rawText) return "";
     return rawText.replace(/```json/g, '').replace(/```/g, '').trim();
@@ -2001,8 +2197,12 @@ function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(
  * Gibt NUR einen Plan zurück: welche vorhandenen Tools (fetchOrderDetails, fetchItemDetails, fetchCustomerDetails, searchItemsByText)
  * sollen mit welchen Args aufgerufen werden.
  */
-async function analyzeToolPlan(contextText, userPrompt, cid) {
+async function analyzeToolPlan(contextText, userPrompt, currentDraft, lastToolData, cid) {
     const model = window.aiState.currentModel || "gemini-2.5-pro";
+
+    const safeDraft = (currentDraft || "").toString();
+    const safeLast = lastToolData ? JSON.stringify(lastToolData) : "null";
+    const trimmedLast = safeLast.length > 12000 ? safeLast.slice(0, 12000) + "\n... (gekürzt)" : safeLast;
 
     const plannerPrompt = `
 Du bist ein Planner für eine Support-Extension. Du darfst KEINE API-Calls machen.
@@ -2011,7 +2211,10 @@ Du entscheidest nur, ob und welche Tools ausgeführt werden sollen, um die Anfra
 WICHTIG:
 - Gib NUR JSON zurück. Kein Markdown, kein Text davor/danach.
 - Erfinde keine IDs. Extrahiere nur aus Ticket/Chat/Entwurf.
-- Wenn du keine Tools brauchst: tool_calls muss [] sein.
+- Wenn die User-Anweisung nur eine Umformulierung / Ergänzung am bestehenden Entwurf ist:
+  => tool_calls MUSS [] sein.
+- Tool-Calls sind nur erlaubt, wenn der User explizit neue Fakten verlangt ("prüf", "suche", "check", "aktuell", "nochmal", etc.)
+  oder wenn im aktuellen Entwurf erkennbar Fakten fehlen (z.B. "kann ich nicht prüfen" / "unbekannt").
 - Maximal 6 Tool-Calls.
 
 Verfügbare Tools (genau diese Namen benutzen):
@@ -2033,6 +2236,12 @@ OUTPUT FORMAT:
 
 === TICKET VERLAUF ===
 ${contextText}
+
+=== AKTUELLER ENTWURF (kann bereits alle Fakten enthalten) ===
+${safeDraft}
+
+=== LETZTE TOOL-ERGEBNISSE (falls vorhanden, zum Wiederverwenden) ===
+${trimmedLast}
 
 === USER ANWEISUNG ===
 ${userPrompt}
@@ -2067,7 +2276,10 @@ ${userPrompt}
             name: c.name,
             args: c.args,
             purpose: typeof c.purpose === 'string' ? c.purpose : ""
-        }));
+        }))
+        // harte Validierung (keine Platzhalter wie "c1.xxx")
+        .map(validateAndNormalizeToolCall)
+        .filter(Boolean);
 
     if (!Array.isArray(plan.needs_more_info)) plan.needs_more_info = [];
     if (typeof plan.notes !== 'string') plan.notes = "";
@@ -2150,6 +2362,7 @@ async function performFullReset() {
         window.aiState.processingQueue = new Set();
         window.aiState.chatHistory = [];
         window.aiState.lastDraft = "";
+        window.aiState.lastToolDataByCid = {};
         console.log("🧠 RAM: State zurückgesetzt.");
     }
 
