@@ -121,12 +121,7 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
- * UPDATED: Aggressives Stripping der OrderItems (nur ID, Name, Menge, Preise).
- * UPDATED: Filtert 0,00 EUR Amounts komplett raus.
- * UPDATED: Reduziert shippingPackages auf weight und packageNumber.
- * UPDATED: Reduziert Stocks massiv auf variationId und stockNet.
- * UPDATED: Adressen extrem bereinigt (keine IDs, Timestamps etc.).
- * UPDATED: ShippingInfo minimiert (kein Provider/ProfileName mehr).
+ * UPDATED: Adress-Options werden jetzt gestripped (keine IDs/Timestamps) und mit typeName angereichert.
  */
 async function fetchOrderDetails(orderId) {
     try {
@@ -167,14 +162,26 @@ async function fetchOrderDetails(orderId) {
 
                     // --- ADDRESS STRIPPING ---
                     // Wir entfernen die unerwünschten Felder per Destructuring
+                    // 'options' holen wir raus, um sie separat zu behandeln
                     const { 
                         id, stateId, readOnly, checkedAt, createdAt, updatedAt, title, contactPerson, // Weg damit
-                        ...cleanAddr // Der Rest bleibt
+                        options, // Separat verarbeiten
+                        ...cleanAddr // Der Rest bleibt (Name, Straße, PLZ, Ort etc.)
                     } = addrDetail;
+
+                    // --- ADDRESS OPTIONS STRIPPING & MAPPING ---
+                    // id, addressId, position, createdAt, updatedAt entfernen
+                    // typeName hinzufügen
+                    const cleanOptions = (options || []).map(opt => ({
+                        typeId: opt.typeId,
+                        typeName: ADDRESS_OPTION_TYPE_MAP[String(opt.typeId)] || `Unknown (${opt.typeId})`,
+                        value: opt.value
+                    }));
 
                     return { 
                         relationType: rel.typeId === 1 ? "Billing/Rechnung" : (rel.typeId === 2 ? "Shipping/Lieferung" : "Other"),
-                        ...cleanAddr 
+                        ...cleanAddr,
+                        options: cleanOptions
                     };
                 } catch (e) {
                     return null;
@@ -208,8 +215,6 @@ async function fetchOrderDetails(orderId) {
             });
             result.stocks = await Promise.all(stockPromises);
         }
-
-        // 4. (EHEMALS Versandart-Name auflösen) -> ENTFERNT, da nicht mehr im Output gewünscht.
 
         // --- 5. DATA STRIPPING (Rest der Order Daten) ---
         
