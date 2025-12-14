@@ -63,6 +63,11 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
    - **Datum:** Nutze das Datum mit der typeId 7 (Warenausgang) aus der 'dates'-Liste für das Versanddatum.
    - **Erwartete Laufzeit / Zustelldatum(sbereich):** Schätze das Zustelldatum unter Angabe von "normalerweise" unter Berücksichtigung von Zielland und Versanddatum und Versandart und dessen typische Zustellzeit ins Zielland (recherchieren).
 2. **Warnung:** Sage NIEMALS "ist zugestellt", nur weil Status 7 ist. Status 7 heißt nur "versendet".
+3. Interpretation von 0,00 EUR Artikeln: Wenn bei einem Artikel in orderItems das Feld amounts leer ist ([]), handelt es sich um eine Position ohne Berechnung (Preis 0,00 EUR).
+   Dies sind in der Regel Bundle-Komponenten (Teil eines Sets), Austauschartikel (Gewährleistung) oder interne Verrechnungspositionen. Erwähne diese Artikel, aber weise keinen Preis aus.
+4. Bundle-Bestandteile: Wenn orderItems mit der Bezeichnung "- " beginnen, sind das Bundle-Bestandteile und gehören zum ersten überstehenden Artikel, der KEINEN "- " Präfix hat.
+5. shippingPackages: Hier ist das erste Array im Normalfall ohne Paketnummer (""), aber mit dem Gesamtgewicht der Bestellung. Dabei handelt es sich also nicht um ein physikalisches Paket, sondern nur
+   um die automatische Gewichtserfassung. Die Folge-Arrays haben typischerweise keine Gewichtsangabe bzw. "0" als Gewicht, enthalten aber eine Paketnummer -> physikalische Pakete
 
 **B. BEI ARTIKELN (fetchItemDetails / searchItemsByText):**
 

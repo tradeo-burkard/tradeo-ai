@@ -121,6 +121,9 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
  * UPDATED: Aggressives Stripping der OrderItems (nur ID, Name, Menge, Preise).
+ * UPDATED: Filtert 0,00 EUR Amounts komplett raus (leeres Array).
+ * UPDATED: Entfernt addressRelations aus dem Order-Objekt.
+ * UPDATED: Reduziert shippingPackages auf weight und packageNumber.
  */
 async function fetchOrderDetails(orderId) {
     try {
@@ -150,6 +153,7 @@ async function fetchOrderDetails(orderId) {
         }
 
         // 2. Adressen auflösen & Zielland ermitteln
+        // Hinweis: Wir nutzen addressRelations hier zum Auflösen, geben sie aber unten nicht mehr roh zurück.
         if (orderData.addressRelations && orderData.addressRelations.length > 0) {
             const addressPromises = orderData.addressRelations.map(async (rel) => {
                 try {
@@ -285,8 +289,8 @@ async function fetchOrderDetails(orderId) {
         // Behält nur: itemVariationId, quantity, orderItemName und strikte Amounts
         const cleanItems = (orderData.orderItems || []).map(item => {
             
-            // Amounts filtern (White-Listing)
-            const cleanAmounts = (item.amounts || []).map(amt => ({
+            // Amounts extrahieren
+            let cleanAmounts = (item.amounts || []).map(amt => ({
                 purchasePrice: amt.purchasePrice,
                 priceOriginalGross: amt.priceOriginalGross,
                 priceOriginalNet: amt.priceOriginalNet,
@@ -296,6 +300,16 @@ async function fetchOrderDetails(orderId) {
                 discount: amt.discount
             }));
 
+            // FILTER: Entferne Einträge, bei denen ALLE relevanten Preis-Felder 0 sind.
+            // Das sorgt dafür, dass Bundle-Bestandteile oder Null-Euro-Artikel ein leeres amounts Array haben.
+            cleanAmounts = cleanAmounts.filter(a => 
+                (a.purchasePrice || 0) !== 0 ||
+                (a.priceOriginalGross || 0) !== 0 ||
+                (a.priceOriginalNet || 0) !== 0 ||
+                (a.priceGross || 0) !== 0 ||
+                (a.priceNet || 0) !== 0
+            );
+
             // Nur die explizit gewünschten Felder zurückgeben
             return {
                 itemVariationId: item.itemVariationId,
@@ -304,6 +318,12 @@ async function fetchOrderDetails(orderId) {
                 amounts: cleanAmounts
             };
         });
+
+        // --- NEU: SHIPPING PACKAGES Cleaner (Nur weight & packageNumber) ---
+        const cleanShippingPackages = (orderData.shippingPackages || []).map(p => ({
+            weight: p.weight,
+            packageNumber: p.packageNumber
+        }));
 
         const cleanOrder = {
             id: orderData.id,
@@ -317,13 +337,16 @@ async function fetchOrderDetails(orderId) {
             
             // Bereinigte Listen
             relations: cleanRelations,
-            properties: cleanProperties(orderData.properties), // Hier nutzen wir den neuen Cleaner
-            dates: cleanDates(orderData.dates),              // Hier nutzen wir den neuen Cleaner
+            properties: cleanProperties(orderData.properties), 
+            dates: cleanDates(orderData.dates),             
             amounts: cleanList(orderData.amounts),
             orderReferences: cleanList(orderData.orderReferences),
-            orderItems: cleanItems, // NUTZT DEN NEUEN AGGRESSIVEN CLEANER
-            addressRelations: cleanList(orderData.addressRelations),
-            shippingPackages: cleanList(orderData.shippingPackages)
+            orderItems: cleanItems, 
+            
+            // addressRelations entfernt (da wir oben 'result.addresses' haben)
+            
+            // shippingPackages stark reduziert
+            shippingPackages: cleanShippingPackages
         };
 
         result.order = cleanOrder;
