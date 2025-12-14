@@ -6,7 +6,8 @@
   "permissions": ["storage"],
   "host_permissions": [
     "https://desk.tradeo.de/*",
-    "https://p7843.my.plentysystems.com/*"
+    "https://p7843.my.plentysystems.com/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "background": {
     "service_worker": "background.js"

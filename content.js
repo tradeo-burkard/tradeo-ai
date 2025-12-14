@@ -1638,8 +1638,13 @@ async function runAI(isInitial = false) {
     const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
     const cid = getTicketIdFromUrl() || "UNKNOWN";
 
-    // Live Lock
-    await acquireLock(cid, 'live'); 
+    const lock = await acquireLock(cid, 'live');
+    if (lock === 'WAIT') {
+        renderChatMessage('system', '⏳ Hintergrundanalyse läuft gerade – bitte kurz erneut senden.');
+        return;
+    }
+    if (lock === false) return;
+
 
     const storageData = await chrome.storage.local.get(['geminiApiKey']);
     const apiKey = storageData.geminiApiKey;
