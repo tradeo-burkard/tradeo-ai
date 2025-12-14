@@ -2,8 +2,9 @@
 const API_VERSION = "v1beta";
 const POLL_INTERVAL_MS = 2000; // Alle 2 Sekunden prüfen
 const LOCK_TTL_MS = 180000; // 3 Minuten Timeout für verwaiste Locks
-const AI_TIMEOUT_STANDARD = 180000; // 2 Min für Standard-Modelle (Flash, 2.5 Pro)
-const AI_TIMEOUT_SLOW = 600000;     // 10 Min für langsame Modelle (3 Pro)
+const AI_TIMEOUT_PER_TURN = 60000; // 60 Sekunden pro Turn
+const AI_TIMEOUT_SLOW = 600000;     // 10 Min total für langsame Modelle (3 Pro)
+const MAX_TURNS = 8; // Maximale Anzahl an Runden (Thought/Action Loops)
 
 const DASHBOARD_FOLDERS_TO_SCAN = [
     "https://desk.tradeo.de/mailbox/3/27",  // Servershop24 -> Nicht zugewiesen
@@ -486,8 +487,9 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     // --- TIMEOUT LOGIK (UPDATED) ---
     const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
     const isSlowModel = currentModel.includes("gemini-3-pro");
-    // Nutzung der neuen Konstanten:
-    const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : AI_TIMEOUT_STANDARD;
+    
+    // FIX: Timeout mal Turns nehmen (außer bei Slow Model, da ist es ein Hard-Cap)
+    const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
     const headlessPrompt = `
     ${SYSTEM_PROMPT}
@@ -546,14 +548,14 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     }
 }
 
-// Ersetze die Funktion executeHeadlessLoop durch diese Version:
 async function executeHeadlessLoop(contents, apiKeyIgnored, ticketId, allowTools) {
     // Info: apiKeyIgnored wird nicht mehr genutzt
     const model = window.aiState.currentModel || "gemini-2.5-pro";
     
     let executedTools = [];
     let turnCount = 0;
-    const maxTurns = allowTools ? 3 : 1;
+    // FIX: Konstante nutzen
+    const maxTurns = allowTools ? MAX_TURNS : 1;
 
     while (turnCount < maxTurns) {
         const payload = { contents: contents };
@@ -1628,7 +1630,9 @@ async function runAI(isInitial = false) {
 
     const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
     const isSlowModel = currentModel.includes("gemini-3-pro"); 
-    const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : AI_TIMEOUT_STANDARD; 
+    
+    // FIX: Timeout mal Turns nehmen
+    const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
     // 1. HAUPT-TASK
     const primaryTask = async () => {
@@ -1775,7 +1779,8 @@ async function executeGeminiLoop(contents, apiKeyIgnored, cid, allowTools) {
     const model = window.aiState.currentModel || "gemini-2.5-pro";
     
     let turnCount = 0;
-    const maxTurns = allowTools ? 3 : 1; 
+    // FIX: Konstante nutzen
+    const maxTurns = allowTools ? MAX_TURNS : 1; 
 
     while (turnCount < maxTurns) {
         const payload = { contents: contents };
@@ -2076,6 +2081,19 @@ async function callGeminiWithRotation(payload, model) {
         else throw new Error("Kein Gemini API Key gefunden. Bitte in den Einstellungen hinterlegen.");
     }
 
+    // --- SAFETY SETTINGS HINZUFÜGEN (WICHTIG!) ---
+    // Verhindert "parts.length 0" bei Wörtern wie "kill", "dead", "attack" etc.
+    if (!payload.safetySettings) {
+        payload.safetySettings = [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" }
+        ];
+    }
+    // ---------------------------------------------
+
     let lastError = null;
 
     // 2. Loop durch die Keys
@@ -2084,8 +2102,6 @@ async function callGeminiWithRotation(payload, model) {
         const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${currentKey}`;
 
         try {
-            // console.log(`Tradeo AI: Versuche API Key ${i + 1}/${keys.length}...`); // Optionales Debugging
-            
             const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2111,9 +2127,6 @@ async function callGeminiWithRotation(payload, model) {
         } catch (error) {
             lastError = error;
             // Wenn es ein Netzwerkfehler war, ggf. auch rotieren? 
-            // Hier rotieren wir nur bei explizitem 429 im Response-Block oben, 
-            // oder wenn fetch failed (z.B. Offline).
-            // Wir machen weiter im Loop, wenn es kein "harter" Logik-Fehler ist.
             if (error.message.includes("API Error") && !error.message.includes("429")) {
                  throw error; // Harter API Fehler (z.B. Bad Request) -> Abbruch
             }
