@@ -8,6 +8,7 @@ const PAYMENTMETHOD_MAP={"1":"Nachnahme","2":"Rechnung","4":"Barzahlung","6000":
 const SHIPPING_PROFILES={"19":"DHL Paket (Standard)","23":"Speditionsversand","24":"Selbstabholung","27":"DHL Express (vor 12)","28":"DHL Express (vor 9)","29":"DHL Paket mit Nachnahme","34":"FedEx Economy Express","35":"y FedEx Economy","36":"UPS Standard","39":"DHL Express International","40":"kein Versand","41":"UPS Express Saver","43":"Kundenspezifischer/Individueller Versand","44":"UPS Express","45":"DHL Express (Samstag)","46":"Swiss Post","48":"DHL Standard Europaket"};
 const ORDER_DATE_TYPE_MAP={"1":"Gelöscht am","2":"Erstellt am","3":"Zahlungseingang","4":"zuletzt aktualisiert","5":"Warenausgang am","6":"Retourniert am","7":"Zahlungsziel","8":"voraussichtliches Versanddatum","9":"Startdatum","10":"Enddatum","11":"voraussichtliches Lieferdatum","12":"Übertragungsdatum Marktplatz","13":"Kündigungsdatum","14":"Letzter Durchlauf","15":"Nächster Durchlauf","16":"Bestelldatum","17":"Abschlussdatum","18":"Spätestes Versanddatum","19":"Gültigkeitsdatum von der Bestellbestätigungseite","20":"Angebot gültig bis","21":"Erster Durchlauf","22":"Abrechnungszeitraum Start","23":"Abrechnungszeitraum Ende"};
 const ORDER_PROPERTY_TYPE_MAP={"1":"Lager","2":"Versandprofil","3":"Zahlungsart","4":"Zahlungsstatus","5":"Externes Versandprofil","6":"Sprache in Dokumenten","7":"Externe Auftrags-ID","8":"Kundenzeichen","9":"Mahnstufe","10":"Verkäuferkonto","11":"Gewicht","12":"Breite","13":"Länge","14":"Höhe","15":"Markierung","16":"Externe Token-ID","17":"Externe Artikel-ID","18":"Gutscheincode","19":"Gutscheintyp","20":"Originallager bei Auftragsanlage","21":"Originalmenge bei Auftragsanlage","22":"Kategorie","23":"Marktplatzgebühr","24":"Warenbestand -teilweise- zurückgebucht","25":"Streitstatus","26":"Auftragsänderungen durch Endkunden verboten","27":"Intervaltyp","28":"Intervalwert","29":"Einheit","30":"Lagerort reserviert","31":"Externe Versandartikel-ID","32":"Anteilige Versandkosten","33":"Dokumentennummer","34":"Umsatzsteuer-Identifikationsnummer","35":"Retourengrund","36":"Artikelstatus","37":"Fulfillment-Center-ID","38":"Fulfillment-Center-Länderkürzel","39":"ID der zugehörigen Nachbestellungs-Position","40":"Listing-Typ","41":"Externe Auftragspositions-ID","42":"Retourenschlüssel-ID","43":"Kommunikationsschlüssel-ID","44":"Mit Amazon VCS","45":"Zahlungsvorgangs-ID","46":"Verkaufter Gutschein-Code","47":"Externer Umsatzsteuer-Service","48":"Auftragspositionsstatus","49":"Externe Lieferscheinnummer","50":"SAP-Bestellnummer","51":"Abrechnungs-ID","52":"Rabatt","53":"Artikel VPE","54":"Artikel Mindestabnahme","55":"Artikel Lieferzeit in Tagen","56":"Artikel Rabattfähigkeit","57":"Restwert des Artikels (in %)","58":"Retoure durch den Kunde","60":"Verkäufer-ID","61":"Berichts-ID","62":"Externe Quellauftrags-ID","63":"Bevorzugte Lagerort-ID","64":"Versandetikett von Amazon","65":"Mit Expressversand","66":"Ursprung des Auftrags","67":"Reparaturstatus","68":"Schnittstelle der Auftragsanlage","69":"ID des Amazon-Umsatzsteuer-Kalkulationsberichts","70":"Bezugskosten - Frachtkosten","71":"Bezugskosten - Verpackungskosten","72":"Bezugskosten - Transportversicherung","73":"Bezugskosten - Rollgeld","74":"Bezugskosten - Porto","75":"Bezugskosten - Zölle","76":"Bezugskosten - Vermittlungsgebühren","77":"Bezugskosten - Mindermengenzuschläge","78":"Bezugskosten - Sonstige Kosten","79":"ID der Amazon-Transaktion","80":"externe Retouren-ID","81":"Bestelleigenschaft-ID","82":"Wert der Bestelleigenschaft","83":"Bestelleigenschaft Gruppen-ID","84":"Auto fulfilled eBay order","85":"Lieferanten-Artikel-Bezeichnung","86":"Erzwinge Brutto- oder Netto-Auftrag","87":"Plenty ID des Abonnements","88":"Marktplatz Steuer-ID","89":"Marktplatz EORI","90":"Reverse-Charge-Verfahren gem. Artikel 194 der MwStSystRL","91":"Erstellung von internen steuerrelevanten Dokumenten verboten","92":"Altgerätemitnahme","93":"Multi-Channel Order Processing Auftragsstatus-ID","94":"Gepackt","95":"URL zu einer externen Datei mit Kundenanpassungen des Artikels","96":"URL zu einer externen Seite mit Kundenanpassungen des Artikels","97":"externe Erstattungs-ID","98":"SKU","99":"externer Status der Auftragsposition","100":"Berechnung von Teilpreisen in Abonnements","101":"Priority for picking","102":"Gutschriftsgrund","103":"Ist Transparenz","104":"Listing-ID","105":"Channel Layer: Externe Auftragspositions-ID","106":"Zolldatenübermittlung","107":"Rückwirkende Abrechnung in Abonnements","108":"Öko-Beteiligungsgebühr","109":"Verpackungsgebühr","110":"Verkaufskanal-Versand-ID","111":"Reservierungsfehler","992":"Handelsvertreter","993":"Ebay Kaufabbruchs-ID","994":"Mit Ebay Plus","995":"Fulfillment-Service","996":"Mit Click und Collect","997":"Mit Amazon TCS","998":"Ebay Zahlungsvorgangs-ID","999":"Einwilligung zur Datenübermittlung an den Versanddienstleister e","1000":"DHL Shipping (Versenden) - Aufpreis","1001":"DHL Shipping (Versenden) - Wunschtag","1002":"DHL Shipping (Versenden) - Wunschort","1003":"DHL Shipping (Versenden) - Wunschzeit","1004":"DHL Shipping (Versenden) - Name des Wunschnachbars","1005":"DHL Shipping (Versenden) - Adresse des Wunschnachbars","1006":"AmazonInboundShipment: Sendungs-Id","1007":"AmazonInboundShipment: Amazon Konto Id","1008":"eBay Fulfillment: Outbound order number","1009":"eBay Fulfillment: eBay fulfilled order","1010":"Id des OrderItems, zu dem dieses Upgrade Order Item geh�rt","1011":"Id des OrderItems, welches dieses Upgrade Order Item erfordert","1012":"Packed","1013":"Shopify Bestelldatum","1014":"GLS ShipIT - IdentPin:pin","1015":"GLS ShipIT - IdentPin:birthday","1016":"GLS ShipIT - ServiceDeposit","1017":"GLS ShipIT - DeliverAtWork:recipientName","1018":"GLS ShipIT - DeliverAtWork:alternateRecipientName","1019":"GLS ShipIT - DeliverAtWork:building","1020":"GLS ShipIT - DeliverAtWork:floor","1021":"GLS ShipIT - DeliverAtWork:room","1022":"GLS ShipIT - DeliverAtWork:phoneNumber"};
+const ADDRESS_OPTION_TYPE_MAP={"1":"VAT number (USt-IdNr.)","2":"External address ID (Externe Adress-ID)","3":"Entry certificate (Eintrittsnachweis)","4":"Telephone (Telefon)","5":"Email (E-Mail)","6":"Post number (Postnummer)","7":"Personal id (Personen-ID)","8":"BBFC (age rating)","9":"Birthday (Geburtstag)","10":"Session ID","11":"Title (Titel)","12":"Contact person (Ansprechpartner)","13":"External customer ID (Externe Kunden-ID)","100":"(custom typeId 100)","101":"(custom typeId 101)"};
 
 /**
  * Holt Credentials aus dem Speicher, loggt sich ein und gibt den Token zurück.
@@ -121,9 +122,11 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
  * UPDATED: Aggressives Stripping der OrderItems (nur ID, Name, Menge, Preise).
- * UPDATED: Filtert 0,00 EUR Amounts komplett raus (leeres Array).
- * UPDATED: Entfernt addressRelations aus dem Order-Objekt.
+ * UPDATED: Filtert 0,00 EUR Amounts komplett raus.
  * UPDATED: Reduziert shippingPackages auf weight und packageNumber.
+ * UPDATED: Reduziert Stocks massiv auf variationId und stockNet.
+ * UPDATED: Adressen extrem bereinigt (keine IDs, Timestamps etc.).
+ * UPDATED: ShippingInfo minimiert (kein Provider/ProfileName mehr).
  */
 async function fetchOrderDetails(orderId) {
     try {
@@ -139,8 +142,6 @@ async function fetchOrderDetails(orderId) {
             stocks: [],
             addresses: [],
             shippingInfo: {
-                profileName: "Unknown",
-                provider: "Unknown",
                 destinationCountry: "Unknown", // Wird unten befüllt
                 shippedAt: null
             }
@@ -153,22 +154,27 @@ async function fetchOrderDetails(orderId) {
         }
 
         // 2. Adressen auflösen & Zielland ermitteln
-        // Hinweis: Wir nutzen addressRelations hier zum Auflösen, geben sie aber unten nicht mehr roh zurück.
         if (orderData.addressRelations && orderData.addressRelations.length > 0) {
             const addressPromises = orderData.addressRelations.map(async (rel) => {
                 try {
                     const addrDetail = await makePlentyCall(`/rest/accounts/addresses/${rel.addressId}`);
                     
-                    // Prüfen ob dies die Lieferadresse ist (TypeId 2)
+                    // Prüfen ob dies die Lieferadresse ist (TypeId 2) -> Zielland bestimmen
                     if (rel.typeId === 2 && addrDetail) {
                         const cId = addrDetail.countryId;
-                        // Fallback: Wenn ID nicht in Liste, zeige die rohe ID
                         result.shippingInfo.destinationCountry = COUNTRY_MAP[cId] || `Land-ID ${cId}`;
                     }
 
+                    // --- ADDRESS STRIPPING ---
+                    // Wir entfernen die unerwünschten Felder per Destructuring
+                    const { 
+                        id, stateId, readOnly, checkedAt, createdAt, updatedAt, title, contactPerson, // Weg damit
+                        ...cleanAddr // Der Rest bleibt
+                    } = addrDetail;
+
                     return { 
                         relationType: rel.typeId === 1 ? "Billing/Rechnung" : (rel.typeId === 2 ? "Shipping/Lieferung" : "Other"),
-                        ...addrDetail 
+                        ...cleanAddr 
                     };
                 } catch (e) {
                     return null;
@@ -178,7 +184,7 @@ async function fetchOrderDetails(orderId) {
             result.addresses = loadedAddresses.filter(a => a !== null);
         }
 
-        // 3. Bestände holen
+        // 3. Bestände holen & STRIPPEN
         if (orderData.orderItems) {
             const variationIds = orderData.orderItems
                 .filter(item => item.typeId === 3 || item.typeId === 1) // Artikel & Variationen
@@ -189,36 +195,24 @@ async function fetchOrderDetails(orderId) {
             const stockPromises = uniqueVarIds.map(async (vid) => {
                 try {
                     const stockData = await makePlentyCall(`/rest/stockmanagement/stock?variationId=${vid}&warehouseId=1`);
-                    return { variationId: vid, data: stockData };
+                    
+                    let net = 0;
+                    if (stockData && Array.isArray(stockData.entries) && stockData.entries.length > 0) {
+                        net = parseFloat(stockData.entries[0].stockNet || 0);
+                    }
+
+                    return { variationId: vid, stockNet: net };
                 } catch (e) {
-                    return { variationId: vid, error: "Could not fetch stock" };
+                    return { variationId: vid, stockNet: 0, error: "Fetch Fail" };
                 }
             });
             result.stocks = await Promise.all(stockPromises);
         }
 
-        // 4. Versandart-Name auflösen & Provider bestimmen (Vom Shipping Profile auf Order Root Ebene)
-        if (orderData.shippingProfileId) {
-            try {
-                const profileData = await makePlentyCall(`/rest/orders/shipping/profiles/${orderData.shippingProfileId}`);
-                result.shippingInfo.profileName = profileData.backendName || profileData.name || ("ID_" + orderData.shippingProfileId);
-                
-                const lowerName = result.shippingInfo.profileName.toLowerCase();
-                if (lowerName.includes('dhl')) result.shippingInfo.provider = "DHL";
-                else if (lowerName.includes('ups')) result.shippingInfo.provider = "UPS";
-                else if (lowerName.includes('gls')) result.shippingInfo.provider = "GLS";
-                else if (lowerName.includes('dpd')) result.shippingInfo.provider = "DPD";
-                else if (lowerName.includes('spedition')) result.shippingInfo.provider = "Spedition";
-                
-            } catch (e) {
-                console.warn("Konnte Shipping Profile nicht laden:", e);
-                result.shippingInfo.error = e.toString();
-            }
-        }
+        // 4. (EHEMALS Versandart-Name auflösen) -> ENTFERNT, da nicht mehr im Output gewünscht.
 
-        // --- 5. DATA STRIPPING (Optimiert & Refined) ---
+        // --- 5. DATA STRIPPING (Rest der Order Daten) ---
         
-        // Helper: Entfernt 'orderId' aus einem Objekt
         const removeOrderId = (obj) => {
             if (!obj || typeof obj !== 'object') return obj;
             const { orderId, ...rest } = obj;
@@ -227,69 +221,46 @@ async function fetchOrderDetails(orderId) {
 
         const cleanList = (list) => (list || []).map(removeOrderId);
 
-        // Spezieller Cleaner für Relations: Filtert Warehouse raus UND entfernt orderId
+        // Relations: Filtert Warehouse raus UND entfernt orderId
         const cleanRelations = (orderData.relations || [])
             .filter(r => r.referenceType !== 'warehouse')
             .map(removeOrderId);
 
-        // --- NEU: DATES Cleaner mit ORDER_DATE_TYPE_MAP ---
+        // DATES Cleaner
         const cleanDates = (list) => (list || []).map(d => {
             const { orderId, typeId, ...rest } = d;
             const newObj = { typeId, ...rest };
-            
-            // Name aus Map auflösen
             const resolvedName = ORDER_DATE_TYPE_MAP[String(typeId)];
-            if (resolvedName) {
-                newObj.typeName = resolvedName;
-            }
+            if (resolvedName) newObj.typeName = resolvedName;
             return newObj;
         });
 
-        // --- NEU: PROPERTIES Cleaner mit ORDER_PROPERTY_TYPE_MAP & Filter ---
+        // PROPERTIES Cleaner
         const cleanProperties = (list) => (list || []).reduce((acc, p) => {
             if (!p) return acc;
-            
-            // FILTER: TypeId 1 (Lager) komplett ignorieren
-            if (p.typeId == 1) return acc;
+            if (p.typeId == 1) return acc; // TypeId 1 (Lager) ignorieren
 
-            // Destructuring: orderId wegwerfen
             const { orderId, typeId, value, ...rest } = p;
-            
-            // Neuaufbau
             const newObj = { typeId };
-            
-            // 1. Namen aus Map auflösen (Generisch)
             const resolvedTypeName = ORDER_PROPERTY_TYPE_MAP[String(typeId)];
-            if (resolvedTypeName) {
-                newObj.typeName = resolvedTypeName;
-            }
+            if (resolvedTypeName) newObj.typeName = resolvedTypeName;
 
-            // 2. Werte auflösen (Spezifisch für wichtige IDs)
-            // ID 2: Versandprofil
             if (typeId === 2) {
                 const resolvedProfile = SHIPPING_PROFILES[String(value)];
                 newObj.versandprofilName = resolvedProfile || `Unbekannt (ID: ${value})`;
             }
-
-            // ID 3: Zahlungsart
             if (typeId === 3) {
                 const resolvedPayment = PAYMENTMETHOD_MAP[String(value)];
-                if (resolvedPayment) {
-                    newObj.paymentMethodName = resolvedPayment;
-                }
+                if (resolvedPayment) newObj.paymentMethodName = resolvedPayment;
             }
             
-            // Restliche Daten anhängen
             acc.push({ ...newObj, value, ...rest });
             return acc;
         }, []);
 
 
-        // Spezieller Cleaner für Items: MASSIVE REDUKTION
-        // Behält nur: itemVariationId, quantity, orderItemName und strikte Amounts
+        // Items: MASSIVE REDUKTION
         const cleanItems = (orderData.orderItems || []).map(item => {
-            
-            // Amounts extrahieren
             let cleanAmounts = (item.amounts || []).map(amt => ({
                 purchasePrice: amt.purchasePrice,
                 priceOriginalGross: amt.priceOriginalGross,
@@ -300,8 +271,6 @@ async function fetchOrderDetails(orderId) {
                 discount: amt.discount
             }));
 
-            // FILTER: Entferne Einträge, bei denen ALLE relevanten Preis-Felder 0 sind.
-            // Das sorgt dafür, dass Bundle-Bestandteile oder Null-Euro-Artikel ein leeres amounts Array haben.
             cleanAmounts = cleanAmounts.filter(a => 
                 (a.purchasePrice || 0) !== 0 ||
                 (a.priceOriginalGross || 0) !== 0 ||
@@ -310,7 +279,6 @@ async function fetchOrderDetails(orderId) {
                 (a.priceNet || 0) !== 0
             );
 
-            // Nur die explizit gewünschten Felder zurückgeben
             return {
                 itemVariationId: item.itemVariationId,
                 quantity: item.quantity,
@@ -319,7 +287,7 @@ async function fetchOrderDetails(orderId) {
             };
         });
 
-        // --- NEU: SHIPPING PACKAGES Cleaner (Nur weight & packageNumber) ---
+        // SHIPPING PACKAGES Cleaner
         const cleanShippingPackages = (orderData.shippingPackages || []).map(p => ({
             weight: p.weight,
             packageNumber: p.packageNumber
@@ -334,18 +302,12 @@ async function fetchOrderDetails(orderId) {
             createdAt: orderData.createdAt,
             updatedAt: orderData.updatedAt,
             ownerId: orderData.ownerId,
-            
-            // Bereinigte Listen
             relations: cleanRelations,
             properties: cleanProperties(orderData.properties), 
             dates: cleanDates(orderData.dates),             
             amounts: cleanList(orderData.amounts),
             orderReferences: cleanList(orderData.orderReferences),
             orderItems: cleanItems, 
-            
-            // addressRelations entfernt (da wir oben 'result.addresses' haben)
-            
-            // shippingPackages stark reduziert
             shippingPackages: cleanShippingPackages
         };
 
