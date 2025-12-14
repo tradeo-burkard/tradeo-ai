@@ -120,8 +120,7 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
- * UPDATED: Stripping optimiert, typeId 1 (Lager) bei Properties entfernt.
- * UPDATED: Namen für Properties und Dates kommen jetzt aus den Konstanten Maps.
+ * UPDATED: Aggressives Stripping der OrderItems (nur ID, Name, Menge, Preise).
  */
 async function fetchOrderDetails(orderId) {
     try {
@@ -282,13 +281,28 @@ async function fetchOrderDetails(orderId) {
         }, []);
 
 
-        // Spezieller Cleaner für Items: Entfernt orderId auch aus dem Item selbst
+        // Spezieller Cleaner für Items: MASSIVE REDUKTION
+        // Behält nur: itemVariationId, quantity, orderItemName und strikte Amounts
         const cleanItems = (orderData.orderItems || []).map(item => {
-            const cleanItem = removeOrderId(item);
-            if (cleanItem.properties) cleanItem.properties = cleanProperties(cleanItem.properties); // Props auch hier reinigen
-            if (cleanItem.amounts) cleanItem.amounts = cleanList(cleanItem.amounts);
-            if (cleanItem.dates) cleanItem.dates = cleanDates(cleanItem.dates); // Dates auch hier reinigen falls vorhanden
-            return cleanItem;
+            
+            // Amounts filtern (White-Listing)
+            const cleanAmounts = (item.amounts || []).map(amt => ({
+                purchasePrice: amt.purchasePrice,
+                priceOriginalGross: amt.priceOriginalGross,
+                priceOriginalNet: amt.priceOriginalNet,
+                priceGross: amt.priceGross,
+                priceNet: amt.priceNet,
+                surcharge: amt.surcharge,
+                discount: amt.discount
+            }));
+
+            // Nur die explizit gewünschten Felder zurückgeben
+            return {
+                itemVariationId: item.itemVariationId,
+                quantity: item.quantity,
+                orderItemName: item.orderItemName,
+                amounts: cleanAmounts
+            };
         });
 
         const cleanOrder = {
@@ -307,7 +321,7 @@ async function fetchOrderDetails(orderId) {
             dates: cleanDates(orderData.dates),              // Hier nutzen wir den neuen Cleaner
             amounts: cleanList(orderData.amounts),
             orderReferences: cleanList(orderData.orderReferences),
-            orderItems: cleanItems,
+            orderItems: cleanItems, // NUTZT DEN NEUEN AGGRESSIVEN CLEANER
             addressRelations: cleanList(orderData.addressRelations),
             shippingPackages: cleanList(orderData.shippingPackages)
         };
