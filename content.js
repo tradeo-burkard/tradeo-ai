@@ -701,11 +701,22 @@ function extractContextFromDOM(docRoot) {
         if (attachmentsEl) {
             fileList = Array.from(attachmentsEl.querySelectorAll('li')).map(li => {
                 const link = li.querySelector('a.attachment-link');
-                const sizeSpan = li.querySelector('.text-help'); 
+                const sizeSpan = li.querySelector('.text-help');
                 const name = link ? link.innerText.trim() : "";
                 const size = sizeSpan ? sizeSpan.innerText.trim() : "";
                 return name ? (size ? `${name} (${size})` : name) : null;
             }).filter(Boolean);
+        }
+
+        // ✅ FIX: "Ghost/Placeholder"-Threads ignorieren (verhindert Re-Hashing)
+        if (
+            senderName === "Unbekannt" &&
+            type === "unknown" &&
+            (!bodyText || bodyText.trim() === "") &&
+            recipientsList.length === 0 &&
+            fileList.length === 0
+        ) {
+            return; // Thread komplett überspringen
         }
 
         // 6. JSON OBJEKT BAUEN
