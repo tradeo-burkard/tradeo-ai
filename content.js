@@ -266,7 +266,33 @@ function detectPageType() {
 
 // --- LOGIC: INBOX SCANNER ---
 
+// --- LOGIC: INBOX SCANNER ---
+
 function scanInboxTable() {
+    // 1. URL Check: Befinden wir uns in einem Ordner, der gescannt werden SOLL?
+    const currentUrl = window.location.href;
+    
+    // Wir prüfen, ob die aktuelle URL mit einem der Einträge in DASHBOARD_FOLDERS_TO_SCAN übereinstimmt.
+    // Wir achten darauf, dass wir Query-Parameter (?page=2) ignorieren oder korrekt behandeln,
+    // um "falsche Freunde" (z.B. Ordner ID 27 vs 275) zu vermeiden.
+    const isAllowedFolder = DASHBOARD_FOLDERS_TO_SCAN.some(allowedUrl => {
+        // Fall A: Exakter Match (z.B. .../mailbox/3/27)
+        if (currentUrl === allowedUrl) return true;
+        // Fall B: Match mit Query Params (z.B. .../mailbox/3/27?page=2)
+        if (currentUrl.startsWith(allowedUrl + '?')) return true;
+        // Fall C: Match mit Slash (z.B. .../mailbox/3/27/...)
+        if (currentUrl.startsWith(allowedUrl + '/')) return true;
+        
+        return false;
+    });
+
+    if (!isAllowedFolder) {
+        // Wir sind in einem Ordner (z.B. Spam oder Kollegen), der nicht definiert ist.
+        // -> Kein Pre-Fetch.
+        return;
+    }
+
+    // 2. Scan durchführen (nur wenn erlaubt)
     const rows = Array.from(document.querySelectorAll('tr.conv-row[data-conversation_id]'));
     
     rows.forEach(row => {
@@ -1945,11 +1971,16 @@ async function executeToolAction(fnName, fnArgs, cid) {
         actionName = 'GET_CUSTOMER_DETAILS'; actionPayload = { contactId: fnArgs.contactId };
     } else if (fnName === 'searchItemsByText') {
         actionName = 'SEARCH_ITEMS_BY_TEXT';
-        actionPayload = { searchText: fnArgs.searchText, mode: fnArgs.mode || 'nameAndDescription', maxResults: fnArgs.maxResults || 30 };
+        actionPayload = { 
+            searchText: fnArgs.searchText, 
+            mode: fnArgs.mode || 'nameAndDescription', 
+            maxResults: fnArgs.maxResults || 30,
+            onlyWithStock: (typeof fnArgs.onlyWithStock === 'boolean') ? fnArgs.onlyWithStock : true // Default true
+        };
     }
 
     if (!actionName) return { error: "Unknown Tool" };
-
+    // ... rest of function remains same
     const apiResult = await new Promise(resolve => {
         chrome.runtime.sendMessage({ action: actionName, ...actionPayload }, (response) => {
              if (chrome.runtime.lastError) resolve({ success: false, error: chrome.runtime.lastError.message });
@@ -2026,10 +2057,16 @@ function validateAndNormalizeToolCall(call) {
         const searchText = String(args.searchText || "").trim();
         if (!searchText || searchText.length < 3) return null;
         const mode = (args.mode === 'nameAndDescription' || args.mode === 'name') ? args.mode : 'nameAndDescription';
+        
         let maxResults = Number(args.maxResults);
         if (!Number.isFinite(maxResults)) maxResults = 10;
         maxResults = Math.max(1, Math.min(25, Math.floor(maxResults)));
-        return { ...call, args: { searchText, mode, maxResults } };
+        
+        // NEU: Boolean Check
+        let onlyWithStock = true;
+        if (typeof args.onlyWithStock === 'boolean') onlyWithStock = args.onlyWithStock;
+
+        return { ...call, args: { searchText, mode, maxResults, onlyWithStock } };
     }
 
     return null;
@@ -2079,11 +2116,16 @@ Verfügbare Tools:
    - Nur nutzen, wenn eine konkrete Contact-ID bekannt ist.
    - Es ist immer eine sechsstellige Zahl.
    - "Kundennummer 223232" / "Kunde 223232" / "Customer 223232" sind gängige Ausdrücke.
-4) searchItemsByText({ "searchText": "STRING", "mode": "name"|"nameAndDescription", "maxResults": NUMBER })
+4) searchItemsByText({ "searchText": "STRING", "mode": "name"|"nameAndDescription", "maxResults": NUMBER, "onlyWithStock": BOOLEAN })
+   - maxResults nie kleiner als 3.
    - Für Freitextsuche (z.B. "Dell R740", "Festplatte 900GB").
+   - Ergebnisse werden automatisch nach BESTAND (absteigend) sortiert.
+   - KRITISCH: Wenn jemand einfach nur reihenweise Anforderungen auflistet (z.B. was sein Wunschserver alles installed haben soll), dann nicht reihenweise searchItemsByText ausführen.
+     Der Kunde muss konkret nach etwas suchen, um den Funktionsaufruf zu rechtfertigen!
    - bei SSDs fordern die Kunden oft "1 TB" als Größe, das musst du als "960GB" suchen. Gleiches für 2TB - 1.92TB usw. Falls der Kunde nach 3 - 4 TB SSDs fragt, musst halt das/die nächste/n nehmen, z.B. 3.84TB und 6.4TB.
-   - Größenangaben immer ohne Leerzeichen: Wenn der Kunde nach "32 GB Registered RAM" fragt, muss daraus "32GB" im Funktionsaufruf werden.
+   - Größenangaben immer ohne Leerzeichen (z.B. "32GB").
    - Nutze mode="name", wenn der Begriff im Titel stehen muss.
+   - "onlyWithStock": true (Standard) zeigt nur lagernde Artikel. Setze auf false, wenn der Kunde explizit auch nicht lieferbare Artikel sucht.
 
 OUTPUT FORMAT:
 {
@@ -2610,7 +2652,8 @@ window.debugPlentyItemSearch = async function(rawSearch) {
                 action: 'SEARCH_ITEMS_BY_TEXT',
                 searchText,
                 mode: 'nameAndDescription', // oder 'name'
-                maxResults: 30
+                maxResults: 30,
+                onlyWithStock: true // <--- NEU: Explizit setzen (Standard der AI)
             }, (res) => resolve(res));
         });
 
@@ -2619,6 +2662,7 @@ window.debugPlentyItemSearch = async function(rawSearch) {
         if (response && response.success) {
             console.log(`✅ Fertig in ${ms}ms`);
             console.log("META:", response.data?.meta);
+            // Info: Sortierung ist jetzt automatisch nach stockNet absteigend
             console.table(response.data?.results || []);
             console.log("📋 JSON Output:");
             console.log(JSON.stringify(response.data, null, 2));

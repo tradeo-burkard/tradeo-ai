@@ -800,17 +800,22 @@ async function fetchAllVariations(params) {
 async function searchItemsByText(searchText, options = {}) {
     __ensureDbCache();
 
-    // ---- Optionen / Modi parsen (kompatibel zu deinem Tool-Call) ----
+    // ---- Optionen / Modi parsen ----
     let mode = "nameAndDescription";
     let maxResults = 25;
+    let onlyWithStock = true; // STANDARD: Nur Artikel mit Bestand anzeigen
 
     if (typeof options === "string") {
         mode = (options === "name") ? "name" : "nameAndDescription";
     } else if (options && typeof options === "object") {
         if (options.mode === "name") mode = "name";
         if (typeof options.maxResults === "number") maxResults = options.maxResults;
+        // Expliziter Check auf Boolean, damit man es auch auf false setzen kann
+        if (typeof options.onlyWithStock === "boolean") onlyWithStock = options.onlyWithStock;
     }
-    maxResults = Math.max(1, Math.min(25, Math.floor(maxResults)));
+    
+    // Safety Limits
+    maxResults = Math.max(1, Math.min(50, Math.floor(maxResults)));
 
     const q = String(searchText || "").trim();
     if (!q) return { meta: { type: "EMPTY" }, results: [] };
@@ -820,18 +825,15 @@ async function searchItemsByText(searchText, options = {}) {
         .map(__normQueryToken)
         .filter(t => t.length > 1);
 
-    // Duplikate raus
     tokens = Array.from(new Set(tokens));
 
     if (tokens.length === 0) return { meta: { type: "EMPTY" }, results: [] };
-
-    // Heuristik: längste Tokens zuerst => schnelleres "early fail"
     tokens.sort((a, b) => b.length - a.length);
 
-    // 2) Reiner DB-Scan (direkt, ohne Regex/Norm im Loop)
+    // 2) Reiner DB-Scan
     const hayArr = (mode === "name") ? __HAY_NAME : __HAY_FULL;
-
     const hits = [];
+    
     for (let i = 0; i < hayArr.length; i++) {
         const hay = hayArr[i];
         if (!hay) continue;
@@ -843,14 +845,13 @@ async function searchItemsByText(searchText, options = {}) {
             const tok = tokens[k];
             const pos = hay.indexOf(tok);
             if (pos === -1) { ok = false; break; }
-            score += pos; // simples Ranking: früher im Text = besser
+            score += pos; 
         }
         if (!ok) continue;
 
         hits.push({ i, score });
     }
 
-    // Keine Treffer
     if (hits.length === 0) {
         return {
             meta: {
@@ -865,98 +866,107 @@ async function searchItemsByText(searchText, options = {}) {
         };
     }
 
-    // 3) Sortieren
+    // 3) Sortieren nach Text-Relevanz (bester Score zuerst)
     hits.sort((a, b) => a.score - b.score);
 
-    // --- NEU: FILTERING vor dem Slicing (Blacklist) ---
-    // Wir filtern anhand des Original-Namens (__NAME)
-    const FORBIDDEN_TERMS = ["-upgrade", "hardware care pack", "-bundle"];
-    
+    // 4) Filtering (Blacklist)
+    const FORBIDDEN_TERMS = ["-upgrade", "hardware care pack", "-bundle", "cto:"];
     const validHits = hits.filter(hit => {
         const rawName = (__NAME[hit.i] || "").toLowerCase();
-        // Wenn einer der Begriffe enthalten ist -> rausfiltern
         return !FORBIDDEN_TERMS.some(term => rawName.includes(term));
     });
 
-    // Jetzt erst TopN nehmen (damit wir maxResults *gültige* Treffer bekommen)
-    const top = validHits.slice(0, maxResults);
+    // 5) Buffer-Logic:
+    // Da wir gleich noch nach Bestand filtern wollen, müssen wir mehr Items anreichern,
+    // als wir am Ende ausgeben wollen (sonst stehen wir mit leeren Händen da).
+    // Wir nehmen Faktor 3, aber maximal 100 Items, um die API nicht zu sprengen.
+    const bufferSize = Math.min(100, maxResults * 3);
+    const topCandidates = validHits.slice(0, bufferSize);
 
-    // 4) Enrichment (nur TopN): Item + Varianten -> Stock + Price
+    // 6) Enrichment: Daten holen (Stock & Price)
     const enrichOne = async (hit) => {
         const idx = hit.i;
         const itemId = __ITEM_ID[idx];
         const dbName = __NAME[idx];
         const dbDescHtml = __DESC[idx];
 
-        // FIX: 'with=variations' (String) statt 'with[]=variations' (Array)
-        const item = await makePlentyCall(`/rest/items/${itemId}?with=variations&lang=de`);
+        try {
+            const item = await makePlentyCall(`/rest/items/${itemId}?with=variations&lang=de`);
+            const vars = Array.isArray(item?.variations) ? item.variations : [];
+            
+            // Beste Variante finden
+            let v = vars.find(x => x?.isActive === true && x?.isMain === true)
+                 || vars.find(x => x?.isActive === true)
+                 || vars[0]
+                 || null;
 
-        const vars = Array.isArray(item?.variations) ? item.variations : [];
-        // Nimm am liebsten: active+main, sonst active, sonst erste
-        let v = vars.find(x => x?.isActive === true && x?.isMain === true)
-             || vars.find(x => x?.isActive === true)
-             || vars[0]
-             || null;
+            const variationId = v?.id;
+            const model = v?.model || "";
 
-        const variationId = v?.id;
-        const model = v?.model || "";
+            let stockNet = 0;
+            let price = "N/A";
 
-        let stockNet = 0;
-        let price = "N/A";
+            if (variationId) {
+                const [stockRes, priceRes] = await Promise.all([
+                    makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
+                    makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
+                ]);
 
-        if (variationId) {
-            const [stockRes, priceRes] = await Promise.all([
-                makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
-                makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
-            ]);
+                stockNet = (Array.isArray(stockRes) && stockRes[0] && (stockRes[0].netStock ?? stockRes[0].stockNet) != null)
+                    ? parseFloat(stockRes[0].netStock ?? stockRes[0].stockNet)
+                    : 0;
 
-            stockNet = (Array.isArray(stockRes) && stockRes[0] && (stockRes[0].netStock ?? stockRes[0].stockNet) != null)
-                ? (stockRes[0].netStock ?? stockRes[0].stockNet)
-                : 0;
+                price = (Array.isArray(priceRes) && priceRes[0] && priceRes[0].price != null)
+                    ? priceRes[0].price
+                    : "N/A";
+            }
 
-            price = (Array.isArray(priceRes) && priceRes[0] && priceRes[0].price != null)
-                ? priceRes[0].price
-                : "N/A";
+            const descText = stripHtmlToText(dbDescHtml);
+            const lines = descText.split("\n").map(s => s.trim()).filter(Boolean);
+            let name = (dbName || lines[0] || String(itemId)).replace(/^Beschreibung:\s*/i, "").trim();
+            let description = (lines.length > 1) ? lines.slice(1).join("\n") : "";
+
+            return {
+                itemNumber: String(itemId),
+                variationId: variationId,
+                model,
+                name,
+                description,
+                stockNet, // Ist jetzt garantiert number
+                price
+            };
+        } catch (e) {
+            console.warn("Enrich failed for Item " + itemId, e);
+            return null;
         }
-
-        // Name/Desc: wir nehmen DB (schnell + konsistent), aber strippen HTML für description
-        const descText = stripHtmlToText(dbDescHtml);
-        const lines = descText.split("\n").map(s => s.trim()).filter(Boolean);
-
-        let name = (dbName || lines[0] || String(itemId)).replace(/^Beschreibung:\s*/i, "").trim();
-        let description = (lines.length > 1) ? lines.slice(1).join("\n") : "";
-
-        return {
-            itemNumber: String(itemId), // NEU: itemNumber statt articleNumber
-            model,
-            name,
-            description,
-            stockNet,
-            price
-        };
     };
 
-    const results = await __mapLimit(top, 50, enrichOne);
+    let results = await __mapLimit(topCandidates, 20, enrichOne);
+    // Fehlerhafte Enrichments rausfiltern
+    results = results.filter(r => r !== null);
 
-    // --- CLEAN RETURN OBJECT ---
+    // 7) Filter: Nur Bestand? (Standard: JA)
+    if (onlyWithStock) {
+        results = results.filter(r => r.stockNet > 0);
+    }
+
+    // 8) Sortierung: Höchster Bestand zuerst!
+    results.sort((a, b) => b.stockNet - a.stockNet);
+
+    // 9) Finaler Cut auf gewünschte Anzahl
+    results = results.slice(0, maxResults);
+
     return {
         meta: {
             type: "PLENTY_ITEM_DB_SEARCH_FAST",
             dbSize: hayArr.length,
             mode,
             tokens,
-            matchesFound: hits.length, // Gesamttreffer vor Filterung
-            returned: results.length   // Tatsächliche Ergebnisse nach Filter & Limit
+            matchesFound: hits.length, // Treffer im Textindex
+            returned: results.length,  // Nach Filter & Limit
+            sortedBy: "stockNet desc",
+            onlyWithStock
         },
         results
     };
 }
-
-async function searchItemsByNameText(searchString) {
-    return searchItemsByText(searchString, { mode: "name" });
-}
-
-async function searchItemsByNameAndDescriptionText(searchString) {
-    return searchItemsByText(searchString, { mode: "nameAndDescription" });
-}
-
