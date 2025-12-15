@@ -15,7 +15,7 @@
   "content_scripts": [
     {
       "matches": ["https://desk.tradeo.de/*"],
-      "js": ["content.js"],
+      "js": ["systemPrompts.js", "content.js"],
       "css": ["styles.css"]
     }
   ]
