@@ -2855,29 +2855,54 @@ window.debugCustomerDetails = async function(contactId) {
 
 /**
  * NEUE DEBUG FUNKTION FÜR ORDER DETAILS
- * Simuliert den Tool-Call für Bestellinformationen.
+ * Simuliert den Tool-Call UND holt zusätzlich die Rohdaten zum Vergleich.
  */
 window.debugOrderDetails = async function(orderId) {
     console.clear();
     console.group(`🚀 DEBUG: fetchOrderDetails für Order ID "${orderId}"`);
-    console.log("⏳ Sende Anfrage an Background Script...");
+    console.log("⏳ Sende Anfragen an Background Script (AI-Format & RAW)...");
 
     try {
-        const response = await new Promise(resolve => {
+        // 1. Request: Das, was die AI sieht (Stripped)
+        const aiRequestPromise = new Promise(resolve => {
             chrome.runtime.sendMessage({ 
                 action: 'GET_ORDER_FULL', 
                 orderId: orderId 
             }, (res) => resolve(res));
         });
 
-        if (response && response.success) {
-            console.log("✅ API Success! Rückgabe an die AI:");
-            const data = response.data;
+        // 2. Request: Das, was Plenty wirklich liefert (Raw / Unstripped)
+        // Wir nutzen exakt dieselben 'with'-Parameter wie in plentyApi.js, um vergleichbar zu sein.
+        const rawRequestPromise = new Promise(resolve => {
+            chrome.runtime.sendMessage({
+                action: 'PLENTY_API_CALL',
+                endpoint: `/rest/orders/${orderId}?with[]=orderItems&with[]=relations&with[]=amounts&with[]=dates&with[]=addressRelations&with[]=shippingPackages`,
+                method: 'GET'
+            }, (res) => resolve(res));
+        });
+
+        // Parallel ausführen
+        const [aiResponse, rawResponse] = await Promise.all([aiRequestPromise, rawRequestPromise]);
+
+        // --- AUSGABE: RAW DATEN ---
+        if (rawResponse && rawResponse.success) {
+            console.groupCollapsed("🥩 RAW DATA (Unstripped von Plenty)");
+            console.log("Dies sind die Rohdaten direkt von der API, bevor unser Skript sie filtert:");
+            console.dir(rawResponse.data);
+            console.groupEnd();
+        } else {
+            console.error("❌ RAW Data Error:", rawResponse);
+        }
+
+        // --- AUSGABE: AI DATEN (Wie bisher) ---
+        if (aiResponse && aiResponse.success) {
+            console.log("✅ API Success! Rückgabe an die AI (Stripped/Cleaned):");
+            const data = aiResponse.data;
             console.dir(data); // Interaktives Objekt
             
             // Kurze Übersicht für schnellen Check
             if (data.order) {
-                console.group("🛒 Order Check");
+                console.group("🛒 Order Check (AI View)");
                 console.log("ID:", data.order.id);
                 console.log("Status:", `${data.order.statusId} (${data.order.statusName})`);
                 console.log("Erstellt am:", new Date(data.order.createdAt).toLocaleString());
@@ -2885,7 +2910,7 @@ window.debugOrderDetails = async function(orderId) {
             }
 
             if (data.shippingInfo) {
-                console.group("🚚 Versand & Tracking");
+                console.group("🚚 Versand & Tracking (AI View)");
                 console.log("Provider:", data.shippingInfo.provider);
                 console.log("Profil:", data.shippingInfo.profileName);
                 console.log("Zielland:", data.shippingInfo.destinationCountry);
@@ -2898,20 +2923,20 @@ window.debugOrderDetails = async function(orderId) {
             }
 
             if (data.addresses && Array.isArray(data.addresses)) {
-                console.group(`🏠 Adressen (${data.addresses.length})`);
+                console.group(`🏠 Adressen (${data.addresses.length}) (AI View)`);
                 data.addresses.forEach(addr => {
                     console.log(`[${addr.relationType}] ${addr.name1 || ''} ${addr.name2 || ''}, ${addr.town} (${addr.countryName})`);
                 });
                 console.groupEnd();
             }
 
-            console.log("📋 JSON Output (für Copy/Paste):");
+            console.log("📋 JSON Output für AI (Copy/Paste):");
             console.log(JSON.stringify(data, null, 2));
 
         } else {
-            console.error("❌ API Error oder kein Ergebnis:", response);
-            if (response && response.error) {
-                console.error("Details:", response.error);
+            console.error("❌ AI API Error oder kein Ergebnis:", aiResponse);
+            if (aiResponse && aiResponse.error) {
+                console.error("Details:", aiResponse.error);
             }
         }
 

@@ -142,6 +142,10 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
 4. Bundle-Bestandteile: Wenn orderItems mit der Bezeichnung "- " beginnen, sind das Bundle-Bestandteile und gehören zum ersten überstehenden Artikel, der KEINEN "- " Präfix hat.
 5. shippingPackages: Hier ist das erste Array im Normalfall ohne Paketnummer (""), aber mit dem Gesamtgewicht der Bestellung. Dabei handelt es sich also nicht um ein physikalisches Paket, sondern nur
    um die automatische Gewichtserfassung. Die Folge-Arrays haben typischerweise keine Gewichtsangabe bzw. "0" als Gewicht, enthalten aber eine Paketnummer -> physikalische Pakete
+6. Wenn ein orderItem auch eine orderItemDescription enthält, ist es recht wahrscheinlich, dass es sich um ein Serverbundle handelt.
+   Bitte nimm diese Description und die orderItem References her, um zu prüfen, ob evtl. Abweichungen zur Basis-Bundle-Artikelbeschreibung bestehen. Z.B. haben viele Serverbundles zwei 300GB HDDs.
+   Dann steht oft im Titel "ohne Basisplatten" und der "Unterartikel" mit 3rd Party Festplatten fehlt. Solchen Anpassungen bzw. Abweichungen zur Artikelbeschreibung müssen dir auffallen, sodass du dem Kunden das erläutern kannst.
+   Aber ACHTUNG: Nicht jedes Bauteil bzw. in der Artikelbeschreibung enthaltene Feature/Komponente ist zwangsweise als Unterartikel des Bundles aufgeführt.
 
 **B. BEI ARTIKELN (fetchItemDetails / searchItemsByText):**
 
