@@ -820,54 +820,73 @@ function loadFromCache(ticketId) {
             window.aiState.lastDraft = cached.draft;
             dummyDraft.innerHTML = cached.draft;
 
-            // Wiederverwendbare Tool-Daten (für Folgeprompts ohne erneute Abfragen)
+            // Wiederverwendbare Tool-Daten wiederherstellen
             if (cached.lastToolData) {
                 window.aiState.lastToolDataByCid = window.aiState.lastToolDataByCid || {};
                 window.aiState.lastToolDataByCid[ticketId] = cached.lastToolData;
             }
             
-            // UI sichtbar machen, falls noch eingeklappt
+            // UI sichtbar machen
             dummyDraft.style.display = 'block'; 
             flashElement(dummyDraft);
 
             const histContainer = document.getElementById('tradeo-ai-chat-history');
             histContainer.innerHTML = ''; 
             
+            // --- RESTORE LOGIC MIT VISUELLER ZUSAMMENFÜHRUNG ---
             if (cached.chatHistory && Array.isArray(cached.chatHistory)) {
                 window.aiState.chatHistory = cached.chatHistory;
+                
+                let activeKarenBubble = null; // State Tracker für laufende Karen-Blase
+
                 cached.chatHistory.forEach(msg => {
+                    // 1. START: "Karen prüft" -> Erzeugt Karen Blase
+                    if (msg.type === 'system' && msg.content.includes('Karen prüft')) {
+                        if (!activeKarenBubble) {
+                            activeKarenBubble = renderKarenBubble("Karen prüft, ob wir aus Plenty Daten brauchen...");
+                        }
+                        return; // Stop, wir rendern hier keine Textnachricht!
+                    }
+
+                    // 2. ENDE A: "Keine Tools" / "Cache genutzt" -> Updated Karen
+                    if (msg.type === 'system' && (msg.content.includes('Keine neuen Tool-Aufrufe') || msg.content.includes('Keine Datenabfrage nötig') || msg.content.includes('Cache genutzt'))) {
+                        if (!activeKarenBubble) activeKarenBubble = renderKarenBubble("Karen prüft...");
+                        updateKarenBubble(activeKarenBubble, msg.content, null, true); // Grün & Fertig
+                        activeKarenBubble = null; // Reset für nächsten Zyklus
+                        return;
+                    }
+
+                    // 3. ENDE B: Echte Tool Execution -> Updated Karen
+                    if (msg.type === 'tool_exec') {
+                        if (!activeKarenBubble) activeKarenBubble = renderKarenBubble("Karen prüft...");
+                        updateKarenBubble(activeKarenBubble, msg.summary, msg.details, true); // Grün & Fertig
+                        activeKarenBubble = null; // Reset
+                        return;
+                    }
+
+                    // 4. Standard Nachrichten
                     if (msg.type === 'draft') {
                         renderDraftMessage(msg.content);
                     } else if (msg.type === 'user') {
                         renderChatMessage('user', msg.content);
-                    } else if (msg.type === 'ai') {
-                        // Legacy Fallback für alte Nachrichten
-                        renderChatMessage('ai', msg.content);
                     } else if (msg.type === 'reasoning') {
-                        // NEU: Reasoning Message
                         renderReasoningMessage(msg.summary, msg.details);
-                    } else if (msg.type === 'tool_exec') {
-                        // NEU: Tool Execution Message (expandable)
-                        renderToolExecutionMessage(msg.summary, msg.details);
-                    }
-                    else if (msg.type === 'system') {
+                    } else if (msg.type === 'system') {
+                        // Fallback für andere Systemnachrichten (z.B. API Key Warnungen)
                         renderChatMessage('system', msg.content);
+                    } else if (msg.type === 'ai') {
+                        renderChatMessage('ai', msg.content); // Legacy
                     } else {
-                        // Generic Fallback
                         renderChatMessage('ai', msg.text || msg.content);
                     }
                 });
             } else {
+                // Fallback für ganz alte Daten ohne History Array
                 const fallbackText = cached.feedback + " (Vorbereitet)";
                 renderChatMessage('ai', fallbackText);
                 window.aiState.chatHistory = [{ type: 'ai', content: fallbackText }];
             }
 
-            // Letzte Tool-Daten (Facts) für dieses Ticket wiederherstellen (für Folgeprompts ohne neue API Calls)
-            if (cached.lastToolData) {
-                window.aiState.lastToolDataByCid = window.aiState.lastToolDataByCid || {};
-                window.aiState.lastToolDataByCid[ticketId] = cached.lastToolData;
-            }
             setTimeout(scrollToBottom, 50);
         }
     });
@@ -1255,6 +1274,173 @@ function expandInterface(acceptingFocus = true) {
 // --- HELPERS ---
 
 // =============================================================================
+// NEU: KAREN BUBBLE LOGIC (Merge von Analyse & Tools)
+// =============================================================================
+
+function renderKarenBubble(initialText) {
+    const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    if(!historyContainer) return null;
+
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'karen-msg';
+
+    // Einfache Struktur am Anfang
+    msgDiv.innerHTML = `
+        <div class="tool-header">Karen legt los...</div>
+        <div class="tool-summary">${initialText}</div>
+        <div class="tool-body"></div>
+    `;
+
+    historyContainer.appendChild(msgDiv);
+    historyContainer.scrollTop = historyContainer.scrollHeight;
+    return msgDiv;
+}
+
+function updateKarenBubble(msgDiv, summaryText, detailsText, isFinished = false) {
+    if (!msgDiv) return;
+
+    const header = msgDiv.querySelector('.tool-header');
+    const summary = msgDiv.querySelector('.tool-summary');
+    const body = msgDiv.querySelector('.tool-body');
+
+    if (header) header.textContent = "Karen's Plenty Tool-To-Do (Details)";
+    if (summary) summary.textContent = summaryText;
+    
+    if (body && detailsText) {
+        body.textContent = detailsText;
+        // Klick-Handler nur hinzufügen, wenn Details da sind
+        msgDiv.onclick = (e) => {
+            // Verhindert, dass Klicks beim Selektieren feuern
+            if (window.getSelection().toString().length > 0) return;
+            
+            msgDiv.classList.toggle('expanded');
+            if (header) {
+                const prefix = isFinished ? "✅ " : "";
+                header.textContent = msgDiv.classList.contains('expanded') 
+                    ? prefix + "Karen's Plenty Tool-To-Do (Verbergen)" 
+                    : prefix + "Karen's Plenty Tool-To-Do (Details)";
+            }
+        };
+    } else if (body) {
+        body.style.display = 'none';
+    }
+
+    if (isFinished) {
+        msgDiv.classList.add('finished');
+        if(header) header.textContent = "✅ Karen's Plenty Tool-To-Do (Details)";
+    }
+}
+
+// UPDATE: Draft Render Funktion (unterstützt jetzt Update eines existierenden Elements)
+function renderDraftMessage(htmlContent, isLoading = false, targetElement = null) {
+    const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    if(!historyContainer) return null;
+
+    let msgDiv = targetElement;
+
+    if (!msgDiv) {
+        msgDiv = document.createElement('div');
+        historyContainer.appendChild(msgDiv);
+    }
+
+    if (isLoading) {
+        msgDiv.className = 'draft-msg loading msg-loading';
+        msgDiv.innerHTML = `
+            <div class="draft-header"><span class="icon">⏳</span> Kevin tippt Entwurf</div>
+        `;
+        historyContainer.scrollTop = historyContainer.scrollHeight;
+        return msgDiv;
+    }
+
+    // Normaler Render (Inhalt da)
+    msgDiv.className = 'draft-msg'; // Loading klasse weg
+    msgDiv.innerHTML = `
+        <div class="draft-header"><span class="icon">📄</span> Kevin's Entwurf (Anzeigen)</div>
+        <div class="draft-body">${htmlContent}
+            <div class="draft-actions">
+                <button class="draft-btn btn-copy">📋 Kopieren</button>
+                <button class="draft-btn primary btn-adopt">⚡ Übernehmen</button>
+            </div>
+        </div>`;
+    
+    // Events neu binden (da innerHTML überschrieben wurde)
+    const headerBtn = msgDiv.querySelector('.draft-header');
+    headerBtn.onclick = () => {
+        msgDiv.classList.toggle('expanded');
+        if (msgDiv.classList.contains('expanded')) {
+            headerBtn.innerHTML = '<span class="icon">📄</span> Kevin\'s Entwurf (Verbergen)';
+        } else {
+            headerBtn.innerHTML = '<span class="icon">📄</span> Kevin\'s Entwurf (Anzeigen)';
+        }
+    };
+
+    msgDiv.querySelector('.btn-copy').onclick = (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(htmlContent);
+    };
+    msgDiv.querySelector('.btn-adopt').onclick = (e) => {
+        e.stopPropagation();
+        window.aiState.lastDraft = htmlContent;
+        const editorBlock = document.querySelector('.conv-reply-block');
+        const replyBtn = document.querySelector('.conv-reply');
+        if (editorBlock && !editorBlock.classList.contains('hidden') && editorBlock.style.display !== 'none') {
+            const editable = document.querySelector('.note-editable');
+            if (editable) { window.aiState.isRealMode = true; setEditorContent(editable, htmlContent); }
+        } else if (replyBtn) {
+            window.aiState.isRealMode = true; replyBtn.click();
+            waitForSummernote((editable) => setEditorContent(editable, htmlContent));
+        }
+    };
+
+    historyContainer.scrollTop = historyContainer.scrollHeight;
+    return msgDiv;
+}
+
+// UPDATE: Reasoning Render Funktion (unterstützt jetzt Update eines existierenden Elements)
+function renderReasoningMessage(summary, details, isLoading = false, targetElement = null) {
+    const historyContainer = document.getElementById('tradeo-ai-chat-history');
+    if(!historyContainer) return null;
+
+    let msgDiv = targetElement;
+    if (!msgDiv) {
+        msgDiv = document.createElement('div');
+        historyContainer.appendChild(msgDiv);
+    }
+
+    if (isLoading) {
+        msgDiv.className = 'reasoning-msg loading msg-loading';
+        msgDiv.innerHTML = `
+            <div class="reasoning-header">Kevin denkt nach</div>
+        `;
+        historyContainer.scrollTop = historyContainer.scrollHeight;
+        return msgDiv;
+    }
+
+    // Fertig
+    msgDiv.className = 'reasoning-msg'; 
+    const safeDetails = details || "Keine detaillierte Begründung verfügbar.";
+
+    msgDiv.innerHTML = `
+        <div class="reasoning-header">Kevin (Reasoning anzeigen)</div>
+        <div class="reasoning-summary">${summary}</div>
+        <div class="reasoning-body">${safeDetails}</div>
+    `;
+    
+    msgDiv.onclick = (e) => {
+        msgDiv.classList.toggle('expanded');
+        const header = msgDiv.querySelector('.reasoning-header');
+        if (msgDiv.classList.contains('expanded')) {
+            header.textContent = "Kevin (Reasoning verbergen)";
+        } else {
+            header.textContent = "Kevin (Reasoning anzeigen)";
+        }
+    };
+
+    historyContainer.scrollTop = historyContainer.scrollHeight;
+    return msgDiv;
+}
+
+// =============================================================================
 // HELPER: SINGLE TICKET RESET
 // =============================================================================
 async function performSingleTicketReset() {
@@ -1302,38 +1488,6 @@ async function performSingleTicketReset() {
     handleStartupSync(ticketId);
 }
 
-// Render Funktion für Reasoning/Feedback (Blaue Box, klickbar)
-function renderReasoningMessage(summary, details) {
-    const historyContainer = document.getElementById('tradeo-ai-chat-history');
-    if(!historyContainer) return;
-
-    const msgDiv = document.createElement('div');
-    msgDiv.className = 'reasoning-msg'; 
-    
-    // Fallback falls Reasoning leer ist
-    const safeDetails = details || "Keine detaillierte Begründung verfügbar.";
-
-    msgDiv.innerHTML = `
-        <div class="reasoning-header">Kevin (Reasoning anzeigen)</div>
-        <div class="reasoning-summary">${summary}</div>
-        <div class="reasoning-body">${safeDetails}</div>
-    `;
-    
-    // Toggle Event
-    msgDiv.onclick = (e) => {
-        msgDiv.classList.toggle('expanded');
-        const header = msgDiv.querySelector('.reasoning-header');
-        if (msgDiv.classList.contains('expanded')) {
-            header.textContent = "Kevin (Reasoning verbergen)";
-        } else {
-            header.textContent = "Kevin (Reasoning anzeigen)";
-        }
-    };
-
-    historyContainer.appendChild(msgDiv);
-    historyContainer.scrollTop = historyContainer.scrollHeight;
-}
-
 // =============================================================================
 // NEU: TOOL EXECUTION MESSAGE (Expandable + Persistent)
 // =============================================================================
@@ -1371,42 +1525,6 @@ function buildToolExecutionInfo(toolCalls) {
         details: detailsLines.join('\n'),
         calls: calls
     };
-}
-
-function renderToolExecutionMessage(summary, details) {
-    const historyContainer = document.getElementById('tradeo-ai-chat-history');
-    if(!historyContainer) return;
-
-    const msgDiv = document.createElement('div');
-    msgDiv.className = 'tool-msg';
-
-    const header = document.createElement('div');
-    header.className = 'tool-header';
-    header.textContent = "Karen's Tool-Auswahl (Details anzeigen)";
-
-    const sum = document.createElement('div');
-    sum.className = 'tool-summary';
-    sum.textContent = summary || 'Ausführen: —';
-
-    const body = document.createElement('div');
-    body.className = 'tool-body';
-    body.textContent = details || 'Keine Details verfügbar.';
-
-    msgDiv.appendChild(header);
-    msgDiv.appendChild(sum);
-    msgDiv.appendChild(body);
-
-    msgDiv.onclick = () => {
-        msgDiv.classList.toggle('expanded');
-        if (msgDiv.classList.contains('expanded')) {
-            header.textContent = "Karen's Tool-Auswahl (Details verbergen)";
-        } else {
-            header.textContent = "Karen's Tool-Auswahl (Details anzeigen)";
-        }
-    };
-
-    historyContainer.appendChild(msgDiv);
-    historyContainer.scrollTop = historyContainer.scrollHeight;
 }
 
 function generateContentHash(str) {
@@ -1672,11 +1790,6 @@ function setupEditorObserver() {
     }).observe(editorBlock, { attributes: true });
 }
 
-// Suche die Funktion runAI und ersetze sie durch diese Version:
-
-// Suche die Funktion runAI und ersetze sie durch diese Version:
-
-
 async function runAI(isInitial = false) {
     const btn = document.getElementById('tradeo-ai-send-btn');
     const input = document.getElementById('tradeo-ai-input');
@@ -1689,7 +1802,6 @@ async function runAI(isInitial = false) {
         return;
     }
     if (lock === false) return;
-
 
     const storageData = await chrome.storage.local.get(['geminiApiKey']);
     const apiKey = storageData.geminiApiKey;
@@ -1729,19 +1841,24 @@ async function runAI(isInitial = false) {
     const isSlowModel = currentModel.includes("gemini-3-pro"); 
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
+    // 1. START: Karen Bubble erstellen (UI)
+    const karenStartText = "Karen prüft, ob wir aus Plenty Daten brauchen...";
+    const karenBubble = renderKarenBubble(karenStartText);
+
+    // 2. START: History Eintrag synchron halten (WICHTIG für Reload)
+    window.aiState.chatHistory.push({ type: "system", content: karenStartText });
+
     const primaryTask = async () => {
         // --- PHASE 1: PLAN ---
-        renderChatMessage('system', "🔍 Analysiere Bedarf...");
-        window.aiState.chatHistory.push({ type: "system", content: "🔍 Analysiere Bedarf..." });
+        
         const lastToolData = (window.aiState.lastToolDataByCid && window.aiState.lastToolDataByCid[cid]) ? window.aiState.lastToolDataByCid[cid] : null;
         const plan = await analyzeToolPlan(contextText, userPrompt, currentDraft, lastToolData, cid);
 
-        // "Triggerhappy" Schutz: Bei reinen Umformulierungs-/Ergänzungs-Prompts keine neuen Tools laufen lassen.
+        // "Triggerhappy" Schutz
         const forceRefresh = wantsFreshData(userPrompt);
         const editOnly = isLikelyEditOnly(userPrompt);
         let toolCallsToExecute = Array.isArray(plan.tool_calls) ? plan.tool_calls : [];
-        // Wenn bereits Tool-Daten aus dem vorherigen Lauf vorhanden sind, dann nur dann neu abfragen,
-        // wenn der User explizit danach fragt (forceRefresh / explicit data request).
+        
         if (!forceRefresh && lastToolData && toolCallsToExecute.length > 0) {
             console.log(`[CID: ${cid}] Unterdrücke neue Tool-Abfragen: vorhandene Daten vorhanden und kein expliziter Refresh.`);
             toolCallsToExecute = [];
@@ -1750,9 +1867,14 @@ async function runAI(isInitial = false) {
             toolCallsToExecute = [];
         }
 
+        // --- UPDATE KAREN BUBBLE (PLAN) ---
         const toolExec = buildToolExecutionInfo(toolCallsToExecute);
+        
         if (toolExec) {
-            renderToolExecutionMessage(toolExec.summary, toolExec.details);
+            // Zeige an, welche Tools geplant sind
+            updateKarenBubble(karenBubble, toolExec.summary, toolExec.details);
+            
+            // History Update: Wir merken uns, was Karen getan hat
             window.aiState.chatHistory.push({
                 type: "tool_exec",
                 summary: toolExec.summary,
@@ -1760,13 +1882,16 @@ async function runAI(isInitial = false) {
                 calls: toolExec.calls
             });
         } else {
+            // Keine Tools nötig
+            let noToolsMsg = "";
             if (lastToolData) {
-                renderChatMessage('system', "♻️ Keine neuen Tool-Aufrufe – verwende bereits geladene Daten.");
-                window.aiState.chatHistory.push({ type: "system", content: "♻️ Keine neuen Tool-Aufrufe – verwende bereits geladene Daten." });
+                noToolsMsg = "♻️ Keine neuen Tool-Aufrufe (Daten vorhanden).";
             } else {
-                renderChatMessage('system', "✅ Keine Datenabfrage nötig.");
-                window.aiState.chatHistory.push({ type: "system", content: "✅ Keine Datenabfrage nötig." });
+                noToolsMsg = "✅ Keine Datenabfrage nötig.";
             }
+            
+            updateKarenBubble(karenBubble, noToolsMsg, null);
+            window.aiState.chatHistory.push({ type: "system", content: noToolsMsg });
         }
 
         // --- PHASE 2: EXECUTE (JS) ---
@@ -1776,9 +1901,18 @@ async function runAI(isInitial = false) {
             window.aiState.lastToolDataByCid = window.aiState.lastToolDataByCid || {};
             window.aiState.lastToolDataByCid[cid] = gatheredData;
         } else {
-            // Reuse cached data (falls vorhanden)
             gatheredData = lastToolData;
         }
+
+        // --- KAREN FINISH & KEVIN START ---
+        // 1. Karen grün machen
+        const finalStatus = toolExec ? toolExec.summary : (lastToolData ? "♻️ Cache genutzt" : "✅ Textmodus");
+        updateKarenBubble(karenBubble, finalStatus, toolExec ? toolExec.details : null, true);
+
+        // 2. Kevin Bubbles sofort anzeigen (Loading State)
+        const draftPlaceholder = renderDraftMessage(null, true);
+        const reasoningPlaceholder = renderReasoningMessage(null, null, true);
+
 
         // --- PHASE 3: GENERATE ---
         const generatorPrompt = `
@@ -1823,11 +1957,17 @@ Gib NUR ein JSON-Objekt zurück im Format:
         try {
             const jsonResp = JSON.parse(rawText);
             if(!jsonResp.draft && jsonResp.text) jsonResp.draft = jsonResp.text;
-            return jsonResp;
+            
+            // Result an die Handler weitergeben (mit Referenz auf die Placeholders)
+            return { result: jsonResp, placeholders: { draft: draftPlaceholder, reasoning: reasoningPlaceholder } };
+
         } catch (e) {
             return { 
-                draft: rawText.replace(/\n/g, '<br>'), 
-                feedback: "Hinweis: AI Formatierung war kein JSON (Rohdaten)."
+                result: { 
+                    draft: rawText.replace(/\n/g, '<br>'), 
+                    feedback: "Hinweis: AI Formatierung war kein JSON (Rohdaten)."
+                },
+                placeholders: { draft: draftPlaceholder, reasoning: reasoningPlaceholder }
             };
         }
     };
@@ -1837,20 +1977,29 @@ Gib NUR ein JSON-Objekt zurück im Format:
     );
 
     try {
-        const finalResponse = await Promise.race([primaryTask(), timeoutPromise]);
-        handleAiSuccess(finalResponse, isInitial, input, dummyDraft, cid);
+        // Wir erwarten jetzt ein Objekt { result: ..., placeholders: ... }
+        const finalData = await Promise.race([primaryTask(), timeoutPromise]);
+        
+        handleAiSuccess(
+            finalData.result, 
+            isInitial, 
+            input, 
+            dummyDraft, 
+            cid, 
+            finalData.placeholders // Neue Params
+        );
 
     } catch (error) {
         console.warn(`[CID: ${cid}] Tradeo AI: Abbruch (${error.message}). Starte Fallback.`);
 
         try {
+            // FALLBACK LOGIC
             let fallbackPrompt = `
 ACHTUNG: Die vorherige Verarbeitung ist fehlgeschlagen (${error.message}).
 Bitte erstelle jetzt sofort eine Antwort basierend NUR auf dem Text.
 Versuche NICHT, Tools zu nutzen.
 Ursprüngliche Anweisung: ${userPrompt || "Analysiere Ticket"}
 `;
-
             let contents = [{
                 role: "user",
                 parts: [{ text: `
@@ -1863,8 +2012,22 @@ ${historyString}
 ${fallbackPrompt}
 `}]
             }];
+            
+            // Rendere Placeholder für Fallback falls noch nicht da
+            const fbDraftEl = renderDraftMessage(null, true);
+            const fbReasonEl = renderReasoningMessage(null, null, true);
+
             const fallbackResponse = await executeGeminiLoop(contents, cid);
-            handleAiSuccess(fallbackResponse, isInitial, input, dummyDraft, cid);
+            
+            handleAiSuccess(
+                fallbackResponse, 
+                isInitial, 
+                input, 
+                dummyDraft, 
+                cid, 
+                { draft: fbDraftEl, reasoning: fbReasonEl }
+            );
+
         } catch (fallbackError) {
             renderChatMessage('system', "❌ Fallback fehlgeschlagen.");
             console.error(`[CID: ${cid}] Fallback Error:`, fallbackError);
@@ -1876,23 +2039,24 @@ ${fallbackPrompt}
     }
 }
 
-
 // Helper: Gemeinsame Erfolgsverarbeitung für Main & Fallback
-function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) {
+function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId, placeholders = null) {
     if (!finalResponse) throw new Error("Keine Antwort erhalten");
 
-    // 1. Draft rendern
-    renderDraftMessage(finalResponse.draft);
+    // 1. Draft rendern (Update des Placeholders falls vorhanden)
+    const targetDraftEl = placeholders ? placeholders.draft : null;
+    renderDraftMessage(finalResponse.draft, false, targetDraftEl);
+    
     window.aiState.chatHistory.push({ type: "draft", content: finalResponse.draft });
     
-    // 2. Feedback & Reasoning rendern (NEU)
+    // 2. Feedback & Reasoning rendern
     if (finalResponse.feedback || finalResponse.reasoning) {
         const feedbackText = finalResponse.feedback || "Antwort erstellt.";
-        const reasoningText = finalResponse.reasoning || ""; // Kann leer sein
-
-        renderReasoningMessage(feedbackText, reasoningText);
+        const reasoningText = finalResponse.reasoning || ""; 
         
-        // WICHTIG: Wir speichern jetzt ein neues Objekt-Format für den Verlauf
+        const targetReasonEl = placeholders ? placeholders.reasoning : null;
+        renderReasoningMessage(feedbackText, reasoningText, false, targetReasonEl);
+        
         window.aiState.chatHistory.push({ 
             type: "reasoning", 
             summary: feedbackText, 
@@ -1927,11 +2091,10 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId) 
 
             const newData = {
                 draft: finalResponse.draft,
-                feedback: finalResponse.feedback, // Legacy field
+                feedback: finalResponse.feedback,
                 chatHistory: window.aiState.chatHistory,
-                // Letzte Tool-Ergebnisse pro Ticket persistieren, damit Folgeprompts nicht "triggerhappy" neu abfragen
                 lastToolData: (window.aiState.lastToolDataByCid && window.aiState.lastToolDataByCid[ticketId]) ? window.aiState.lastToolDataByCid[ticketId] : null,
-                timestamp: Date.now(),
+                timestamp: Date.now (),
                 inboxHash: preservedInboxHash,
                 contentHash: currentHash 
             };
@@ -2373,54 +2536,6 @@ function renderWarningMessage(text) {
     msgDiv.className = 'warning-msg'; 
     msgDiv.innerHTML = `<strong>⚠️ System-Hinweis</strong>${text}`;
     
-    historyContainer.appendChild(msgDiv);
-    historyContainer.scrollTop = historyContainer.scrollHeight;
-}
-
-// Render Funktion für Draft (Gelbe Box)
-function renderDraftMessage(htmlContent) {
-    const historyContainer = document.getElementById('tradeo-ai-chat-history');
-    if(!historyContainer) return;
-    const msgDiv = document.createElement('div');
-    msgDiv.className = 'draft-msg'; 
-    msgDiv.innerHTML = `
-        <div class="draft-header"><span class="icon">📄</span> Kevin's Entwurf (Klicken zum Anzeigen)</div>
-        <div class="draft-body">${htmlContent}
-            <div class="draft-actions">
-                <button class="draft-btn btn-copy">📋 Kopieren</button>
-                <button class="draft-btn primary btn-adopt">⚡ Übernehmen</button>
-            </div>
-        </div>`;
-    
-    // Event Listeners direkt anhängen
-    const headerBtn = msgDiv.querySelector('.draft-header');
-    headerBtn.onclick = () => {
-        msgDiv.classList.toggle('expanded');
-        if (msgDiv.classList.contains('expanded')) {
-            headerBtn.innerHTML = '<span class="icon">📄</span> Kevin\'s Entwurf (Klicken zum Verbergen)';
-        } else {
-            headerBtn.innerHTML = '<span class="icon">📄</span> Kevin\'s Entwurf (Klicken zum Anzeigen)';
-        }
-    };
-
-    msgDiv.querySelector('.btn-copy').onclick = (e) => {
-        e.stopPropagation();
-        navigator.clipboard.writeText(htmlContent);
-    };
-    msgDiv.querySelector('.btn-adopt').onclick = (e) => {
-        e.stopPropagation();
-        window.aiState.lastDraft = htmlContent;
-        const editorBlock = document.querySelector('.conv-reply-block');
-        const replyBtn = document.querySelector('.conv-reply');
-        if (editorBlock && !editorBlock.classList.contains('hidden') && editorBlock.style.display !== 'none') {
-            const editable = document.querySelector('.note-editable');
-            if (editable) { window.aiState.isRealMode = true; setEditorContent(editable, htmlContent); }
-        } else if (replyBtn) {
-            window.aiState.isRealMode = true; replyBtn.click();
-            waitForSummernote((editable) => setEditorContent(editable, htmlContent));
-        }
-    };
-
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
 }
