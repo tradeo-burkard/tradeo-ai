@@ -152,6 +152,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
    - **Mehrdeutigkeit (PLENTY_ITEM_AMBIGUOUS):** Findet das Tool mehrere Artikel, erhältst du eine Liste von 'candidates'.
      * Analysiere die Kandidaten: Ist einer davon aktiv ('isActive': true) und hat Bestand ('stockNet' > 0)? Bevorzuge diesen.
      * Wenn unklar, liste dem Kunden die Optionen auf.
+   - WICHTIG: Wenn nach einem Care Pack oder Upgrade gesucht wird, ist der returned netStock "[]". Das bedeutet "ist **verfügbar**"!
 
 2. **Freitext-Suche (searchItemsByText):**
    - **Logik (Smart Token Intersection):** Das Tool findet nur Artikel, die ALLE Wörter deiner Suchanfrage enthalten (im Namen oder der Beschreibung, je nach ausgeführtem Modus).

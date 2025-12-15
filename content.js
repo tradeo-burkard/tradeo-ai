@@ -2133,7 +2133,7 @@ async function executeToolAction(fnName, fnArgs, cid) {
 // Heuristiken, um unnötige Tool-Re-Queries bei Folgeprompts (reine Umformulierungen) zu verhindern.
 // "refresh" Keywords lassen bewusst neue Abfragen zu.
 // UPDATE: Massive Erweiterung um Wortstämme wie "biet..." (biete, bieten, bietest), "prüf...", "check..." etc.
-const FORCE_REFRESH_KEYWORDS_RE = /\b(nochmal|erneut|aktuell|refresh|neu\s*(?:laden|abfragen|prüfen|checken)|verifizieren|abgleichen|aktualisier\w*|such\w*|find\w*|schau\w*|guck\w*|biet\w*|anbiet\w*|recherchier\w*|prüf\w*|check\w*|scan\w*|ermittel\w*)\b/i;
+const FORCE_REFRESH_KEYWORDS_RE = /\b(nochmal|erneut|aktuell|refresh|neu\s*(?:laden|abfragen|prüfen|checken)|verifizieren|abgleichen|aktualisier\w*|such\w*|find\w*|schau\w*|guck\w*|abruf\w*|biet\w*|anbiet\w*|recherchier\w*|prüf\w*|check\w*|scan\w*|ermittel\w*)\b/i;
 
 // Wenn der User *explizit* neue Fakten will, dürfen Tools laufen.
 // UPDATE: Artikelnummern-Pattern und spezifische Hardware-Begriffe ergänzt.
