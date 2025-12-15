@@ -441,10 +441,11 @@ async function processTicket(id, incomingInboxHash) {
 
             // 4. KEVIN REASONING (Statt einfacher Textnachricht)
             // Damit erscheint auch beim Hintergrund-Scan die aufklappbare Box
+            // FIX: "details" leer lassen, wenn nichts da ist, damit der Renderer den Default-Text setzt (wie im Live Modus)
             initialHistory.push({ 
                 type: 'reasoning', 
                 summary: aiResult.feedback || "Automatisch vorbereitet", 
-                details: aiResult.reasoning || "Keine Details verfügbar."
+                details: aiResult.reasoning || "" 
             });
 
             const data = {};
@@ -871,10 +872,29 @@ function loadFromCache(ticketId) {
                         return; // Stop, wir rendern hier keine Textnachricht!
                     }
 
-                    // 2. ENDE A: "Keine Tools" / "Cache genutzt" -> Updated Karen
-                    if (msg.type === 'system' && (msg.content.includes('Keine neuen Tool-Aufrufe') || msg.content.includes('Keine Datenabfrage nötig') || msg.content.includes('Cache genutzt'))) {
+                    // 2. ENDE A: "Keine Tools" / "Cache genutzt" / "Fallback" -> Updated Karen
+                    // FIX: "Fallback" und "Warnung" hinzugefügt, damit die Bubble auch bei Fehlern aufhört zu drehen
+                    if (msg.type === 'system' && (
+                        msg.content.includes('Keine neuen Tool-Aufrufe') || 
+                        msg.content.includes('Keine Datenabfrage nötig') || 
+                        msg.content.includes('Cache genutzt') ||
+                        msg.content.includes('Fallback') ||
+                        msg.content.includes('Warnung')
+                    )) {
                         if (!activeKarenBubble) activeKarenBubble = renderKarenBubble("Karen prüft...");
-                        updateKarenBubble(activeKarenBubble, msg.content, null, true); // Grün & Fertig
+                        // Bei Fallback/Warnung machen wir ein Warndreieck statt Haken, aber Status "finished"
+                        const isWarning = msg.content.includes('Fallback') || msg.content.includes('Warnung');
+                        const prefix = isWarning ? "⚠️ " : "✅ ";
+                        
+                        updateKarenBubble(activeKarenBubble, msg.content, null, true);
+                        
+                        // Visuelles Override für den Header, falls es ein Warning war (updateKarenBubble macht standardmäßig Haken)
+                        if(isWarning) {
+                            const header = activeKarenBubble.querySelector('.tool-header');
+                            if(header) header.textContent = prefix + "Karen's Plenty Tool-To-Do (Info)";
+                            activeKarenBubble.classList.add('finished'); // Grünlicher Hintergrund bleibt, ist ok für "Done"
+                        }
+                        
                         activeKarenBubble = null; // Reset für nächsten Zyklus
                         return;
                     }
@@ -895,7 +915,6 @@ function loadFromCache(ticketId) {
                     } else if (msg.type === 'reasoning') {
                         renderReasoningMessage(msg.summary, msg.details);
                     } else if (msg.type === 'system') {
-                        // Fallback für andere Systemnachrichten (z.B. API Key Warnungen)
                         renderChatMessage('system', msg.content);
                     } else if (msg.type === 'ai') {
                         renderChatMessage('ai', msg.content); // Legacy
