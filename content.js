@@ -2700,13 +2700,14 @@ window.debugPlentyItemSearch = async function(rawSearch) {
     const t0 = performance.now();
 
     try {
+        // 1. Die normale Suche ausführen
         const response = await new Promise(resolve => {
             chrome.runtime.sendMessage({
                 action: 'SEARCH_ITEMS_BY_TEXT',
                 searchText,
-                mode: 'nameAndDescription', // oder 'name'
+                mode: 'nameAndDescription',
                 maxResults: 30,
-                onlyWithStock: true // <--- NEU: Explizit setzen (Standard der AI)
+                onlyWithStock: true 
             }, (res) => resolve(res));
         });
 
@@ -2714,11 +2715,55 @@ window.debugPlentyItemSearch = async function(rawSearch) {
 
         if (response && response.success) {
             console.log(`✅ Fertig in ${ms}ms`);
-            console.log("META:", response.data?.meta);
-            // Info: Sortierung ist jetzt automatisch nach stockNet absteigend
-            console.table(response.data?.results || []);
-            console.log("📋 JSON Output:");
-            console.log(JSON.stringify(response.data, null, 2));
+            
+            // Kopie der Ergebnisse
+            let results = [...(response.data?.results || [])];
+            // Sortierung nach Bestand erzwingen für Debug-Ansicht
+            results.sort((a, b) => b.stockNet - a.stockNet);
+
+            console.log(`Gefunden: ${results.length} Artikel`);
+            console.table(results);
+            
+            // --- RAW STOCK DATA FETCH (KORRIGIERT) ---
+            if (results.length > 0) {
+                const topResults = results.slice(0, 5);
+                
+                console.groupCollapsed(`📦 RAW STOCK CHECK (Endpoint: /rest/items/{id}/variations/{vid}/stock)`);
+                console.log("Hinweis: Dies ist der Endpoint, der auch für die Berechnung genutzt wird.");
+                
+                for (const item of topResults) {
+                    if (item.variationId && item.itemNumber) {
+                        try {
+                            // KORREKTUR: Wir nutzen jetzt den Item-Stock Endpoint statt Stockmanagement
+                            // Dieser löst Bundles oft korrekt auf.
+                            const endpoint = `/rest/items/${item.itemNumber}/variations/${item.variationId}/stock`;
+                            
+                            const rawRes = await new Promise(resolve => {
+                                chrome.runtime.sendMessage({
+                                    action: 'PLENTY_API_CALL',
+                                    endpoint: endpoint,
+                                    method: 'GET'
+                                }, resolve);
+                            });
+
+                            if (rawRes && rawRes.success) {
+                                console.log(`%cVariation ${item.variationId} (List-Bestand: ${item.stockNet})`, "font-weight:bold; color:blue;");
+                                console.log(`GET ${endpoint}`);
+                                console.dir(rawRes.data); // Das Array mit den Einträgen
+                            } else {
+                                console.warn(`Fehler bei Var ${item.variationId}`, rawRes);
+                            }
+                        } catch (err) {
+                            console.error("Fehler im Loop:", err);
+                        }
+                    } else {
+                        console.warn("Item ohne ID/Number übersprungen:", item);
+                    }
+                }
+                console.groupEnd();
+            }
+            // --------------------------------
+
         } else {
             console.error("❌ Fehler:", response);
         }

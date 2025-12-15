@@ -418,13 +418,23 @@ async function fetchOrderDetails(orderId) {
 
             const stockPromises = uniqueVarIds.map(async (vid) => {
                 try {
-                    const stockData = await makePlentyCall(`/rest/stockmanagement/stock?variationId=${vid}&warehouseId=1`);
+                    // UPDATE: warehouseId Parameter entfernt -> Liefert alle Lager
+                    const stockData = await makePlentyCall(`/rest/stockmanagement/stock?variationId=${vid}`);
 
                     let net = 0;
                     if (stockData && Array.isArray(stockData.entries) && stockData.entries.length > 0) {
-                        net = parseFloat(stockData.entries[0].stockNet || 0);
+                        // UPDATE: Wir summieren den Bestand aller Lager auf (Reduce)
+                        net = stockData.entries.reduce((sum, entry) => {
+                            // Manche Plenty Versionen nutzen stockNet, manche netStock
+                            const val = parseFloat(entry.stockNet || entry.netStock || 0);
+                            return sum + (isNaN(val) ? 0 : val);
+                        }, 0);
                     } else if (stockData && Array.isArray(stockData.entries) && stockData.entries.length === 0) {
-                        net = "Unendlich";
+                        // Kein Eintrag in Stockmanagement oft = Unendlicher Bestand (bei Konfigurationsartikeln) oder 0
+                        // Hier konservativ: Wenn leer, dann 0, außer Logik sagt was anderes. 
+                        // Im alten Code stand hier "Unendlich", das behalten wir bei falls gewünscht, 
+                        // oder setzen es auf 0.
+                        net = "Unendlich"; 
                     }
 
                     return { variationId: vid, stockNet: net };
@@ -791,9 +801,9 @@ async function fetchItemDetails(identifierRaw) {
             const itemId = variation.itemId;
             const variationId = variation.id;
 
-            // Wir holen Item & Stock (Warehouse 1 als Standard für Konsistenz)
+            // UPDATE: Wir holen Item & Stock OHNE warehouseId Filter (Globaler Bestand)
             const [stockData, itemBaseData] = await Promise.all([
-                makePlentyCall(`/rest/stockmanagement/stock?variationId=${variationId}&warehouseId=1`),
+                makePlentyCall(`/rest/stockmanagement/stock?variationId=${variationId}`),
                 makePlentyCall(`/rest/items/${itemId}`)
             ]);
 
@@ -1096,9 +1106,13 @@ async function searchItemsByText(searchText, options = {}) {
                     makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
                 ]);
 
-                stockNet = (Array.isArray(stockRes) && stockRes[0] && (stockRes[0].netStock ?? stockRes[0].stockNet) != null)
-                    ? parseFloat(stockRes[0].netStock ?? stockRes[0].stockNet)
-                    : 0;
+                // UPDATE: Summierung über alle Lager (statt nur stockRes[0])
+                if (Array.isArray(stockRes)) {
+                    stockNet = stockRes.reduce((sum, entry) => {
+                        const val = parseFloat(entry.netStock || entry.stockNet || 0);
+                        return sum + (isNaN(val) ? 0 : val);
+                    }, 0);
+                }
 
                 price = (Array.isArray(priceRes) && priceRes[0] && priceRes[0].price != null)
                     ? priceRes[0].price
@@ -1116,7 +1130,7 @@ async function searchItemsByText(searchText, options = {}) {
                 model,
                 name,
                 description,
-                stockNet, // Ist jetzt garantiert number
+                stockNet, 
                 price
             };
         } catch (e) {
