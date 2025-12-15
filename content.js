@@ -1314,11 +1314,16 @@ function renderReasoningMessage(summary, details) {
         <div class="reasoning-body">${safeDetails}</div>
     `;
     
-    // Toggle Event
+    // Toggle Event mit Text-Update
     msgDiv.onclick = (e) => {
-        // Verhindert, dass Klicks im Body (z.B. beim Kopieren) das Ding zuklappen, falls gewünscht. 
-        // Hier lassen wir es togglen bei Klick auf den Container.
         msgDiv.classList.toggle('expanded');
+        
+        const header = msgDiv.querySelector('.reasoning-header');
+        if (msgDiv.classList.contains('expanded')) {
+            header.textContent = "AI (Reasoning verbergen)";
+        } else {
+            header.textContent = "AI (Reasoning anzeigen)";
+        }
     };
 
     historyContainer.appendChild(msgDiv);
@@ -1387,7 +1392,15 @@ function renderToolExecutionMessage(summary, details) {
     msgDiv.appendChild(sum);
     msgDiv.appendChild(body);
 
-    msgDiv.onclick = () => msgDiv.classList.toggle('expanded');
+    // Toggle Event mit Text-Update
+    msgDiv.onclick = () => {
+        msgDiv.classList.toggle('expanded');
+        if (msgDiv.classList.contains('expanded')) {
+            header.textContent = 'Tool-Ausführung (Details verbergen)';
+        } else {
+            header.textContent = 'Tool-Ausführung (Details anzeigen)';
+        }
+    };
 
     historyContainer.appendChild(msgDiv);
     historyContainer.scrollTop = historyContainer.scrollHeight;
@@ -2371,7 +2384,17 @@ function renderDraftMessage(htmlContent) {
         </div>`;
     
     // Event Listeners direkt anhängen
-    msgDiv.querySelector('.draft-header').onclick = () => msgDiv.classList.toggle('expanded');
+    const headerBtn = msgDiv.querySelector('.draft-header');
+    headerBtn.onclick = () => {
+        msgDiv.classList.toggle('expanded');
+        // Text Update (Icon beibehalten)
+        if (msgDiv.classList.contains('expanded')) {
+            headerBtn.innerHTML = '<span class="icon">📄</span> Entwurf (Klicken zum Verbergen)';
+        } else {
+            headerBtn.innerHTML = '<span class="icon">📄</span> Entwurf (Klicken zum Anzeigen)';
+        }
+    };
+
     msgDiv.querySelector('.btn-copy').onclick = (e) => {
         e.stopPropagation();
         navigator.clipboard.writeText(htmlContent);
