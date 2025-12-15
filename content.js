@@ -378,8 +378,6 @@ async function processTicket(id, incomingInboxHash) {
         // 1. Locking prüfen
         const lockAcquired = await acquireLock(id, 'background');
         if (!lockAcquired) {
-            // Log Level reduziert, um Konsole sauberer zu halten
-            // console.log(`[CID: ${id}] Skip Pre-Fetch: Locked.`);
             return;
         }
 
@@ -387,7 +385,7 @@ async function processTicket(id, incomingInboxHash) {
         const storedRes = await chrome.storage.local.get([storageKey]);
         const storedData = storedRes[storageKey];
 
-        // Abbruch wenn Inbox-Hash identisch (Preview hat sich nicht geändert)
+        // Abbruch wenn Inbox-Hash identisch
         if (storedData) {
             const lastInboxHash = storedData.inboxHash;
             if (lastInboxHash === incomingInboxHash) {
@@ -403,7 +401,6 @@ async function processTicket(id, incomingInboxHash) {
         const parser = new DOMParser();
         const doc = parser.parseFromString(text, 'text/html');
         
-        // Nutzt jetzt die neue Logik ohne Zeitstempel
         const contextText = extractContextFromDOM(doc);
         const realContentHash = generateContentHash(contextText);
 
@@ -417,13 +414,23 @@ async function processTicket(id, incomingInboxHash) {
 
         if (aiResult) {
             let initialHistory = [];
-            // Structured Tool-Execution Bubble (neu)
+            
+            // A: Tools wurden ausgeführt -> Structured Bubble
             if (aiResult.toolExec && aiResult.toolExec.summary) {
-                initialHistory.push({ type: 'tool_exec', summary: aiResult.toolExec.summary, details: aiResult.toolExec.details });
-            } else if (aiResult.toolLogs && Array.isArray(aiResult.toolLogs)) {
-                // Legacy Logs (Fallback)
-                aiResult.toolLogs.forEach(logText => initialHistory.push({ type: 'system', content: logText }));
+                initialHistory.push({ 
+                    type: 'tool_exec', 
+                    summary: aiResult.toolExec.summary, 
+                    details: aiResult.toolExec.details,
+                    calls: aiResult.toolExec.calls 
+                });
+            } 
+            // B: Keine Tools -> Textnachricht (die loadFromCache als Karen erkennt)
+            else if (aiResult.toolLogs && Array.isArray(aiResult.toolLogs)) {
+                aiResult.toolLogs.forEach(logText => {
+                    initialHistory.push({ type: 'system', content: logText });
+                });
             }
+            
             initialHistory.push({ type: 'draft', content: aiResult.draft });
             initialHistory.push({ type: 'ai', content: aiResult.feedback + " (Automatisch vorbereitet)" });
 
@@ -432,11 +439,10 @@ async function processTicket(id, incomingInboxHash) {
                 draft: aiResult.draft,
                 feedback: aiResult.feedback,
                 chatHistory: initialHistory,
-                // Für Live-Folgeprompts wiederverwendbare Tool-Ergebnisse
                 lastToolData: aiResult.lastToolData || null,
                 timestamp: Date.now(),
                 inboxHash: incomingInboxHash, 
-                contentHash: realContentHash // <--- Hash des bereinigten Textes speichern
+                contentHash: realContentHash
             };
             
             await chrome.storage.local.set(data);
@@ -468,17 +474,22 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
         // PHASE 1: PLAN
         const plan = await analyzeToolPlan(contextText, headlessUserPrompt, "", null, ticketId);
 
-        // Tool Logs fürs spätere UI (Legacy) + Structured Tool Exec (neu)
+        // Tool Logs & Exec Info bauen
         const toolLogs = [];
         const toolExec = buildToolExecutionInfo(plan.tool_calls || []);
+        
+        // Konstante muss exakt zum Live-Modus passen für loadFromCache!
+        const MSG_NO_TOOLS_NEEDED = "✅ Keine Datenabfrage nötig.";
+
         if (toolExec) {
-            toolLogs.push(`⚙️ Hintergrund: ${toolExec.summary}`);
+            // Im Headless Modus loggen wir das Summary (wird aber meist durch toolExec Objekt ersetzt)
+            toolLogs.push(toolExec.summary);
         } else {
-            toolLogs.push(`✅ Hintergrund: Keine Datenabfrage nötig.`);
+            // WICHTIG: Exakt gleicher String wie im Live-Modus, ohne "Hintergrund:" Präfix
+            toolLogs.push(MSG_NO_TOOLS_NEEDED);
         }
 
-
-// PHASE 2: EXECUTE
+        // PHASE 2: EXECUTE
         const gatheredData = await executePlannedToolCalls(plan.tool_calls || [], ticketId);
 
         // PHASE 3: GENERATE
@@ -526,7 +537,6 @@ Erstelle einen Antwortentwurf im JSON-Format:
 
         finalResponse.toolLogs = toolLogs;
         finalResponse.toolExec = toolExec;
-        // Persistierbar machen, damit Live-Folgeprompts sofort wiederverwenden können
         finalResponse.lastToolData = gatheredData;
         return finalResponse;
     };
@@ -556,12 +566,12 @@ Erstelle einen Antwortentwurf im JSON-Format (kein Tool-Calling).
 `}]
             }];
 
-            // ÄNDERUNG: Parameter für Tools entfernt
             const fallbackResponse = await executeHeadlessLoop(contents, ticketId);
             
             if (fallbackResponse) {
                 if (!fallbackResponse.toolLogs) fallbackResponse.toolLogs = [];
-                fallbackResponse.toolLogs.push("⚠️ Hintergrund: Fallback ohne Datenabfrage (Planner/Worker fehlgeschlagen).");
+                // Auch hier sauberes Wording
+                fallbackResponse.toolLogs.push("⚠️ Hintergrund: Fallback (Datenabfrage fehlgeschlagen).");
             }
             return fallbackResponse;
         } catch (fbError) {
