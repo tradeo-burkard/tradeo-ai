@@ -422,7 +422,7 @@ async function fetchOrderDetails(orderId) {
 
                     let net = 0;
                     if (stockData && Array.isArray(stockData.entries) && stockData.entries.length > 0) {
-                        net = parseFloat(stockData.entries[0].stockNet || 0);
+                        net = parseFloat(stockData.entries[0].stockNet || "");
                     }
 
                     return { variationId: vid, stockNet: net };
