@@ -439,12 +439,15 @@ async function processTicket(id, incomingInboxHash) {
             // 3. KEVIN DRAFT
             initialHistory.push({ type: 'draft', content: aiResult.draft });
 
-            // 4. KEVIN REASONING (Statt einfacher Textnachricht)
-            // Damit erscheint auch beim Hintergrund-Scan die aufklappbare Box
-            // FIX: "details" leer lassen, wenn nichts da ist, damit der Renderer den Default-Text setzt (wie im Live Modus)
+            // 4. KEVIN REASONING
+            // FIX: Fallback für Summary, falls AI mal leer zurückgab (selten, aber möglich)
+            const safeSummary = aiResult.feedback && aiResult.feedback.trim() !== "" 
+                ? aiResult.feedback 
+                : "Automatisch vorbereitet";
+
             initialHistory.push({ 
                 type: 'reasoning', 
-                summary: aiResult.feedback || "Automatisch vorbereitet", 
+                summary: safeSummary, 
                 details: aiResult.reasoning || "" 
             });
 
