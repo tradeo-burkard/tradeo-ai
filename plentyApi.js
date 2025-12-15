@@ -801,7 +801,7 @@ async function searchItemsByText(searchText, options = {}) {
     __ensureDbCache();
 
     // ---- Optionen / Modi parsen ----
-    let mode = "nameAndDescription";
+    let mode = "name";
     let maxResults = 25;
     let onlyWithStock = true; // STANDARD: Nur Artikel mit Bestand anzeigen
 

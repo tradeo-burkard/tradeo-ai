@@ -106,6 +106,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
    - **KRITISCH:** Häufig sind die Namen von gefundenn Artikel sehr ähnlich. Hebe in solchen Fällen die Unterschiede mithilfe des Herstellermodells (Beschreibung) oder auch der Performance hervor.
      Also bei mehreren Festplatten mit fast gleichem Namen, geh auf die verschiedenen Lese- und Schreibleistungen und Herstellermodelle ein.
      Der Kunde muss in der Lage sein, sich auf Basis von zusätzlichen Angaben für eine der vom Namen her identisch wirkenden Artikeln entscheiden zu können!
+   - Wenn es um ein Battery Kit für HPE Gen8-Gen11 geht, sucht Karen automatisch nach dem richtigen Suchbegriff. Biete in den gefundenen Artikeln jeweils das gebrauchte und neue Battery Kit an, soweit beide verfügbar.
 
 3. **WICHTIG: ARTIKELNUMMERN & BEZEICHNUNGEN:**
    - **Die richtige Nummer:** Im Tool-Output findest du das Feld 'articleNumber'. Dies ist meist identisch mit der 'itemId' (z.B. 105400). **Kommuniziere IMMER diese Nummer an den Kunden.**
@@ -2276,9 +2277,13 @@ async function executeToolAction(fnName, fnArgs, cid) {
 
 // Heuristiken, um unnötige Tool-Re-Queries bei Folgeprompts (reine Umformulierungen) zu verhindern.
 // "refresh" Keywords lassen bewusst neue Abfragen zu.
-const FORCE_REFRESH_KEYWORDS_RE = /\b(nochmal|erneut|aktuell|refresh|neu\s*(?:laden|abfragen|prüfen|checken)|verifizieren|abgleichen)\b/i;
+// UPDATE: Massive Erweiterung um Wortstämme wie "biet..." (biete, bieten, bietest), "prüf...", "check..." etc.
+const FORCE_REFRESH_KEYWORDS_RE = /\b(nochmal|erneut|aktuell|refresh|neu\s*(?:laden|abfragen|prüfen|checken)|verifizieren|abgleichen|aktualisier\w*|such\w*|find\w*|schau\w*|guck\w*|biet\w*|anbiet\w*|recherchier\w*|prüf\w*|check\w*|scan\w*|ermittel\w*)\b/i;
+
 // Wenn der User *explizit* neue Fakten will, dürfen Tools laufen.
-const EXPLICIT_DATA_REQUEST_RE = /\b(bestell(?:status|nummer)?|order|tracking|liefer(?:status)?|versand|paket|lager(?:bestand)?|bestand|verfügbarkeit|preis|kundendaten|adresse|telefon|email|zoll|gewicht|herkunft)\b/i;
+// UPDATE: Artikelnummern-Pattern und spezifische Hardware-Begriffe ergänzt.
+const EXPLICIT_DATA_REQUEST_RE = /\b(bestell(?:status|nummer)?|order|tracking|liefer(?:status)?|versand|paket|lager(?:bestand)?|bestand|verfügbarkeit|preis|kundendaten|adresse|telefon|email|zoll|gewicht|herkunft|artikel|item|produkt|sku|ean|seriennummer|sn|modell)\b/i;
+
 // Typische "nur umformulieren/ergänzen"-Prompts.
 const EDIT_ONLY_RE = /\b(umformulieren|umformulierung|formuliere?n?|schreib\w*\s+um|korrigier\w*|rechtschreib\w*|ton(?:alität)?|freundlicher|kürzer|länger|struktur|format|unverändert|sonst\s+unverändert|nur\s+.*ergänz\w*|bitte\s+.*ergänz\w*|ergänz\w*|hinweis)\b/i;
 
@@ -2333,7 +2338,7 @@ function validateAndNormalizeToolCall(call) {
     if (name === 'searchItemsByText') {
         const searchText = String(args.searchText || "").trim();
         if (!searchText || searchText.length < 3) return null;
-        const mode = (args.mode === 'nameAndDescription' || args.mode === 'name') ? args.mode : 'nameAndDescription';
+        const mode = (args.mode === 'nameAndDescription' || args.mode === 'name') ? args.mode : 'name';
         
         let maxResults = Number(args.maxResults);
         if (!Number.isFinite(maxResults)) maxResults = 10;
@@ -2403,6 +2408,8 @@ Verfügbare Tools:
    - "Kundennummer 223232" / "Kunde 223232" / "Customer 223232" sind gängige Ausdrücke.
 4) searchItemsByText({ "searchText": "STRING", "mode": "name"|"nameAndDescription", "maxResults": NUMBER, "onlyWithStock": BOOLEAN })
    - **KRITISCH:** IMMMER Verkaufspreis mit angeben.
+   - WICHTIG: "mode" standardmäßig "name" verwenden, es sei denn, es ist im Ticket-Kontext speziell nötig, nach nameAndDescription zu suchen.
+   - Wenn's um ein Battery Kit für einen HP / HPE Server der Gen8 - Gen11 geht, suche nach "HPE 96W Smart Storage Battery 145mm", da werden die unterschiedlichen Battery Kits für all diese Server gefunden!
    - maxResults 5 oder größer.
    - Für Freitextsuche (z.B. "Dell R740", "Festplatte 900GB").
    - Ergebnisse werden automatisch nach BESTAND (absteigend) sortiert.
