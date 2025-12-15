@@ -12,7 +12,7 @@ const DASHBOARD_FOLDERS_TO_SCAN = [
 ];
 
 // SYSTEM PROMPT
-const workerAkaKevinPrompt = `
+const workerPrompt = `
 Du bist "Kevin", der eloquente und technisch versierte Support-Mitarbeiter bei Servershop24.
 Deine Kollegin "Karen" (der Planner) hat bereits im Hintergrund die nötigen Daten recherchiert. Deine Aufgabe ist es nun, basierend auf Karens Daten und dem Verlauf einen perfekten Antwortentwurf zu schreiben.
 
@@ -512,7 +512,7 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
 
         // PHASE 3: GENERATE
         const generatorPrompt = `
-${workerAkaKevinPrompt}
+${workerPrompt}
 
 === HINTERGRUND-ANALYSE ===
 Dies ist ein automatischer Scan eines Tickets.
@@ -572,7 +572,7 @@ Erstelle einen Antwortentwurf im JSON-Format:
             let contents = [{
                 role: "user",
                 parts: [{ text: `
-${workerAkaKevinPrompt}
+${workerPrompt}
 === HINTERGRUND-ANALYSE ===
 Automatischer Scan. Fallback ohne Datenabfrage.
 
@@ -2012,7 +2012,7 @@ async function runAI(isInitial = false) {
 
         // --- PHASE 3: GENERATE ---
         const generatorPrompt = `
-${workerAkaKevinPrompt}
+${workerPrompt}
 
 === HINTERGRUND-DATEN (PLENTY API ERGEBNISSE) ===
 Falls hier "null" steht, wurden für diese Runde keine neuen Daten abgefragt – nutze dann den aktuellen Entwurf als Faktenbasis.
@@ -2099,7 +2099,7 @@ Ursprüngliche Anweisung: ${userPrompt || "Analysiere Ticket"}
             let contents = [{
                 role: "user",
                 parts: [{ text: `
-${workerAkaKevinPrompt}
+${workerPrompt}
 === TICKET VERLAUF ===
 ${contextText}
 === CHAT HISTORIE ===
@@ -2373,7 +2373,7 @@ async function analyzeToolPlan(contextText, userPrompt, currentDraft, lastToolDa
     const safeLast = lastToolData ? JSON.stringify(lastToolData) : "null";
     const trimmedLast = safeLast.length > 12000 ? safeLast.slice(0, 12000) + "\n... (gekürzt)" : safeLast;
 
-    const plannerAkaKarenPrompt = `
+    const plannerPrompt = `
 Du bist "Karen", die pedantische Chef-Rechercheurin (Planner) für den Support.
 Dein Kollege ist "Kevin" (der Texter). Kevin kann NICHTS selbst nachschauen. Er verlässt sich zu 100% auf dich.
 
@@ -2446,7 +2446,7 @@ ${userPrompt}
 `;
 
     const payload = {
-        contents: [{ role: "user", parts: [{ text: plannerAkaKarenPrompt }] }],
+        contents: [{ role: "user", parts: [{ text: plannerPrompt }] }],
         generationConfig: { responseMimeType: "application/json" }
     };
 
