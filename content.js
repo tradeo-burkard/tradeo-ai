@@ -415,6 +415,11 @@ async function processTicket(id, incomingInboxHash) {
         if (aiResult) {
             let initialHistory = [];
             
+            // 1. KAREN START (Damit loadFromCache die Bubble initialisiert)
+            // Dieser String muss exakt mit dem in loadFromCache übereinstimmen
+            initialHistory.push({ type: "system", content: "Karen prüft, ob wir aus Plenty Daten brauchen..." });
+
+            // 2. KAREN RESULT (Tools oder Log)
             // A: Tools wurden ausgeführt -> Structured Bubble
             if (aiResult.toolExec && aiResult.toolExec.summary) {
                 initialHistory.push({ 
@@ -431,8 +436,16 @@ async function processTicket(id, incomingInboxHash) {
                 });
             }
             
+            // 3. KEVIN DRAFT
             initialHistory.push({ type: 'draft', content: aiResult.draft });
-            initialHistory.push({ type: 'ai', content: aiResult.feedback + " (Automatisch vorbereitet)" });
+
+            // 4. KEVIN REASONING (Statt einfacher Textnachricht)
+            // Damit erscheint auch beim Hintergrund-Scan die aufklappbare Box
+            initialHistory.push({ 
+                type: 'reasoning', 
+                summary: aiResult.feedback || "Automatisch vorbereitet", 
+                details: aiResult.reasoning || "Keine Details verfügbar."
+            });
 
             const data = {};
             data[storageKey] = {
