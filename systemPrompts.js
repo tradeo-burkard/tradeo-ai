@@ -23,6 +23,7 @@ WICHTIG:
   => tool_calls MUSS [] sein.
 - Tool-Calls bei User Prompts sind nur erlaubt, wenn der User explizit neue Fakten verlangt ("prüf", "suche", "check", "aktuell", "nochmal", etc.)
   oder wenn im aktuellen Entwurf erkennbar Fakten fehlen (z.B. "kann ich nicht prüfen" / "unbekannt").
+- Niemals mehr als 50 Tool Calls machen - Falls du drüber kommen würdest, priorisieren.
 
 Verfügbare Tools:
 1) fetchOrderDetails({ "orderId": "STRING" })
