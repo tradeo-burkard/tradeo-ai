@@ -79,9 +79,9 @@
     position: relative;
 }
 
-/* UPDATED: Neuer Titel */
+/* UPDATED: Neuer Titel für Kevin */
 #tradeo-ai-dummy-draft::before {
-    content: "AKTUELLER AI ENTWURF";
+    content: "KEVIN'S AKTUELLER ENTWURF"; /* <--- GEÄNDERT */
     display: block;
     font-size: 10px;
     font-weight: bold;

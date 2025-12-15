@@ -12,9 +12,14 @@ const DASHBOARD_FOLDERS_TO_SCAN = [
 ];
 
 // SYSTEM PROMPT
-const SYSTEM_PROMPT = `
-Du bist "Tradeo AI", der technische Support-Assistent für Servershop24.
-Deine Aufgabe ist es, den Nachrichtenverlauf zu analysieren und einen perfekten, fachlich korrekten Antwortentwurf für den Support-Mitarbeiter zu erstellen.
+const workerAkaKevinPrompt = `
+Du bist "Kevin", der eloquente und technisch versierte Support-Mitarbeiter bei Servershop24.
+Deine Kollegin "Karen" (der Planner) hat bereits im Hintergrund die nötigen Daten recherchiert. Deine Aufgabe ist es nun, basierend auf Karens Daten und dem Verlauf einen perfekten Antwortentwurf zu schreiben.
+
+Du recherchierst NICHT selbst (du hast keine Tools). Du verlässt dich auf die Daten, die Karen dir liefert.
+Wenn Karen keine Daten geliefert hat, gehe davon aus, dass keine nötig waren oder sie nicht gefunden wurden.
+
+Dein Stil: Professionell, freundlich, hilfsbereit ("Sie"-Form). Keine Signatur am Ende.
 
 ### DATEN-FORMAT (WICHTIG):
 Der Ticket-Verlauf wird dir als **JSON-Array** übergeben. Jedes Objekt darin ist eine Nachricht.
@@ -478,7 +483,7 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
 
         // PHASE 3: GENERATE
         const generatorPrompt = `
-${SYSTEM_PROMPT}
+${workerAkaKevinPrompt}
 
 === HINTERGRUND-ANALYSE ===
 Dies ist ein automatischer Scan eines Tickets.
@@ -539,7 +544,7 @@ Erstelle einen Antwortentwurf im JSON-Format:
             let contents = [{
                 role: "user",
                 parts: [{ text: `
-${SYSTEM_PROMPT}
+${workerAkaKevinPrompt}
 === HINTERGRUND-ANALYSE ===
 Automatischer Scan. Fallback ohne Datenabfrage.
 
@@ -1309,20 +1314,19 @@ function renderReasoningMessage(summary, details) {
     const safeDetails = details || "Keine detaillierte Begründung verfügbar.";
 
     msgDiv.innerHTML = `
-        <div class="reasoning-header">AI (Reasoning anzeigen)</div>
+        <div class="reasoning-header">Kevin (Reasoning anzeigen)</div>
         <div class="reasoning-summary">${summary}</div>
         <div class="reasoning-body">${safeDetails}</div>
     `;
     
-    // Toggle Event mit Text-Update
+    // Toggle Event
     msgDiv.onclick = (e) => {
         msgDiv.classList.toggle('expanded');
-        
         const header = msgDiv.querySelector('.reasoning-header');
         if (msgDiv.classList.contains('expanded')) {
-            header.textContent = "AI (Reasoning verbergen)";
+            header.textContent = "Kevin (Reasoning verbergen)";
         } else {
-            header.textContent = "AI (Reasoning anzeigen)";
+            header.textContent = "Kevin (Reasoning anzeigen)";
         }
     };
 
@@ -1378,7 +1382,7 @@ function renderToolExecutionMessage(summary, details) {
 
     const header = document.createElement('div');
     header.className = 'tool-header';
-    header.textContent = 'Tool-Ausführung (Details anzeigen)';
+    header.textContent = "Karen's Tool-Auswahl (Details anzeigen)";
 
     const sum = document.createElement('div');
     sum.className = 'tool-summary';
@@ -1392,13 +1396,12 @@ function renderToolExecutionMessage(summary, details) {
     msgDiv.appendChild(sum);
     msgDiv.appendChild(body);
 
-    // Toggle Event mit Text-Update
     msgDiv.onclick = () => {
         msgDiv.classList.toggle('expanded');
         if (msgDiv.classList.contains('expanded')) {
-            header.textContent = 'Tool-Ausführung (Details verbergen)';
+            header.textContent = "Karen's Tool-Auswahl (Details verbergen)";
         } else {
-            header.textContent = 'Tool-Ausführung (Details anzeigen)';
+            header.textContent = "Karen's Tool-Auswahl (Details anzeigen)";
         }
     };
 
@@ -1779,7 +1782,7 @@ async function runAI(isInitial = false) {
 
         // --- PHASE 3: GENERATE ---
         const generatorPrompt = `
-${SYSTEM_PROMPT}
+${workerAkaKevinPrompt}
 
 === HINTERGRUND-DATEN (PLENTY API ERGEBNISSE) ===
 Falls hier "null" steht, wurden für diese Runde keine neuen Daten abgefragt – nutze dann den aktuellen Entwurf als Faktenbasis.
@@ -1851,7 +1854,7 @@ Ursprüngliche Anweisung: ${userPrompt || "Analysiere Ticket"}
             let contents = [{
                 role: "user",
                 parts: [{ text: `
-${SYSTEM_PROMPT}
+${workerAkaKevinPrompt}
 === TICKET VERLAUF ===
 ${contextText}
 === CHAT HISTORIE ===
@@ -2107,9 +2110,15 @@ async function analyzeToolPlan(contextText, userPrompt, currentDraft, lastToolDa
     const safeLast = lastToolData ? JSON.stringify(lastToolData) : "null";
     const trimmedLast = safeLast.length > 12000 ? safeLast.slice(0, 12000) + "\n... (gekürzt)" : safeLast;
 
-    const plannerPrompt = `
-Du bist ein Planner für eine Support-Extension. Du darfst KEINE API-Calls machen.
-Du entscheidest nur, ob und welche Tools ausgeführt werden sollen, um die Anfrage zu beantworten.
+    const plannerAkaKarenPrompt = `
+Du bist "Karen", die pedantische Chef-Rechercheurin (Planner) für den Support.
+Dein Kollege ist "Kevin" (der Texter). Kevin kann NICHTS selbst nachschauen. Er verlässt sich zu 100% auf dich.
+
+Deine Aufgabe:
+Entscheide, ob Kevin für die Antwort auf die User-Anweisung neue Fakten braucht.
+- Wenn der User sagt: "Karen, such nach X", dann suche EXTREM gründlich nach X.
+- Wenn der User sagt: "Kevin, schreib das freundlicher", dann braucht Kevin KEINE neuen Daten -> tool_calls = [].
+- Wenn der User sagt: "Kevin, biete ihm Artikel XY an", dann MUSST du (Karen) erst Artikel XY suchen, damit Kevin die Daten (Preis, Bestand) hat, um sie dem Kunden zu nennen. Ignoriere nicht, dass Kevin angesprochen wurde - DU musst ihm zuarbeiten!
 
 WICHTIG:
 - Gib NUR JSON zurück. Kein Markdown, kein Text davor/danach.
@@ -2170,7 +2179,7 @@ ${userPrompt}
 `;
 
     const payload = {
-        contents: [{ role: "user", parts: [{ text: plannerPrompt }] }],
+        contents: [{ role: "user", parts: [{ text: plannerAkaKarenPrompt }] }],
         generationConfig: { responseMimeType: "application/json" }
     };
 
@@ -2375,7 +2384,7 @@ function renderDraftMessage(htmlContent) {
     const msgDiv = document.createElement('div');
     msgDiv.className = 'draft-msg'; 
     msgDiv.innerHTML = `
-        <div class="draft-header"><span class="icon">📄</span> Entwurf (Klicken zum Anzeigen)</div>
+        <div class="draft-header"><span class="icon">📄</span> Kevin's Entwurf (Klicken zum Anzeigen)</div>
         <div class="draft-body">${htmlContent}
             <div class="draft-actions">
                 <button class="draft-btn btn-copy">📋 Kopieren</button>
@@ -2387,11 +2396,10 @@ function renderDraftMessage(htmlContent) {
     const headerBtn = msgDiv.querySelector('.draft-header');
     headerBtn.onclick = () => {
         msgDiv.classList.toggle('expanded');
-        // Text Update (Icon beibehalten)
         if (msgDiv.classList.contains('expanded')) {
-            headerBtn.innerHTML = '<span class="icon">📄</span> Entwurf (Klicken zum Verbergen)';
+            headerBtn.innerHTML = '<span class="icon">📄</span> Kevin\'s Entwurf (Klicken zum Verbergen)';
         } else {
-            headerBtn.innerHTML = '<span class="icon">📄</span> Entwurf (Klicken zum Anzeigen)';
+            headerBtn.innerHTML = '<span class="icon">📄</span> Kevin\'s Entwurf (Klicken zum Anzeigen)';
         }
     };
 
