@@ -1303,31 +1303,59 @@ function updateKarenBubble(msgDiv, summaryText, detailsText, isFinished = false)
     const summary = msgDiv.querySelector('.tool-summary');
     const body = msgDiv.querySelector('.tool-body');
 
-    if (header) header.textContent = "Karen's Plenty Tool-To-Do (Details)";
+    // Standard-Header während des Ladens
+    if (header && !isFinished) header.textContent = "Karen's Plenty Tool-To-Do (Details)";
+    
     if (summary) summary.textContent = summaryText;
     
+    // Body / Details Logik
     if (body && detailsText) {
         body.textContent = detailsText;
+        body.style.display = 'none'; // Reset display state
+        
         // Klick-Handler nur hinzufügen, wenn Details da sind
         msgDiv.onclick = (e) => {
             // Verhindert, dass Klicks beim Selektieren feuern
             if (window.getSelection().toString().length > 0) return;
             
             msgDiv.classList.toggle('expanded');
+            
+            // Header Text dynamisch anpassen beim Auf-/Zuklappen
             if (header) {
                 const prefix = isFinished ? "✅ " : "";
+                // Wenn expanded -> (Verbergen), sonst -> (Details)
                 header.textContent = msgDiv.classList.contains('expanded') 
                     ? prefix + "Karen's Plenty Tool-To-Do (Verbergen)" 
                     : prefix + "Karen's Plenty Tool-To-Do (Details)";
             }
+            
+            // Body Sichtbarkeit toggeln
+            if (msgDiv.classList.contains('expanded')) {
+                body.style.display = 'block';
+            } else {
+                body.style.display = 'none';
+            }
         };
+        // Cursor Pointer, damit man sieht, dass es klickbar ist
+        msgDiv.style.cursor = 'pointer';
+
     } else if (body) {
         body.style.display = 'none';
+        msgDiv.onclick = null; // Klick entfernen wenn keine Details
+        msgDiv.style.cursor = 'default';
     }
 
+    // Fertig-Status Logik
     if (isFinished) {
         msgDiv.classList.add('finished');
-        if(header) header.textContent = "✅ Karen's Plenty Tool-To-Do (Details)";
+        if(header) {
+            // FIX: Header Text abhängig davon, ob Details existieren
+            if (detailsText) {
+                header.textContent = "✅ Karen's Plenty Tool-To-Do (Details)";
+            } else {
+                header.textContent = "✅ Karen's Plenty Tool-To-Do";
+            }
+        }
     }
 }
 
@@ -1870,6 +1898,10 @@ async function runAI(isInitial = false) {
         // --- UPDATE KAREN BUBBLE (PLAN) ---
         const toolExec = buildToolExecutionInfo(toolCallsToExecute);
         
+        // Konstanten für konsistente Nachrichten (Live & Cache)
+        const MSG_TOOLS_SKIPPED_CACHE = "♻️ Keine neuen Tool-Aufrufe (Daten vorhanden).";
+        const MSG_NO_TOOLS_NEEDED = "✅ Keine Datenabfrage nötig.";
+
         if (toolExec) {
             // Zeige an, welche Tools geplant sind
             updateKarenBubble(karenBubble, toolExec.summary, toolExec.details);
@@ -1885,9 +1917,9 @@ async function runAI(isInitial = false) {
             // Keine Tools nötig
             let noToolsMsg = "";
             if (lastToolData) {
-                noToolsMsg = "♻️ Keine neuen Tool-Aufrufe (Daten vorhanden).";
+                noToolsMsg = MSG_TOOLS_SKIPPED_CACHE;
             } else {
-                noToolsMsg = "✅ Keine Datenabfrage nötig.";
+                noToolsMsg = MSG_NO_TOOLS_NEEDED;
             }
             
             updateKarenBubble(karenBubble, noToolsMsg, null);
@@ -1906,7 +1938,16 @@ async function runAI(isInitial = false) {
 
         // --- KAREN FINISH & KEVIN START ---
         // 1. Karen grün machen
-        const finalStatus = toolExec ? toolExec.summary : (lastToolData ? "♻️ Cache genutzt" : "✅ Textmodus");
+        // FIX: Hier nutzen wir exakt dieselben Strings wie oben für Konsistenz
+        let finalStatus = "";
+        if (toolExec) {
+            finalStatus = toolExec.summary;
+        } else if (lastToolData) {
+            finalStatus = MSG_TOOLS_SKIPPED_CACHE;
+        } else {
+            finalStatus = MSG_NO_TOOLS_NEEDED;
+        }
+
         updateKarenBubble(karenBubble, finalStatus, toolExec ? toolExec.details : null, true);
 
         // 2. Kevin Bubbles sofort anzeigen (Loading State)
