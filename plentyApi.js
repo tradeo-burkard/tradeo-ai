@@ -203,29 +203,48 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
     }
 }
 
+/**
+ * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
+ * UPDATED: 
+ *  - Bundle-Parent orderItemDescription anreichern (HTML->Text) VOR dem Stripping
+ *  - orderItems: id wieder drin (neben itemVariationId)
+ *  - references nicht droppen, sondern strippen (id/createdAt/updatedAt raus)
+ *  - orderItem.amounts: nur { priceGross, priceNet }
+ *  - order.amounts: Summary-Objekt (nicht leer) mit Totals
+ *  - shippedAt entfernt (wie gehabt)
+ */
 async function fetchOrderDetails(orderId) {
     try {
         // 1. Hole Order mit Basis-Relationen + shippingPackages
-        const orderData = await makePlentyCall(`/rest/orders/${orderId}?with[]=orderItems&with[]=relations&with[]=amounts&with[]=dates&with[]=addressRelations&with[]=shippingPackages`);
-        
+        const orderData = await makePlentyCall(
+            `/rest/orders/${orderId}?with[]=orderItems&with[]=relations&with[]=amounts&with[]=dates&with[]=addressRelations&with[]=shippingPackages`
+        );
+
         if (!orderData) throw new Error("Order not found");
 
-        // --- BUNDLE-PARENT: Item-Description anreichern (vor dem Stripping) ---
-        // Logik:
-        // - Suche alle referenceOrderItemId, die in references auftauchen UND referenceType === "bundle" ist
-        // - Das sind die Parent-OrderItems (BUNDLE-Header)
-        // - Für jeden Parent: nur wenn orderItemName NICHT "Upgrade to"/"Upgrade auf" enthält
-        // - Dann: itemVariationId -> itemId -> Item-Text (DE bevorzugt) -> HTML->Text
-        // - Ergebnis wird als orderItemDescription direkt unter orderItemName in den Original-Return eingearbeitet
+        const result = {
+            meta: { type: "PLENTY_ORDER_FULL_EXPORT", orderId: orderId, timestamp: new Date().toISOString() },
+            // Wird unten überschrieben durch bereinigte Version
+            order: orderData,
+            stocks: [],
+            addresses: [],
+            shippingInfo: {
+                destinationCountry: "Unknown"
+                // shippedAt entfernt (Anforderung)
+            }
+        };
+
+        // ------------------------------------------------------------
+        // 0) BUNDLE-PARENT: Item-Description anreichern (VOR Stripping)
+        // ------------------------------------------------------------
         const enrichBundleParentDescriptions = async (order) => {
-            const orderItems = order?.orderItems || [];
-            if (!orderItems.length) return;
+            const items = order?.orderItems || [];
+            if (!items.length) return;
 
-            const byId = new Map(orderItems.map(oi => [String(oi.id), oi]));
+            // Sammle alle referenceOrderItemId, aber nur wenn referenceType === "bundle"
             const bundleParentIds = new Set();
-
-            for (const oi of orderItems) {
-                for (const ref of (oi?.references || [])) {
+            for (const it of items) {
+                for (const ref of (it?.references || [])) {
                     if (!ref) continue;
                     const refType = String(ref.referenceType || "").toLowerCase();
                     const refId = ref.referenceOrderItemId;
@@ -234,18 +253,25 @@ async function fetchOrderDetails(orderId) {
                     }
                 }
             }
-
             if (!bundleParentIds.size) return;
 
-            // Caches, damit wir nicht mehrfach dasselbe nachladen
+            const byId = new Map(items.map((oi) => [String(oi.id), oi]));
+
+            // Cache, damit wir pro Variation / Item nur 1x callen
             const variationIdToItemId = new Map();
             const itemIdToDescription = new Map();
+
+            const nameBlocked = (name) => {
+                const lower = String(name || "").toLowerCase();
+                return lower.includes("upgrade to") || lower.includes("upgrade auf");
+            };
 
             const pickPreferredText = (texts) => {
                 if (!Array.isArray(texts) || texts.length === 0) return null;
                 const norm = (v) => String(v ?? "").toLowerCase().trim();
-                const langOf = (t) => norm(t.lang ?? t.language ?? t.langCode ?? t.languageCode ?? t.langId ?? t.languageId);
-                return texts.find(t => langOf(t) === "de") || texts[0];
+                const langOf = (t) =>
+                    norm(t.lang ?? t.language ?? t.langCode ?? t.languageCode ?? t.langId ?? t.languageId);
+                return texts.find((t) => langOf(t) === "de") || texts[0];
             };
 
             const resolveItemIdFromVariationId = async (variationId) => {
@@ -254,13 +280,13 @@ async function fetchOrderDetails(orderId) {
 
                 let itemId = null;
 
-                // Versuch A: direktes Detail-Endpoint
+                // Versuch A: direkter Endpoint
                 try {
                     const v = await makePlentyCall(`/rest/items/variations/${variationId}`);
                     if (v && typeof v.itemId !== "undefined" && v.itemId !== null) itemId = v.itemId;
                 } catch (e) {}
 
-                // Versuch B: Query-Endpoint (Fallback)
+                // Versuch B: Query-Fallback
                 if (!itemId) {
                     try {
                         const res = await makePlentyCall(`/rest/items/variations?id=${variationId}&itemsPerPage=1`);
@@ -291,13 +317,8 @@ async function fetchOrderDetails(orderId) {
                 return desc;
             };
 
-            const nameBlocked = (name) => {
-                const lower = String(name || "").toLowerCase();
-                return lower.includes("upgrade to") || lower.includes("upgrade auf");
-            };
-
             const insertDescriptionDirectlyUnderName = (oi, desc) => {
-                // Neue Objekt-Reihenfolge erzeugen: ... orderItemName, orderItemDescription, ...
+                // "orderItemDescription" direkt nach "orderItemName" einfügen (Key-Reihenfolge)
                 const out = {};
                 let inserted = false;
                 for (const [k, v] of Object.entries(oi)) {
@@ -311,45 +332,135 @@ async function fetchOrderDetails(orderId) {
                 return out;
             };
 
-            // Sequentiell (wenige Parents, weniger Risiko für API-Spikes)
+            // Sequentiell, um API nicht zu fluten
             for (const parentId of bundleParentIds) {
                 const parent = byId.get(parentId);
                 if (!parent) continue;
-                if (!parent.itemVariationId) continue;
+
+                // Filter: nur wenn Parent-OrderItem "Upgrade..." NICHT enthält
                 if (nameBlocked(parent.orderItemName)) continue;
 
-                const itemId = await resolveItemIdFromVariationId(parent.itemVariationId);
+                const variationId = parent.itemVariationId;
+                if (!variationId) continue;
+
+                const itemId = await resolveItemIdFromVariationId(variationId);
                 if (!itemId) continue;
 
                 const desc = await fetchItemDescriptionByItemId(itemId);
                 if (!desc) continue;
 
-                // Austausch im Original-Array, damit die Property "unter" orderItemName sitzt
-                const idx = orderItems.findIndex(x => String(x.id) === parentId);
+                const idx = items.findIndex((x) => String(x.id) === String(parentId));
                 const patched = insertDescriptionDirectlyUnderName(parent, desc);
 
-                if (idx >= 0) orderItems[idx] = patched;
+                if (idx >= 0) items[idx] = patched;
                 byId.set(parentId, patched);
             }
 
-            order.orderItems = orderItems;
+            order.orderItems = items;
         };
 
         await enrichBundleParentDescriptions(orderData);
 
-        const result = {
-            meta: { type: "PLENTY_ORDER_FULL_EXPORT", orderId: orderId, timestamp: new Date().toISOString() },
-            // Wird unten überschrieben durch bereinigte Version
-            order: orderData,
-            stocks: [],
-            addresses: [],
-            shippingInfo: {
-                destinationCountry: "Unknown" 
-                // shippedAt entfernt (Anforderung)
-            }
+        // ------------------------------------------------------------
+        // 2) Adressen auflösen & Zielland ermitteln (FEATURE BEHALTEN)
+        // ------------------------------------------------------------
+        if (orderData.addressRelations && orderData.addressRelations.length > 0) {
+            const addressPromises = orderData.addressRelations.map(async (rel) => {
+                try {
+                    const addrDetail = await makePlentyCall(`/rest/accounts/addresses/${rel.addressId}`);
+
+                    // Lieferadresse (TypeId 2) -> Zielland bestimmen
+                    if (rel.typeId === 2 && addrDetail) {
+                        const cId = addrDetail.countryId;
+                        result.shippingInfo.destinationCountry = COUNTRY_MAP[cId] || `Land-ID ${cId}`;
+                    }
+
+                    // --- ADDRESS STRIPPING ---
+                    const {
+                        id, stateId, readOnly, checkedAt, createdAt, updatedAt, title, contactPerson,
+                        options,
+                        ...cleanAddr
+                    } = addrDetail;
+
+                    // --- ADDRESS OPTIONS STRIPPING & MAPPING ---
+                    const cleanOptions = (options || []).map((opt) => ({
+                        typeId: opt.typeId,
+                        typeName: ADDRESS_OPTION_TYPE_MAP[String(opt.typeId)] || `Unknown (${opt.typeId})`,
+                        value: opt.value
+                    }));
+
+                    return {
+                        relationType:
+                            rel.typeId === 1 ? "Billing/Rechnung" :
+                            (rel.typeId === 2 ? "Shipping/Lieferung" : "Other"),
+                        ...cleanAddr,
+                        options: cleanOptions
+                    };
+                } catch (e) {
+                    return null;
+                }
+            });
+
+            const loadedAddresses = await Promise.all(addressPromises);
+            result.addresses = loadedAddresses.filter((a) => a !== null);
+        }
+
+        // ------------------------------------------------------------
+        // 3) Bestände holen & STRIPPEN (FEATURE BEHALTEN)
+        // ------------------------------------------------------------
+        if (orderData.orderItems) {
+            const variationIds = orderData.orderItems
+                .filter((item) => item.typeId === 3 || item.typeId === 1) // Artikel & Variationen
+                .map((item) => item.itemVariationId)
+                .filter((vid) => vid !== null && typeof vid !== "undefined");
+
+            const uniqueVarIds = [...new Set(variationIds)];
+
+            const stockPromises = uniqueVarIds.map(async (vid) => {
+                try {
+                    const stockData = await makePlentyCall(`/rest/stockmanagement/stock?variationId=${vid}&warehouseId=1`);
+
+                    let net = 0;
+                    if (stockData && Array.isArray(stockData.entries) && stockData.entries.length > 0) {
+                        net = parseFloat(stockData.entries[0].stockNet || 0);
+                    }
+
+                    return { variationId: vid, stockNet: net };
+                } catch (e) {
+                    return { variationId: vid, stockNet: 0, error: "Fetch Fail" };
+                }
+            });
+
+            result.stocks = await Promise.all(stockPromises);
+        }
+
+        // ------------------------------------------------------------
+        // 5) DATA STRIPPING (FEATURES BEHALTEN + neue Anforderungen)
+        // ------------------------------------------------------------
+
+        const removeOrderId = (obj) => {
+            if (!obj || typeof obj !== "object") return obj;
+            const { orderId, ...rest } = obj;
+            return rest;
         };
 
-        // PROPERTIES Cleaner (Stripped createdAt, updatedAt)
+        const cleanList = (list) => (list || []).map(removeOrderId);
+
+        // Relations: Filtert Warehouse raus UND entfernt orderId (wie vorher)
+        const cleanRelations = (orderData.relations || [])
+            .filter((r) => r.referenceType !== "warehouse")
+            .map(removeOrderId);
+
+        // DATES Cleaner (Stripped createdAt, updatedAt) + typeName mapping (wie vorher)
+        const cleanDates = (list) => (list || []).map((d) => {
+            const { orderId, typeId, createdAt, updatedAt, ...rest } = d;
+            const newObj = { typeId, ...rest };
+            const resolvedName = ORDER_DATE_TYPE_MAP[String(typeId)];
+            if (resolvedName) newObj.typeName = resolvedName;
+            return newObj;
+        });
+
+        // PROPERTIES Cleaner (Stripped createdAt, updatedAt) + shipping/payment mapping (wie vorher)
         const cleanProperties = (list) => (list || []).reduce((acc, p) => {
             if (!p) return acc;
             if (p.typeId == 1) return acc; // TypeId 1 (Lager) ignorieren
@@ -367,117 +478,108 @@ async function fetchOrderDetails(orderId) {
                 const resolvedPayment = PAYMENTMETHOD_MAP[String(value)];
                 if (resolvedPayment) newObj.paymentMethodName = resolvedPayment;
             }
-            
+
             acc.push({ ...newObj, value, ...rest });
             return acc;
         }, []);
 
-        // Generic Cleaner (removes createdAt, updatedAt)
-        const cleanList = (list) => (list || []).map(obj => {
-            if (!obj) return obj;
-            const { createdAt, updatedAt, ...rest } = obj;
-            return rest;
-        });
-
-        // --- ADDRESS RELATIONS & ADDRESS DETAIL ---
-        const addrRels = orderData.addressRelations || [];
-        for (const rel of addrRels) {
-            try {
-                const addrDetail = await makePlentyCall(`/rest/accounts/addresses/${rel.addressId}`);
-                if (!addrDetail) continue;
-
-                // destinationCountry aus Lieferadresse ableiten (typeId 2)
-                if (rel.typeId === 2 && addrDetail) {
-                    const cId = addrDetail.countryId;
-                    result.shippingInfo.destinationCountry = COUNTRY_MAP[cId] || `Land-ID ${cId}`;
-                }
-
-                // --- ADDRESS STRIPPING ---
-                const { 
-                    id, stateId, readOnly, checkedAt, createdAt, updatedAt, title, contactPerson, 
-                    options, 
-                    ...cleanAddr 
-                } = addrDetail;
-
-                // --- ADDRESS OPTIONS STRIPPING & MAPPING ---
-                const cleanOptions = (options || []).map(opt => ({
-                    typeId: opt.typeId,
-                    typeName: ADDRESS_OPTION_TYPE_MAP[String(opt.typeId)] || `Unknown (ID: ${opt.typeId})`,
-                    value: opt.value
-                }));
-
-                result.addresses.push({
-                    addressTypeId: rel.typeId,
-                    addressTypeName: ADDRESS_TYPE_MAP[String(rel.typeId)] || `Unknown (ID: ${rel.typeId})`,
-                    ...cleanAddr,
-                    options: cleanOptions
-                });
-            } catch (e) {
-                console.warn("Adress-Details konnten nicht geladen werden:", e);
-            }
-        }
-
-        // Amounts Cleaner (nur relevante Felder)
-        const cleanAmountsList = (amounts) => (amounts || []).filter(a =>
-            (a.purchasePrice || 0) !== 0 ||
-            (a.priceOrig || 0) !== 0 ||
-            (a.priceNet || 0) !== 0
-        ).map(a => ({
-            purchasePrice: a.purchasePrice,
-            priceOrig: a.priceOrig,
-            priceNet: a.priceNet,
-            currency: a.currency
-        }));
-
-        // References: nicht mehr droppen, sondern strippen (id/createdAt/updatedAt raus)
-        const cleanReferences = (refs) => (refs || []).map(ref => {
+        // references: nicht mehr droppen, sondern strippen (id/createdAt/updatedAt raus)
+        const cleanReferences = (refs) => (refs || []).map((ref) => {
             if (!ref) return ref;
-            const { id, orderItemId, createdAt, updatedAt, ...rest } = ref;
+            const { id, createdAt, updatedAt, ...rest } = ref;
             return rest;
         });
 
-        // Items: MASSIVE REDUKTION + NEU: orderItem id behalten + references stripped mitgeben
-        const cleanItems = (orderData.orderItems || []).map(item => {
-            let cleanAmounts = (item.amounts || []).map(amt => ({
-                purchasePrice: amt.purchasePrice,
-                priceOrig: amt.priceOrig,
-                priceNet: amt.priceNet,
-                currency: amt.currency
-            })).filter(a =>
-                (a.purchasePrice || 0) !== 0 ||
-                (a.priceOrig || 0) !== 0 ||
-                (a.priceNet || 0) !== 0
-            );
+        // Order Amounts: statt Liste -> Summary-Objekt (nicht leer)
+        const cleanOrderAmountsSummary = (amountsList) => {
+            const a = Array.isArray(amountsList) ? (amountsList[0] || {}) : (amountsList || {});
+            return {
+                isNet: Boolean(a.isNet ?? false),
+                currency: a.currency ?? "EUR",
+                exchangeRate: Number(a.exchangeRate ?? 1),
+                netTotal: Number(a.netTotal ?? 0),
+                grossTotal: Number(a.grossTotal ?? 0),
+                vatTotal: Number(a.vatTotal ?? 0),
+                invoiceTotal: Number(a.invoiceTotal ?? a.grossTotal ?? 0),
+                paidAmount: Number(a.paidAmount ?? 0),
+                shippingCostsGross: Number(a.shippingCostsGross ?? 0),
+                shippingCostsNet: Number(a.shippingCostsNet ?? 0)
+            };
+        };
+
+        // OrderItem Amounts: nur { priceGross, priceNet }
+        const cleanOrderItemAmounts = (item) => {
+            const arr = item?.amounts || [];
+            const a =
+                arr.find((x) => (x && (typeof x.priceGross !== "undefined" || typeof x.priceNet !== "undefined"))) ||
+                arr[0] ||
+                {};
+
+            let priceGross = a.priceGross;
+            let priceNet = a.priceNet;
+
+            // Fallbacks, falls Plenty bei euch anders liefert
+            if (typeof priceGross === "undefined" || priceGross === null) {
+                priceGross = a.priceOriginalGross ?? a.priceOrig ?? a.priceOriginal ?? undefined;
+            }
+            if (typeof priceNet === "undefined" || priceNet === null) {
+                priceNet = a.priceOriginalNet ?? undefined;
+            }
+
+            // Wenn gross fehlt, evtl. aus net + vatRate berechnen
+            if ((typeof priceGross === "undefined" || priceGross === null) && typeof priceNet === "number") {
+                const vatRate = Number(item?.vatRate ?? 0);
+                if (vatRate > 0) {
+                    priceGross = Math.round(priceNet * (1 + vatRate / 100) * 100) / 100;
+                }
+            }
 
             return {
-                id: item.id, // ✅ wieder drin für ALLE orderItems
-                itemVariationId: item.itemVariationId, // ✅ weiterhin drin
-                quantity: item.quantity,
-                orderItemName: item.orderItemName,
-                orderItemDescription: item.orderItemDescription,
-                references: cleanReferences(item.references), // ✅ references wieder drin, aber stripped
-                amounts: cleanAmounts
+                priceGross: (typeof priceGross === "number") ? priceGross : Number(priceGross ?? 0),
+                priceNet: (typeof priceNet === "number") ? priceNet : Number(priceNet ?? 0)
             };
-        });
+        };
 
-        // SHIPPING PACKAGES Cleaner
-        const cleanShippingPackages = (orderData.shippingPackages || []).map(p => ({
+        // Items: Alle bisherigen Features behalten + neue Anforderungen:
+        // - id wieder drin
+        // - orderItemDescription (falls vorhanden durch Bundle-Enrichment)
+        // - references stripped
+        // - amounts als {priceGross, priceNet}
+        const cleanItems = (orderData.orderItems || []).map((item) => ({
+            id: item.id,                          // ✅ wieder drin
+            itemVariationId: item.itemVariationId, // ✅ wie gewünscht neben id
+            quantity: item.quantity,
+            orderItemName: item.orderItemName,
+            orderItemDescription: item.orderItemDescription,
+            references: cleanReferences(item.references),
+            amounts: cleanOrderItemAmounts(item)
+        }));
+
+        // SHIPPING PACKAGES Cleaner (wie vorher)
+        const cleanShippingPackages = (orderData.shippingPackages || []).map((p) => ({
             weight: p.weight,
             packageNumber: p.packageNumber
         }));
 
-        // --- ORDER STRIPPING (TOP LEVEL) ---
-        const {
-            // sehr viel raus
-            createdAt, updatedAt, ...cleanOrderBase
-        } = orderData;
-
+        // Top-Level Order: bisherige Felder NICHT kompromittieren
         const cleanOrder = {
-            ...cleanOrderBase,
+            id: orderData.id,
+            statusName: orderData.statusName,
+            statusId: orderData.statusId,
+            typeId: orderData.typeId,
+            typeName: ORDER_TYPES?.[String(orderData.typeId)] || `Unknown (ID: ${orderData.typeId})`,
+            lockStatus: orderData.lockStatus,
+            createdAt: orderData.createdAt,  // wie vorher beibehalten
+            updatedAt: orderData.updatedAt,  // wie vorher beibehalten
+            ownerId: orderData.ownerId,
+
+            relations: cleanRelations,
             properties: cleanProperties(orderData.properties),
-            relations: cleanList(orderData.relations),
-            dates: cleanList(orderData.dates),
-            amounts: cleanAmountsList(orderData.amounts),
+            dates: cleanDates(orderData.dates),
+
+            // ✅ neu: Summary-Objekt statt leer/komplexer Liste
+            amounts: cleanOrderAmountsSummary(orderData.amounts),
+
             orderReferences: cleanList(orderData.orderReferences),
             orderItems: cleanItems,
             shippingPackages: cleanShippingPackages
@@ -491,6 +593,7 @@ async function fetchOrderDetails(orderId) {
         throw error;
     }
 }
+
 
 
 /**
