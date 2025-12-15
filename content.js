@@ -638,103 +638,106 @@ async function executeHeadlessLoop(contents, ticketId) {
 }
 
 // =============================================================================
-// FUNKTION: CONTEXT EXTRACTION (JSON V4 - No Drafts)
+// FUNKTION: CONTEXT EXTRACTION (Robust V6 - Hash Source)
 // =============================================================================
-/**
- * Extrahiert den strukturierten Text-Kontext für die AI als JSON-String.
- * Updates: 
- * - Ignoriert Nachrichten, wenn Sender "[Entwurf]" enthält (verhindert Hash-Änderung beim Tippen).
- * - "msg" statt "body", "cc" als Array.
- */
 function extractContextFromDOM(docRoot) {
     const mainContainer = docRoot.querySelector('#conv-layout-main');
     if (!mainContainer) return "[]"; 
 
     const messages = [];
-    // Reihenfolge im DOM ist meist: Neueste Oben -> Wir drehen um für Chronologie (Alt -> Neu)
+    // Threads von Alt nach Neu sortieren
     const threads = Array.from(mainContainer.querySelectorAll('.thread')).reverse();
 
     threads.forEach(thread => {
-        // 1. SENDER & ZEIT (Zuerst holen für Filter)
+        // 1. SENDER: Whitespace normalisieren
         const personEl = thread.querySelector('.thread-person');
-        const senderName = personEl ? personEl.innerText.trim().replace(/\s+/g, ' ') : "Unbekannt";
+        const senderName = personEl ? personEl.textContent.trim().replace(/\s+/g, ' ') : "Unbekannt";
 
-        // --- FILTER: ENTWÜRFE IGNORIEREN ---
-        // Wenn dies ein Entwurf ist, brechen wir hier ab. 
-        // Das verhindert, dass der Content-Hash sich ändert, während ein Agent tippt/speichert.
+        // Filter: Entwürfe ignorieren (verhindert Hash-Änderung während des Tippens)
         if (senderName.includes("[Entwurf]") || senderName.includes("[Draft]")) {
             return; 
         }
 
-        // 2. TYP BESTIMMUNG
+        // 2. TYP & ID
+        const threadId = thread.getAttribute('data-thread_id') || "unknown";
         let type = "unknown";
-        if (thread.classList.contains('thread-type-note')) {
-            type = "internal_note";
-        } else if (thread.classList.contains('thread-type-customer')) {
-            type = "customer_message";
-        } else if (thread.classList.contains('thread-type-message')) {
-            type = "support_reply";
-        }
+        if (thread.classList.contains('thread-type-note')) type = "internal_note";
+        else if (thread.classList.contains('thread-type-customer')) type = "customer_message";
+        else if (thread.classList.contains('thread-type-message')) type = "support_reply";
 
+        // 3. ZEIT (ROBUST FIX)
+        // Hintergrund (Raw HTML): Datum steht in 'title'.
+        // Live (Bootstrap JS): Datum steht in 'data-original-title', 'title' ist leer.
+        // Wir prüfen beide, um Konsistenz zu garantieren.
         const dateEl = thread.querySelector('.thread-date');
-        const timestamp = dateEl ? (dateEl.getAttribute('data-original-title') || dateEl.innerText.trim()) : "";
+        let timestamp = "";
+        if (dateEl) {
+            timestamp = dateEl.getAttribute('data-original-title') || dateEl.getAttribute('title') || "";
+        }
+        timestamp = timestamp.trim();
 
-        // 3. EMPFÄNGER (CC) PARSING
-        // Ziel: ["mail@a.com", "mail@b.com"] ohne "An:" Prefix
+        // 4. EMPFÄNGER (CC)
         let recipientsList = [];
         const recipientsContainer = thread.querySelector('.thread-recipients');
         if (recipientsContainer) {
-            // Text holen (z.B. "An: a@b.com, c@d.com")
-            let rawText = recipientsContainer.innerText;
-            // Prefixes entfernen (An:, Cc:, Bcc:, Von:)
+            let rawText = recipientsContainer.textContent || ""; 
             rawText = rawText.replace(/^(An|Cc|Bcc|Von):\s*/gim, '').replace(/\n/g, ',');
-            
-            // Splitten am Komma und bereinigen
             recipientsList = rawText.split(',')
                 .map(s => s.trim())
-                .filter(s => s.length > 0 && !s.toLowerCase().includes('an:')); // Sicherheitsfilter
+                .filter(s => s.length > 0 && !s.toLowerCase().includes('an:')); 
         }
 
-        // 4. NACHRICHTEN-INHALT
+        // 5. NACHRICHT (DOM PARSER COMPATIBILITY FIX)
+        // Problem: 'innerText' existiert im Background-Worker (DOMParser) nicht korrekt.
+        // 'textContent' klebt aber "Hallo<br>Welt" zu "HalloWelt" zusammen.
+        // Lösung: Wir klonen den Node, ersetzen Block-Elemente durch Spaces und nehmen dann textContent.
         let bodyText = "";
         const contentEl = thread.querySelector('.thread-content');
         if (contentEl) {
+            // Klonen, um das Live-DOM nicht zu verändern
             const clone = contentEl.cloneNode(true);
-            bodyText = clone.innerText.trim();
+            
+            // Block-Breaks simulieren für textContent
+            const blockTags = clone.querySelectorAll('br, p, div, li, tr');
+            blockTags.forEach(tag => {
+                // Füge ein Leerzeichen nach jedem Block-Element ein
+                if(tag.parentNode) {
+                    const space = document.createTextNode(' ');
+                    tag.parentNode.insertBefore(space, tag.nextSibling);
+                }
+            });
+
+            const rawText = clone.textContent || "";
+            // Alles zu einer Zeile normalisieren -> Garantiert gleichen Hash
+            bodyText = rawText.replace(/\s+/g, ' ').trim();
         }
 
-        // 5. ANHÄNGE
+        // 6. ANHÄNGE
         let fileList = [];
         const attachmentsEl = thread.querySelector('.thread-attachments');
         if (attachmentsEl) {
             fileList = Array.from(attachmentsEl.querySelectorAll('li')).map(li => {
                 const link = li.querySelector('a.attachment-link');
                 const sizeSpan = li.querySelector('.text-help');
-                const name = link ? link.innerText.trim() : "";
-                const size = sizeSpan ? sizeSpan.innerText.trim() : "";
+                const name = link ? link.textContent.trim() : "";
+                const size = sizeSpan ? sizeSpan.textContent.trim() : "";
                 return name ? (size ? `${name} (${size})` : name) : null;
             }).filter(Boolean);
         }
 
-        // ✅ FIX: "Ghost/Placeholder"-Threads ignorieren (verhindert Re-Hashing)
-        if (
-            senderName === "Unbekannt" &&
-            type === "unknown" &&
-            (!bodyText || bodyText.trim() === "") &&
-            recipientsList.length === 0 &&
-            fileList.length === 0
-        ) {
-            return; // Thread komplett überspringen
+        // Leere "Geister-Threads" ignorieren
+        if (senderName === "Unbekannt" && type === "unknown" && !bodyText && fileList.length === 0) {
+            return;
         }
 
-        // 6. JSON OBJEKT BAUEN
         const msgObj = {
+            id: threadId,      // ID garantiert Eindeutigkeit
             type: type,
             sender: senderName,
-            time: timestamp,
-            msg: bodyText
+            time: timestamp,   // Jetzt stabil dank title/data-original-title Fallback
+            msg: bodyText      // Jetzt stabil dank Normalisierung
         };
-
+        
         if (recipientsList.length > 0) msgObj.cc = recipientsList;
         if (fileList.length > 0) msgObj.files = fileList;
 
@@ -814,7 +817,13 @@ async function handleStartupSync(ticketId) {
         } 
         
         // MISMATCH: Inhalt anders
-        console.log(`[CID: ${ticketId}] Cache veraltet (Stored: ${cached.contentHash} vs DOM: ${currentHash}). Reset.`);
+        console.warn(`[CID: ${ticketId}] ⚠️ HASH MISMATCH!`);
+        console.warn(`Stored Hash: ${cached.contentHash} (Timestamp des Speicherpunkts: ${new Date(cached.timestamp).toLocaleTimeString()})`);
+        console.warn(`Live Hash:   ${currentHash}`);
+        
+        // DEBUG: Zeige den String-Unterschied in der Konsole, falls verfügbar
+        // Wir können den gespeicherten Context (leider nicht direkt den String) nicht sehen, 
+        // aber wir sehen jetzt zumindest, DASS es nicht passt.
         
         // UI Reset
         dummyDraft.innerHTML = '<em>🤖 Ticket-Update erkannt! Analysiere neu...</em>';
@@ -1602,11 +1611,11 @@ function buildToolExecutionInfo(toolCalls) {
 
 function generateContentHash(str) {
     let hash = 0;
-    if (str.length === 0) return 'hash_0';
+    if (!str || str.length === 0) return 'hash_0';
     for (let i = 0; i < str.length; i++) {
         const char = str.charCodeAt(i);
         hash = ((hash << 5) - hash) + char;
-        hash = hash | 0; // Convert to 32bit integer
+        hash = hash | 0; 
     }
     return 'hash_' + hash;
 }
