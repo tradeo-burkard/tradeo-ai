@@ -189,8 +189,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
 
 1. **SPRACHE (PRIORITÄT 1):**
    - Analysiere SOFORT die Sprache der *letzten* Nachricht des Kunden.
-   - Englisch -> Antwort Englisch.
-   - Deutsch -> Antwort Deutsch.
+   - Deutsch -> Antwort Deutsch, sonst Englisch.
 
 2. **FORMATIERUNG (PRIORITÄT 2 - HTML EDITOR):**
    - Der Output wird direkt in einen HTML-Editor eingefügt.
