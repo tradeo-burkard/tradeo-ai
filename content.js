@@ -2781,7 +2781,9 @@ window.debugPlentyItemDetails = async function(identifier) {
 
     // --- Lokale Kopie der Smart-Stock Logik (zum Validieren der AI-Berechnung) ---
     const calculateSmartStockLocal = (stockEntries, currentVariationId) => {
-        if (!Array.isArray(stockEntries) || stockEntries.length === 0) return 0;
+        // UPDATE: Empty Check -> "Unendlich"
+        if (!Array.isArray(stockEntries) || stockEntries.length === 0) return "Unendlich";
+
         const targetId = Number(currentVariationId);
         const hasWarehouse2 = stockEntries.some(e => Number(e.variationId) === targetId && Number(e.warehouseId) === 2);
 
@@ -2870,7 +2872,7 @@ window.debugPlentyItemDetails = async function(identifier) {
                 // Single Match
                 const itemId = data.variation.itemId;
                 const variationId = data.variation.id;
-                const stockVal = data.stockNet; // Sollte jetzt eine Zahl sein, kein Array/Undefined
+                const stockVal = data.stockNet; // Sollte jetzt eine Zahl oder "Unendlich" sein
 
                 console.log(`ℹ️ Eindeutiger Treffer: VarID ${variationId}, Smart Stock (Net): ${stockVal}`);
                 if (itemId && variationId) {

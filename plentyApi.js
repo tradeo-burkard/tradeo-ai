@@ -1133,11 +1133,19 @@ async function searchItemsByText(searchText, options = {}) {
 
     // 7) Filter: Nur Bestand? (Standard: JA)
     if (onlyWithStock) {
-        results = results.filter(r => r.stockNet > 0);
+        // UPDATE: "Unendlich" explizit zulassen, da String > 0 false ergibt
+        results = results.filter(r => r.stockNet === "Unendlich" || r.stockNet > 0);
     }
 
     // 8) Sortierung: Höchster Bestand zuerst!
-    results.sort((a, b) => b.stockNet - a.stockNet);
+    results.sort((a, b) => {
+        // "Unendlich" gewinnt immer
+        if (a.stockNet === "Unendlich" && b.stockNet !== "Unendlich") return -1;
+        if (b.stockNet === "Unendlich" && a.stockNet !== "Unendlich") return 1;
+        if (a.stockNet === "Unendlich" && b.stockNet === "Unendlich") return 0;
+        // Standard Zahlen-Vergleich
+        return b.stockNet - a.stockNet;
+    });
 
     // 9) Finaler Cut auf gewünschte Anzahl
     results = results.slice(0, maxResults);
@@ -1163,7 +1171,8 @@ async function searchItemsByText(searchText, options = {}) {
  * @param {number|string} currentVariationId - Die ID der Hauptvariante
  */
 function calculateSmartStock(stockEntries, currentVariationId) {
-    if (!Array.isArray(stockEntries) || stockEntries.length === 0) return 0;
+    // UPDATE: Wenn Array leer oder null -> "Unendlich"
+    if (!Array.isArray(stockEntries) || stockEntries.length === 0) return "Unendlich";
 
     const targetId = Number(currentVariationId);
 
