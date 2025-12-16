@@ -365,6 +365,15 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
         // PHASE 2: EXECUTE
         const gatheredData = await executePlannedToolCalls(plan.tool_calls || [], ticketId);
 
+        // --- DEBUG LOGGING START ---
+        console.groupCollapsed(`🤖 AI Payload Debug (Headless CID: ${ticketId})`);
+        console.log("1. Live Object (Interactive):", gatheredData);
+        const debugString = gatheredData ? JSON.stringify(gatheredData) : "null";
+        console.log("2. Final String to AI (Minified):", debugString);
+        console.log(`3. Payload Size: ~${debugString.length} chars`);
+        console.groupEnd();
+        // --- DEBUG LOGGING END ---
+
         // PHASE 3: GENERATE
         const generatorPrompt = `
 ${workerPrompt}
@@ -374,7 +383,7 @@ Dies ist ein automatischer Scan eines Tickets.
 WICHTIG: Du darfst KEINE Tools/Funktionen aufrufen – die Datenbeschaffung ist abgeschlossen.
 
 === HINTERGRUND-DATEN (PLENTY API ERGEBNISSE) ===
-${JSON.stringify(gatheredData, null, 2)}
+${JSON.stringify(gatheredData)}
 
 === TICKET VERLAUF ===
 ${contextText}
@@ -1846,6 +1855,15 @@ async function runAI(isInitial = false) {
             gatheredData = lastToolData;
         }
 
+        // --- DEBUG LOGGING START ---
+        console.groupCollapsed(`🤖 AI Payload Debug (Live CID: ${cid})`);
+        console.log("1. Live Object (Interactive):", gatheredData);
+        const debugString = gatheredData ? JSON.stringify(gatheredData) : "null";
+        console.log("2. Final String to AI (Minified):", debugString);
+        console.log(`3. Payload Size: ~${debugString.length} chars`);
+        console.groupEnd();
+        // --- DEBUG LOGGING END ---
+
         // --- KAREN FINISH & KEVIN START ---
         // 1. Karen grün machen
         // FIX: Hier nutzen wir exakt dieselben Strings wie oben für Konsistenz
@@ -1873,7 +1891,7 @@ ${workerPrompt}
 Falls hier "null" steht, wurden für diese Runde keine neuen Daten abgefragt – nutze dann den aktuellen Entwurf als Faktenbasis.
 Wenn Daten vorhanden sind: Nutze sie als Faktenbasis. Wenn Felder fehlen oder ok=false ist, sage das kurz und frage gezielt nach.
 WICHTIG: Du darfst KEINE Tools/Funktionen aufrufen – die Datenbeschaffung ist abgeschlossen.
-${gatheredData ? JSON.stringify(gatheredData, null, 2) : "null"}
+${gatheredData ? JSON.stringify(gatheredData) : "null"}
 
 === TICKET VERLAUF ===
 ${contextText}
@@ -2296,8 +2314,8 @@ async function executePlannedToolCalls(toolCalls, cid) {
         order: null,
         customer: null,
         items: [],
-        searchResults: null,
-        raw: [] // für Debug
+        searchResults: null
+        // raw: [] // ENTFERNT, um Token zu sparen und Doppelung zu vermeiden
     };
 
     if (!Array.isArray(toolCalls) || toolCalls.length === 0) return gathered;
@@ -2318,13 +2336,14 @@ async function executePlannedToolCalls(toolCalls, cid) {
         return { call_id: c.call_id, name: c.name, args: c.args, ok, data };
     }));
 
-    gathered.raw = results;
+    // gathered.raw = results; // ENTFERNT
 
     for (const r of results) {
-        if (r.name === 'fetchOrderDetails') gathered.order = r;
-        else if (r.name === 'fetchCustomerDetails') gathered.customer = r;
-        else if (r.name === 'fetchItemDetails') gathered.items.push(r);
-        else if (r.name === 'searchItemsByText') gathered.searchResults = r;
+        // Wir speichern nur r.data, um den Wrapper (call_id, args...) loszuwerden -> spart Tokens
+        if (r.name === 'fetchOrderDetails') gathered.order = r.data;
+        else if (r.name === 'fetchCustomerDetails') gathered.customer = r.data;
+        else if (r.name === 'fetchItemDetails') gathered.items.push(r.data);
+        else if (r.name === 'searchItemsByText') gathered.searchResults = r.data;
     }
 
     return gathered;
