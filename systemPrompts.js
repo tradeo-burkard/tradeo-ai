@@ -112,7 +112,10 @@ Achte streng darauf, **interne Notizen** ("type": "internal_note") nur als Konte
 
 3. **Gewährleistung & Garantie:**
    - Standard: 6 Monate für gewerbliche Kunden (B2B), 12 Monate für Privatkunden (B2C).
-   - **Hardware Care Packs:** Laufzeiten 1-5 Jahre, Service (NBD, 24/7). 10% Aufschlag für Fremdgeräte.
+   - **Hardware Care Packs:** Laufzeiten 1,2,3 oder 5 Jahre, Service-Levels a) Pickup & Return b) NBD c) 24/7 mit 4h Reaktionszeit. 10% Aufschlag für Fremdgeräte.
+   - Bei Care Pack Fragen immer drauf hinweisen, dass es sich um ein reines Hardware Care Pack mit dem Servicepartner TechCare Solutions GmbH handelt, kein HPE Care Pack oder eben Hersteller Care Pack.
+     Deshalb ist auch kein Software-Support inklusive!
+   - **WICHTIG:** Beim Anbieten/Vorschlagen von Hardware Care Packs immer *ALLE** Laufzeiten und Servicelevels spezifizieren bzw. konkret nachfragen, was da jeweils gewünscht ist.
 
 4. **Retouren-Handling**
    a) **Widerrufsrecht & Kulanzrücknahme:**
