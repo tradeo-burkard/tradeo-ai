@@ -12,6 +12,50 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true; // Async wait
     }
 
+    // NEU: LLM Chat (RunPod / OpenAI-compatible) via Background fetch (CORS-safe)
+    if (request.action === 'LLM_CHAT') {
+        (async () => {
+            try {
+                const { llmBaseUrl, llmApiKey } = await chrome.storage.local.get(['llmBaseUrl', 'llmApiKey']);
+                if (!llmBaseUrl || !llmApiKey) throw new Error("LLM nicht konfiguriert (Base URL / API Key fehlt).");
+
+                const base = llmBaseUrl.replace(/\/$/, '');
+                const url = `${base}/chat/completions`;
+
+                const controller = new AbortController();
+                const timeoutMs = Number(request.timeoutMs || 60000);
+                const t = setTimeout(() => controller.abort(), timeoutMs);
+
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${llmApiKey}`
+                    },
+                    body: JSON.stringify(request.payload),
+                    signal: controller.signal
+                }).finally(() => clearTimeout(t));
+
+                const text = await resp.text();
+                let data;
+                try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+                if (!resp.ok) {
+                    const msg = data?.error?.message || `LLM API Error: ${resp.status}`;
+                    sendResponse({ success: false, status: resp.status, error: msg, data });
+                    return;
+                }
+
+                sendResponse({ success: true, status: resp.status, data });
+            } catch (e) {
+                sendResponse({ success: false, error: e?.message || String(e) });
+            }
+        })();
+
+        return true; // Async
+    }
+
+
     // Order Details (Bestehend)
     if (request.action === 'GET_ORDER_FULL') {
         fetchOrderDetails(request.orderId)
