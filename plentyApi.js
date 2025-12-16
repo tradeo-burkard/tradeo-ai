@@ -783,10 +783,12 @@ async function fetchItemDetails(identifierRaw) {
 
             // 3. Stock bereinigen
             const cleanStock = (stockEntries || []).map(s => ({
-                itemId: s.itemId,
-                // Fallback für verschiedene API Feldnamen (netStock vs stockNet)
-                stockNet: (typeof s.stockNet !== 'undefined') ? s.stockNet : ((typeof s.netStock !== 'undefined') ? s.netStock : 0),
-                variationId: s.variationId
+                itemId: (typeof s.itemId !== "undefined") ? s.itemId : item.id,
+                stockNet: (typeof s.stockNet !== "undefined")
+                    ? s.stockNet
+                    : ((typeof s.netStock !== "undefined") ? s.netStock : 0),
+                variationId: (typeof s.variationId !== "undefined") ? s.variationId : variation.id,
+                warehouseId: (typeof s.warehouseId !== "undefined") ? s.warehouseId : null
             }));
 
             return {
@@ -803,11 +805,12 @@ async function fetchItemDetails(identifierRaw) {
 
             // UPDATE: Wir holen Item & Stock OHNE warehouseId Filter (Globaler Bestand)
             const [stockData, itemBaseData] = await Promise.all([
-                makePlentyCall(`/rest/stockmanagement/stock?variationId=${variationId}`),
+                // WICHTIG: gleicher Endpoint wie bei searchItemsByText (Bundle-fähig)
+                makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
                 makePlentyCall(`/rest/items/${itemId}`)
             ]);
 
-            const stockEntries = extractEntries(stockData);
+            const stockEntries = extractEntries(stockData); // bleibt kompatibel (Array oder {entries})
             return formatItemData(variation, itemBaseData, stockEntries);
         };
 
