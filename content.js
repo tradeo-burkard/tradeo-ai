@@ -2307,14 +2307,15 @@ ${userPrompt}
  * SCHRITT 2: Worker / Executor
  * Führt die Tool-Calls parallel aus (über bestehendes executeToolAction).
  * Liefert ein kompaktes Ergebnisobjekt für den Generator.
+ * FIX: Nutzt Arrays für alle Datentypen, um Überschreiben bei mehreren Calls zu verhindern.
  */
 async function executePlannedToolCalls(toolCalls, cid) {
     const gathered = {
         meta: { executedAt: new Date().toISOString(), cid },
-        order: null,
-        customer: null,
+        orders: [],       // FIX: Array statt null (verhindert Überschreiben bei >1 Order)
+        customers: [],    // FIX: Array statt null
         items: [],
-        searchResults: null
+        searchResults: [] // FIX: Array statt null
         // raw: [] // ENTFERNT, um Token zu sparen und Doppelung zu vermeiden
     };
 
@@ -2336,14 +2337,13 @@ async function executePlannedToolCalls(toolCalls, cid) {
         return { call_id: c.call_id, name: c.name, args: c.args, ok, data };
     }));
 
-    // gathered.raw = results; // ENTFERNT
-
     for (const r of results) {
         // Wir speichern nur r.data, um den Wrapper (call_id, args...) loszuwerden -> spart Tokens
-        if (r.name === 'fetchOrderDetails') gathered.order = r.data;
-        else if (r.name === 'fetchCustomerDetails') gathered.customer = r.data;
+        // FIX: Push in Arrays statt Zuweisung
+        if (r.name === 'fetchOrderDetails') gathered.orders.push(r.data);
+        else if (r.name === 'fetchCustomerDetails') gathered.customers.push(r.data);
         else if (r.name === 'fetchItemDetails') gathered.items.push(r.data);
-        else if (r.name === 'searchItemsByText') gathered.searchResults = r.data;
+        else if (r.name === 'searchItemsByText') gathered.searchResults.push(r.data);
     }
 
     return gathered;
