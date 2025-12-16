@@ -981,7 +981,7 @@ async function searchItemsByText(searchText, options = {}) {
     // Da wir gleich noch nach Bestand filtern wollen, müssen wir mehr Items anreichern,
     // als wir am Ende ausgeben wollen (sonst stehen wir mit leeren Händen da).
     // Wir nehmen Faktor 3, aber maximal 100 Items, um die API nicht zu sprengen.
-    const bufferSize = Math.min(100, maxResults * 3);
+    const bufferSize = 1000 //Math.min(100, maxResults * 3);
     const topCandidates = validHits.slice(0, bufferSize);
 
     // 6) Enrichment: Daten holen (Stock & Price)
