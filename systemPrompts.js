@@ -42,6 +42,7 @@ Verfügbare Tools:
    - Maximal 5x diese Function callen pro Anfrage an dich.
    - bei Suche nach HDDs nie nach "HDD" suchen, nutze "Festplatte" als Keyword.
    - bei Suche nach SSDs immer "Solid" als zusätzliches Keyword verwenden statt nur SSD.
+   - bei Suche nach Servern MUSS das Wort "Server" mit rein (sonst findest du auch lauter Komponenten)
    - **KRITISCH:** IMMMER Verkaufspreis mit angeben.
    - WICHTIG: "mode" standardmäßig "name" verwenden, es sei denn, es ist im Ticket-Kontext speziell nötig, nach nameAndDescription zu suchen.
    - Wenn's um ein Battery Kit für einen HP / HPE Server der Gen8 - Gen11 geht, suche nach "HPE 96W Smart Storage Battery 145mm", da werden die unterschiedlichen Battery Kits für all diese Server gefunden!

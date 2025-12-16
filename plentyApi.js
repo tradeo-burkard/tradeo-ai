@@ -1106,12 +1106,9 @@ async function searchItemsByText(searchText, options = {}) {
                     makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
                 ]);
 
-                // UPDATE: Summierung über alle Lager (statt nur stockRes[0])
+                // UPDATE: Smart Stock Calculation (Bundle Warehouse 2 Logic)
                 if (Array.isArray(stockRes)) {
-                    stockNet = stockRes.reduce((sum, entry) => {
-                        const val = parseFloat(entry.netStock || entry.stockNet || 0);
-                        return sum + (isNaN(val) ? 0 : val);
-                    }, 0);
+                    stockNet = calculateSmartStock(stockRes, variationId);
                 }
 
                 price = (Array.isArray(priceRes) && priceRes[0] && priceRes[0].price != null)
@@ -1167,4 +1164,60 @@ async function searchItemsByText(searchText, options = {}) {
         },
         results
     };
+}
+
+/**
+ * Berechnet den Bestand basierend auf der Bundle-Logik (Warehouse 2 Indikator).
+ * @param {Array} stockEntries - Die Raw-Entries aus der API
+ * @param {number|string} currentVariationId - Die ID der Hauptvariante
+ */
+function calculateSmartStock(stockEntries, currentVariationId) {
+    if (!Array.isArray(stockEntries) || stockEntries.length === 0) return 0;
+
+    const targetId = Number(currentVariationId);
+
+    // 1. Prüfen: Kommt die eigene ID mit Warehouse 2 vor?
+    const hasWarehouse2 = stockEntries.some(e => 
+        Number(e.variationId) === targetId && Number(e.warehouseId) === 2
+    );
+
+    if (hasWarehouse2) {
+        // CASE A: BUNDLE LOGIK
+        // Wir ignorieren die eigene ID.
+        // Wir summieren die Bestände der ANDEREN Varianten (falls eine Variante auf mehrere Lager verteilt ist).
+        // Dann nehmen wir das MINIMUM dieser Summen (Flaschenhals-Prinzip).
+        
+        const otherTotals = {};
+        let foundOthers = false;
+
+        stockEntries.forEach(e => {
+            const vId = Number(e.variationId);
+            if (vId !== targetId) {
+                foundOthers = true;
+                // NetStock sicher parsen
+                const val = parseFloat(e.netStock || e.stockNet || 0);
+                const safeVal = isNaN(val) ? 0 : val;
+                
+                otherTotals[vId] = (otherTotals[vId] || 0) + safeVal;
+            }
+        });
+
+        // Wenn Warehouse 2 da ist, aber keine anderen Komponenten -> Bestand 0 (defektes Bundle)
+        if (!foundOthers) return 0;
+
+        // Das Minimum aller Komponenten-Bestände zurückgeben
+        const totals = Object.values(otherTotals);
+        return Math.min(...totals);
+
+    } else {
+        // CASE B: STANDARD LOGIK
+        // Nur eigene Bestände zusammenrechnen, alle anderen ignorieren.
+        return stockEntries.reduce((acc, e) => {
+            if (Number(e.variationId) === targetId) {
+                const val = parseFloat(e.netStock || e.stockNet || 0);
+                return acc + (isNaN(val) ? 0 : val);
+            }
+            return acc;
+        }, 0);
+    }
 }

@@ -2820,7 +2820,9 @@ window.debugPlentyItemDetails = async function(identifier) {
             if (response.data.meta && response.data.meta.type === "PLENTY_ITEM_AMBIGUOUS") {
                 console.warn(`⚠️ Ergebnis ist MEHRDEUTIG. Gefundene Kandidaten: ${response.data.candidates.length}`);
             } else if (response.data.variation) {
-                console.log(`ℹ️ Eindeutiger Treffer: ID ${response.data.variation.id}, Bestand (Net): ${calculateNetStockDebug(response.data.stock)}`);
+                // Variation ID mit übergeben für Smart Logic
+                const vId = response.data.variation.id;
+                console.log(`ℹ️ Eindeutiger Treffer: ID ${vId}, Bestand (Net): ${calculateNetStockDebug(response.data.stock, vId)}`);
             }
         } else {
             console.error("❌ API Error oder kein Ergebnis:", response);
@@ -2834,15 +2836,6 @@ window.debugPlentyItemDetails = async function(identifier) {
     }
     console.groupEnd();
 };
-
-// Kleiner Helper für die Konsolenausgabe des Bestands (nur Visualisierung)
-function calculateNetStockDebug(stockEntries) {
-    if (!Array.isArray(stockEntries)) return 0;
-    return stockEntries.reduce((acc, entry) => {
-        const net = parseFloat(entry.netStock || entry.stockNet || 0);
-        return acc + (isNaN(net) ? 0 : net);
-    }, 0);
-}
 
 /**
  * NEUE DEBUG FUNKTION FÜR CUSTOMER DETAILS
@@ -3045,3 +3038,41 @@ window.debugOrderDetails = async function(orderId) {
         setTimeout(runDump, 1000); 
     }
 })();
+
+// Kleiner Helper für die Konsolenausgabe des Bestands (Visualisierung mit Smart Logic)
+function calculateNetStockDebug(stockEntries, currentVariationId) {
+    if (!Array.isArray(stockEntries)) return 0;
+    
+    const targetId = Number(currentVariationId);
+
+    // 1. Check Warehouse 2 für eigene ID
+    const hasWarehouse2 = stockEntries.some(e => 
+        Number(e.variationId) === targetId && Number(e.warehouseId) === 2
+    );
+
+    if (hasWarehouse2) {
+        // Bundle Logik: Min der Summen der Anderen
+        const otherTotals = {};
+        let foundOthers = false;
+
+        stockEntries.forEach(e => {
+            const vId = Number(e.variationId);
+            if (vId !== targetId) {
+                foundOthers = true;
+                const val = parseFloat(e.netStock || e.stockNet || 0);
+                const safeVal = isNaN(val) ? 0 : val;
+                otherTotals[vId] = (otherTotals[vId] || 0) + safeVal;
+            }
+        });
+
+        if (!foundOthers) return 0;
+        return Math.min(...Object.values(otherTotals));
+    } else {
+        // Standard Logik: Summe der Eigenen
+        return stockEntries.reduce((acc, entry) => {
+            if (Number(entry.variationId) !== targetId) return acc;
+            const net = parseFloat(entry.netStock || entry.stockNet || 0);
+            return acc + (isNaN(net) ? 0 : net);
+        }, 0);
+    }
+}
