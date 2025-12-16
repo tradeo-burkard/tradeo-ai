@@ -374,7 +374,7 @@ async function fetchOrderDetails(orderId) {
         // ------------------------------------------------------------
         if (orderData.orderItems) {
             const variationIds = orderData.orderItems
-                .filter((item) => item.typeId === 3 || item.typeId === 1) // Artikel & Variationen
+                .filter((item) => item.typeId === 1 || item.typeId === 2 || item.typeId === 3) // Artikel & Variationen
                 .map((item) => item.itemVariationId)
                 .filter((vid) => vid !== null && typeof vid !== "undefined");
 
