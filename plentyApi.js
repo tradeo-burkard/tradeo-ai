@@ -205,13 +205,7 @@ async function makePlentyCall(endpoint, method = 'GET', body = null) {
 
 /**
  * Holt komplexe Order-Details inkl. Items, Bestand, ADRESSEN, TRACKING und ZIELLAND.
- * UPDATED: 
- *  - Bundle-Parent orderItemDescription anreichern (HTML->Text) VOR dem Stripping
- *  - orderItems: id wieder drin (neben itemVariationId)
- *  - references nicht droppen, sondern strippen (id/createdAt/updatedAt raus)
- *  - orderItem.amounts: nur { priceGross, priceNet }
- *  - order.amounts: Summary-Objekt (nicht leer) mit Totals
- *  - shippedAt entfernt (wie gehabt)
+ * UPDATED: Nutzt jetzt "Smart Stock" Logik (Bundle/Warehouse 2) identisch zu fetchItemDetails.
  */
 async function fetchOrderDetails(orderId) {
     try {
@@ -224,14 +218,39 @@ async function fetchOrderDetails(orderId) {
 
         const result = {
             meta: { type: "PLENTY_ORDER_FULL_EXPORT", orderId: orderId, timestamp: new Date().toISOString() },
-            // Wird unten überschrieben durch bereinigte Version
             order: orderData,
             stocks: [],
             addresses: [],
-            shippingInfo: {
-                destinationCountry: "Unknown"
-                // shippedAt entfernt (Anforderung)
+            shippingInfo: { destinationCountry: "Unknown" }
+        };
+
+        // --- SHARED CACHE & HELPER (Für Description Enrichment UND Stock Fetching) ---
+        const variationIdToItemId = new Map();
+
+        const resolveItemIdFromVariationId = async (variationId) => {
+            const key = String(variationId);
+            if (variationIdToItemId.has(key)) return variationIdToItemId.get(key);
+
+            let itemId = null;
+
+            // Versuch A: direkter Endpoint
+            try {
+                const v = await makePlentyCall(`/rest/items/variations/${variationId}`);
+                if (v && typeof v.itemId !== "undefined" && v.itemId !== null) itemId = v.itemId;
+            } catch (e) {}
+
+            // Versuch B: Query-Fallback
+            if (!itemId) {
+                try {
+                    const res = await makePlentyCall(`/rest/items/variations?id=${variationId}&itemsPerPage=1`);
+                    const entries = Array.isArray(res) ? res : (res?.entries || res?.variations || []);
+                    const v = entries?.[0];
+                    if (v && typeof v.itemId !== "undefined" && v.itemId !== null) itemId = v.itemId;
+                } catch (e) {}
             }
+
+            variationIdToItemId.set(key, itemId);
+            return itemId;
         };
 
         // ------------------------------------------------------------
@@ -241,7 +260,6 @@ async function fetchOrderDetails(orderId) {
             const items = order?.orderItems || [];
             if (!items.length) return;
 
-            // Sammle alle referenceOrderItemId, aber nur wenn referenceType === "bundle"
             const bundleParentIds = new Set();
             for (const it of items) {
                 for (const ref of (it?.references || [])) {
@@ -256,9 +274,6 @@ async function fetchOrderDetails(orderId) {
             if (!bundleParentIds.size) return;
 
             const byId = new Map(items.map((oi) => [String(oi.id), oi]));
-
-            // Cache, damit wir pro Variation / Item nur 1x callen
-            const variationIdToItemId = new Map();
             const itemIdToDescription = new Map();
 
             const nameBlocked = (name) => {
@@ -274,51 +289,20 @@ async function fetchOrderDetails(orderId) {
                 return texts.find((t) => langOf(t) === "de") || texts[0];
             };
 
-            const resolveItemIdFromVariationId = async (variationId) => {
-                const key = String(variationId);
-                if (variationIdToItemId.has(key)) return variationIdToItemId.get(key);
-
-                let itemId = null;
-
-                // Versuch A: direkter Endpoint
-                try {
-                    const v = await makePlentyCall(`/rest/items/variations/${variationId}`);
-                    if (v && typeof v.itemId !== "undefined" && v.itemId !== null) itemId = v.itemId;
-                } catch (e) {}
-
-                // Versuch B: Query-Fallback
-                if (!itemId) {
-                    try {
-                        const res = await makePlentyCall(`/rest/items/variations?id=${variationId}&itemsPerPage=1`);
-                        const entries = Array.isArray(res) ? res : (res?.entries || res?.variations || []);
-                        const v = entries?.[0];
-                        if (v && typeof v.itemId !== "undefined" && v.itemId !== null) itemId = v.itemId;
-                    } catch (e) {}
-                }
-
-                variationIdToItemId.set(key, itemId);
-                return itemId;
-            };
-
             const fetchItemDescriptionByItemId = async (itemId) => {
                 const key = String(itemId);
                 if (itemIdToDescription.has(key)) return itemIdToDescription.get(key);
-
                 let desc = "";
                 try {
                     const item = await makePlentyCall(`/rest/items/${itemId}`);
                     const t = pickPreferredText(item?.texts || []);
                     desc = stripHtmlToText(t?.description || "");
-                } catch (e) {
-                    desc = "";
-                }
-
+                } catch (e) { desc = ""; }
                 itemIdToDescription.set(key, desc);
                 return desc;
             };
 
             const insertDescriptionDirectlyUnderName = (oi, desc) => {
-                // "orderItemDescription" direkt nach "orderItemName" einfügen (Key-Reihenfolge)
                 const out = {};
                 let inserted = false;
                 for (const [k, v] of Object.entries(oi)) {
@@ -332,12 +316,9 @@ async function fetchOrderDetails(orderId) {
                 return out;
             };
 
-            // Sequentiell, um API nicht zu fluten
             for (const parentId of bundleParentIds) {
                 const parent = byId.get(parentId);
                 if (!parent) continue;
-
-                // Filter: nur wenn Parent-OrderItem "Upgrade..." NICHT enthält
                 if (nameBlocked(parent.orderItemName)) continue;
 
                 const variationId = parent.itemVariationId;
@@ -355,58 +336,41 @@ async function fetchOrderDetails(orderId) {
                 if (idx >= 0) items[idx] = patched;
                 byId.set(parentId, patched);
             }
-
             order.orderItems = items;
         };
 
         await enrichBundleParentDescriptions(orderData);
 
         // ------------------------------------------------------------
-        // 2) Adressen auflösen & Zielland ermitteln (FEATURE BEHALTEN)
+        // 2) Adressen auflösen & Zielland ermitteln
         // ------------------------------------------------------------
         if (orderData.addressRelations && orderData.addressRelations.length > 0) {
             const addressPromises = orderData.addressRelations.map(async (rel) => {
                 try {
                     const addrDetail = await makePlentyCall(`/rest/accounts/addresses/${rel.addressId}`);
-
-                    // Lieferadresse (TypeId 2) -> Zielland bestimmen
                     if (rel.typeId === 2 && addrDetail) {
                         const cId = addrDetail.countryId;
                         result.shippingInfo.destinationCountry = COUNTRY_MAP[cId] || `Land-ID ${cId}`;
                     }
-
-                    // --- ADDRESS STRIPPING ---
-                    const {
-                        id, stateId, readOnly, checkedAt, createdAt, updatedAt, title, contactPerson,
-                        options,
-                        ...cleanAddr
-                    } = addrDetail;
-
-                    // --- ADDRESS OPTIONS STRIPPING & MAPPING ---
+                    const { id, stateId, readOnly, checkedAt, createdAt, updatedAt, title, contactPerson, options, ...cleanAddr } = addrDetail;
                     const cleanOptions = (options || []).map((opt) => ({
                         typeId: opt.typeId,
                         typeName: ADDRESS_OPTION_TYPE_MAP[String(opt.typeId)] || `Unknown (${opt.typeId})`,
                         value: opt.value
                     }));
-
                     return {
-                        relationType:
-                            rel.typeId === 1 ? "Billing/Rechnung" :
-                            (rel.typeId === 2 ? "Shipping/Lieferung" : "Other"),
+                        relationType: rel.typeId === 1 ? "Billing/Rechnung" : (rel.typeId === 2 ? "Shipping/Lieferung" : "Other"),
                         ...cleanAddr,
                         options: cleanOptions
                     };
-                } catch (e) {
-                    return null;
-                }
+                } catch (e) { return null; }
             });
-
             const loadedAddresses = await Promise.all(addressPromises);
             result.addresses = loadedAddresses.filter((a) => a !== null);
         }
 
         // ------------------------------------------------------------
-        // 3) Bestände holen & STRIPPEN (FEATURE BEHALTEN)
+        // 3) Bestände holen & STRIPPEN (SMART STOCK LOGIK)
         // ------------------------------------------------------------
         if (orderData.orderItems) {
             const variationIds = orderData.orderItems
@@ -418,24 +382,15 @@ async function fetchOrderDetails(orderId) {
 
             const stockPromises = uniqueVarIds.map(async (vid) => {
                 try {
-                    // UPDATE: warehouseId Parameter entfernt -> Liefert alle Lager
-                    const stockData = await makePlentyCall(`/rest/stockmanagement/stock?variationId=${vid}`);
+                    // 1. Item ID muss bekannt sein für den korrekten Stock Endpoint
+                    const itemId = await resolveItemIdFromVariationId(vid);
+                    if (!itemId) return { variationId: vid, stockNet: 0, error: "ItemId not found" };
 
-                    let net = 0;
-                    if (stockData && Array.isArray(stockData.entries) && stockData.entries.length > 0) {
-                        // UPDATE: Wir summieren den Bestand aller Lager auf (Reduce)
-                        net = stockData.entries.reduce((sum, entry) => {
-                            // Manche Plenty Versionen nutzen stockNet, manche netStock
-                            const val = parseFloat(entry.stockNet || entry.netStock || 0);
-                            return sum + (isNaN(val) ? 0 : val);
-                        }, 0);
-                    } else if (stockData && Array.isArray(stockData.entries) && stockData.entries.length === 0) {
-                        // Kein Eintrag in Stockmanagement oft = Unendlicher Bestand (bei Konfigurationsartikeln) oder 0
-                        // Hier konservativ: Wenn leer, dann 0, außer Logik sagt was anderes. 
-                        // Im alten Code stand hier "Unendlich", das behalten wir bei falls gewünscht, 
-                        // oder setzen es auf 0.
-                        net = "Unendlich"; 
-                    }
+                    // 2. Rufe spezifischen Item-Stock Endpoint auf (liefert Bundle-Komponenten)
+                    const stockData = await makePlentyCall(`/rest/items/${itemId}/variations/${vid}/stock`);
+
+                    // 3. Nutze Smart Stock Berechnung (Shared mit fetchItemDetails)
+                    const net = calculateSmartStock(stockData, vid);
 
                     return { variationId: vid, stockNet: net };
                 } catch (e) {
@@ -447,23 +402,17 @@ async function fetchOrderDetails(orderId) {
         }
 
         // ------------------------------------------------------------
-        // 5) DATA STRIPPING (FEATURES BEHALTEN + neue Anforderungen)
+        // 5) DATA STRIPPING
         // ------------------------------------------------------------
-
         const removeOrderId = (obj) => {
             if (!obj || typeof obj !== "object") return obj;
             const { orderId, ...rest } = obj;
             return rest;
         };
-
         const cleanList = (list) => (list || []).map(removeOrderId);
 
-        // Relations: Filtert Warehouse raus UND entfernt orderId (wie vorher)
-        const cleanRelations = (orderData.relations || [])
-            .filter((r) => r.referenceType !== "warehouse")
-            .map(removeOrderId);
-
-        // DATES Cleaner (Stripped createdAt, updatedAt) + typeName mapping (wie vorher)
+        const cleanRelations = (orderData.relations || []).filter((r) => r.referenceType !== "warehouse").map(removeOrderId);
+        
         const cleanDates = (list) => (list || []).map((d) => {
             const { orderId, typeId, createdAt, updatedAt, ...rest } = d;
             const newObj = { typeId, ...rest };
@@ -472,16 +421,13 @@ async function fetchOrderDetails(orderId) {
             return newObj;
         });
 
-        // PROPERTIES Cleaner (Stripped createdAt, updatedAt) + shipping/payment mapping (wie vorher)
         const cleanProperties = (list) => (list || []).reduce((acc, p) => {
             if (!p) return acc;
-            if (p.typeId == 1) return acc; // TypeId 1 (Lager) ignorieren
-
+            if (p.typeId == 1) return acc;
             const { orderId, typeId, value, createdAt, updatedAt, ...rest } = p;
             const newObj = { typeId };
             const resolvedTypeName = ORDER_PROPERTY_TYPE_MAP[String(typeId)];
             if (resolvedTypeName) newObj.typeName = resolvedTypeName;
-
             if (typeId === 2) {
                 const resolvedProfile = SHIPPING_PROFILES[String(value)];
                 newObj.versandprofilName = resolvedProfile || `Unbekannt (ID: ${value})`;
@@ -490,19 +436,16 @@ async function fetchOrderDetails(orderId) {
                 const resolvedPayment = PAYMENTMETHOD_MAP[String(value)];
                 if (resolvedPayment) newObj.paymentMethodName = resolvedPayment;
             }
-
             acc.push({ ...newObj, value, ...rest });
             return acc;
         }, []);
 
-        // references: nicht mehr droppen, sondern strippen (id/createdAt/updatedAt raus)
         const cleanReferences = (refs) => (refs || []).map((ref) => {
             if (!ref) return ref;
             const { id, createdAt, updatedAt, ...rest } = ref;
             return rest;
         });
 
-        // Order Amounts: statt Liste -> Summary-Objekt (nicht leer)
         const cleanOrderAmountsSummary = (amountsList) => {
             const a = Array.isArray(amountsList) ? (amountsList[0] || {}) : (amountsList || {});
             return {
@@ -519,47 +462,26 @@ async function fetchOrderDetails(orderId) {
             };
         };
 
-        // OrderItem Amounts: nur { priceGross, priceNet }
         const cleanOrderItemAmounts = (item) => {
             const arr = item?.amounts || [];
-            const a =
-                arr.find((x) => (x && (typeof x.priceGross !== "undefined" || typeof x.priceNet !== "undefined"))) ||
-                arr[0] ||
-                {};
-
+            const a = arr.find((x) => (x && (typeof x.priceGross !== "undefined" || typeof x.priceNet !== "undefined"))) || arr[0] || {};
             let priceGross = a.priceGross;
             let priceNet = a.priceNet;
-
-            // Fallbacks, falls Plenty bei euch anders liefert
-            if (typeof priceGross === "undefined" || priceGross === null) {
-                priceGross = a.priceOriginalGross ?? a.priceOrig ?? a.priceOriginal ?? undefined;
-            }
-            if (typeof priceNet === "undefined" || priceNet === null) {
-                priceNet = a.priceOriginalNet ?? undefined;
-            }
-
-            // Wenn gross fehlt, evtl. aus net + vatRate berechnen
+            if (typeof priceGross === "undefined" || priceGross === null) priceGross = a.priceOriginalGross ?? a.priceOrig ?? a.priceOriginal ?? undefined;
+            if (typeof priceNet === "undefined" || priceNet === null) priceNet = a.priceOriginalNet ?? undefined;
             if ((typeof priceGross === "undefined" || priceGross === null) && typeof priceNet === "number") {
                 const vatRate = Number(item?.vatRate ?? 0);
-                if (vatRate > 0) {
-                    priceGross = Math.round(priceNet * (1 + vatRate / 100) * 100) / 100;
-                }
+                if (vatRate > 0) priceGross = Math.round(priceNet * (1 + vatRate / 100) * 100) / 100;
             }
-
             return {
                 priceGross: (typeof priceGross === "number") ? priceGross : Number(priceGross ?? 0),
                 priceNet: (typeof priceNet === "number") ? priceNet : Number(priceNet ?? 0)
             };
         };
 
-        // Items: Alle bisherigen Features behalten + neue Anforderungen:
-        // - id wieder drin
-        // - orderItemDescription (falls vorhanden durch Bundle-Enrichment)
-        // - references stripped
-        // - amounts als {priceGross, priceNet}
         const cleanItems = (orderData.orderItems || []).map((item) => ({
-            id: item.id,                          // ✅ wieder drin
-            itemVariationId: item.itemVariationId, // ✅ wie gewünscht neben id
+            id: item.id,
+            itemVariationId: item.itemVariationId,
             quantity: item.quantity,
             orderItemName: item.orderItemName,
             orderItemDescription: item.orderItemDescription,
@@ -567,13 +489,11 @@ async function fetchOrderDetails(orderId) {
             amounts: cleanOrderItemAmounts(item)
         }));
 
-        // SHIPPING PACKAGES Cleaner (wie vorher)
         const cleanShippingPackages = (orderData.shippingPackages || []).map((p) => ({
             weight: p.weight,
             packageNumber: p.packageNumber
         }));
 
-        // Top-Level Order: bisherige Felder NICHT kompromittieren
         const cleanOrder = {
             id: orderData.id,
             statusName: orderData.statusName,
@@ -581,17 +501,13 @@ async function fetchOrderDetails(orderId) {
             typeId: orderData.typeId,
             typeName: ORDER_TYPES?.[String(orderData.typeId)] || `Unknown (ID: ${orderData.typeId})`,
             lockStatus: orderData.lockStatus,
-            createdAt: orderData.createdAt,  // wie vorher beibehalten
-            updatedAt: orderData.updatedAt,  // wie vorher beibehalten
+            createdAt: orderData.createdAt,
+            updatedAt: orderData.updatedAt,
             ownerId: orderData.ownerId,
-
             relations: cleanRelations,
             properties: cleanProperties(orderData.properties),
             dates: cleanDates(orderData.dates),
-
-            // ✅ neu: Summary-Objekt statt leer/komplexer Liste
             amounts: cleanOrderAmountsSummary(orderData.amounts),
-
             orderReferences: cleanList(orderData.orderReferences),
             orderItems: cleanItems,
             shippingPackages: cleanShippingPackages

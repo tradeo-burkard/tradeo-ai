@@ -2947,78 +2947,120 @@ window.debugCustomerDetails = async function(contactId) {
 
 /**
  * NEUE DEBUG FUNKTION FÜR ORDER DETAILS
- * Simuliert den Tool-Call UND holt zusätzlich die Rohdaten zum Vergleich.
+ * Simuliert den Tool-Call UND prüft die Smart-Stock Berechnung pro Position.
  */
 window.debugOrderDetails = async function(orderId) {
     console.clear();
     console.group(`🚀 DEBUG: fetchOrderDetails für Order ID "${orderId}"`);
-    console.log("⏳ Sende Anfragen an Background Script (AI-Format & RAW)...");
+    console.log("⏳ Sende Anfragen an Background Script...");
+
+    // Helper: Smart Stock Berechnung (lokal dupliziert zum Abgleich)
+    const calculateSmartStockLocal = (stockEntries, currentVariationId) => {
+        if (!Array.isArray(stockEntries) || stockEntries.length === 0) return "Unendlich";
+        const targetId = Number(currentVariationId);
+        const hasWarehouse2 = stockEntries.some(e => Number(e.variationId) === targetId && Number(e.warehouseId) === 2);
+
+        if (hasWarehouse2) {
+            const otherTotals = {};
+            let foundOthers = false;
+            stockEntries.forEach(e => {
+                const vId = Number(e.variationId);
+                if (vId !== targetId) {
+                    foundOthers = true;
+                    const val = parseFloat(e.netStock || e.stockNet || 0);
+                    const safeVal = isNaN(val) ? 0 : val;
+                    otherTotals[vId] = (otherTotals[vId] || 0) + safeVal;
+                }
+            });
+            if (!foundOthers) return 0;
+            return Math.min(...Object.values(otherTotals));
+        } else {
+            return stockEntries.reduce((acc, e) => {
+                if (Number(e.variationId) === targetId) {
+                    const val = parseFloat(e.netStock || e.stockNet || 0);
+                    return acc + (isNaN(val) ? 0 : val);
+                }
+                return acc;
+            }, 0);
+        }
+    };
 
     try {
-        // 1. Request: Das, was die AI sieht (Stripped)
-        const aiRequestPromise = new Promise(resolve => {
+        // 1. Die AI-Funktion aufrufen (die jetzt Smart Stock nutzt)
+        const aiResponse = await new Promise(resolve => {
             chrome.runtime.sendMessage({ 
                 action: 'GET_ORDER_FULL', 
                 orderId: orderId 
             }, (res) => resolve(res));
         });
 
-        // 2. Request: Das, was Plenty wirklich liefert (Raw / Unstripped)
-        // Wir nutzen exakt dieselben 'with'-Parameter wie in plentyApi.js, um vergleichbar zu sein.
-        const rawRequestPromise = new Promise(resolve => {
-            chrome.runtime.sendMessage({
-                action: 'PLENTY_API_CALL',
-                endpoint: `/rest/orders/${orderId}?with[]=orderItems&with[]=relations&with[]=amounts&with[]=dates&with[]=addressRelations&with[]=shippingPackages`,
-                method: 'GET'
-            }, (res) => resolve(res));
-        });
-
-        // Parallel ausführen
-        const [aiResponse, rawResponse] = await Promise.all([aiRequestPromise, rawRequestPromise]);
-
-        // --- AUSGABE: RAW DATEN ---
-        if (rawResponse && rawResponse.success) {
-            console.groupCollapsed("🥩 RAW DATA (Unstripped von Plenty)");
-            console.log("Dies sind die Rohdaten direkt von der API, bevor unser Skript sie filtert:");
-            console.dir(rawResponse.data);
-            console.groupEnd();
-        } else {
-            console.error("❌ RAW Data Error:", rawResponse);
-        }
-
-        // --- AUSGABE: AI DATEN (Wie bisher) ---
         if (aiResponse && aiResponse.success) {
-            console.log("✅ API Success! Rückgabe an die AI (Stripped/Cleaned):");
             const data = aiResponse.data;
-            console.dir(data); // Interaktives Objekt
+            console.log("✅ API Success! Rückgabe an die AI (Stripped/Cleaned):");
             
-            // Kurze Übersicht für schnellen Check
+            // Order Info Header
             if (data.order) {
-                console.group("🛒 Order Check (AI View)");
-                console.log("ID:", data.order.id);
-                console.log("Status:", `${data.order.statusId} (${data.order.statusName})`);
+                console.group(`🛒 Order ${data.order.id} (${data.order.statusName})`);
                 console.log("Erstellt am:", new Date(data.order.createdAt).toLocaleString());
-                console.groupEnd();
-            }
+                
+                // Deep Dive in die Bestandsprüfung
+                if (data.stocks && data.stocks.length > 0) {
+                    console.groupCollapsed("📦 SMART STOCK VALIDIERUNG (Pro Position)");
+                    
+                    // Map für schnellen Zugriff auf Order Items (um ItemID zu finden, falls vorhanden)
+                    // Da fetchOrderDetails die ItemIDs intern auflöst, müssen wir sie hier erraten oder per API holen,
+                    // um den Debug-Call exakt nachzustellen.
+                    // Wir iterieren über die Stocks, die von fetchOrderDetails zurückkamen.
+                    
+                    for (const stockEntry of data.stocks) {
+                        const vid = stockEntry.variationId;
+                        const aiStock = stockEntry.stockNet;
+                        
+                        // Wir müssen die ItemID herausfinden, um den Raw-Endpoint zu prüfen
+                        // Wir nutzen einen kleinen Trick und fragen die Variation ab
+                        try {
+                            const varRes = await new Promise(res => chrome.runtime.sendMessage({
+                                action: 'PLENTY_API_CALL',
+                                endpoint: `/rest/items/variations/${vid}`,
+                                method: 'GET'
+                            }, res));
 
-            if (data.shippingInfo) {
-                console.group("🚚 Versand & Tracking (AI View)");
-                console.log("Provider:", data.shippingInfo.provider);
-                console.log("Profil:", data.shippingInfo.profileName);
-                console.log("Zielland:", data.shippingInfo.destinationCountry);
-                if (data.order.shippingPackages && data.order.shippingPackages.length > 0) {
-                    console.table(data.order.shippingPackages.map(p => ({ PakrNr: p.packageNumber, Gewicht: p.weightG + 'g' })));
+                            if(varRes && varRes.success && varRes.data.itemId) {
+                                const itemId = varRes.data.itemId;
+                                const endpoint = `/rest/items/${itemId}/variations/${vid}/stock`;
+                                
+                                // RAW Stock abrufen
+                                const rawStockRes = await new Promise(res => chrome.runtime.sendMessage({
+                                    action: 'PLENTY_API_CALL',
+                                    endpoint: endpoint,
+                                    method: 'GET'
+                                }, res));
+
+                                if(rawStockRes && rawStockRes.success) {
+                                    const computed = calculateSmartStockLocal(rawStockRes.data, vid);
+                                    const match = computed === aiStock;
+                                    const icon = match ? "✅" : "⚠️";
+                                    
+                                    console.log(`${icon} Var ${vid} (Item ${itemId}) -> AI: ${aiStock} | Computed: ${computed}`);
+                                    if(!match) {
+                                        console.warn("Mismatch Data:", rawStockRes.data);
+                                    }
+                                } else {
+                                    console.warn(`Konnt Raw Stock nicht laden für Var ${vid}`);
+                                }
+
+                            } else {
+                                console.warn(`Konnte ItemID nicht auflösen für Var ${vid}`);
+                            }
+                        } catch(err) {
+                            console.error(err);
+                        }
+                    }
+                    console.groupEnd();
                 } else {
-                    console.warn("⚠️ Keine Paketnummern (shippingPackages) gefunden.");
+                    console.warn("⚠️ Keine Stock-Informationen in der AI-Antwort gefunden.");
                 }
-                console.groupEnd();
-            }
 
-            if (data.addresses && Array.isArray(data.addresses)) {
-                console.group(`🏠 Adressen (${data.addresses.length}) (AI View)`);
-                data.addresses.forEach(addr => {
-                    console.log(`[${addr.relationType}] ${addr.name1 || ''} ${addr.name2 || ''}, ${addr.town} (${addr.countryName})`);
-                });
                 console.groupEnd();
             }
 
