@@ -390,7 +390,7 @@ async function fetchOrderDetails(orderId) {
                     const stockData = await makePlentyCall(`/rest/items/${itemId}/variations/${vid}/stock`);
 
                     // 3. Nutze Smart Stock Berechnung (Shared mit fetchItemDetails)
-                    const net = calculateSmartStock(stockData, vid);
+                    const net = await calculateSmartStock(stockData, vid);
 
                     return { variationId: vid, stockNet: net };
                 } catch (e) {
@@ -665,7 +665,7 @@ async function fetchItemDetails(identifierRaw) {
 
         // --- Helper: Einheitliche Formatierung (Stripping) ---
         // FIX: Berechnet jetzt SmartStock und entfernt Rohdaten
-        const formatItemData = (variation, item, stockEntries) => {
+        const formatItemData = async (variation, item, stockEntries) => {
             // 1. Variation bereinigen
             const cleanVariation = {
                 id: variation.id,
@@ -698,7 +698,7 @@ async function fetchItemDetails(identifierRaw) {
 
             // 3. Stock berechnen (Smart Logic: Bundle vs. Single)
             // Wir nutzen die globale calculateSmartStock Funktion am Ende dieser Datei
-            const smartStock = calculateSmartStock(stockEntries, variation.id);
+            const smartStock = await calculateSmartStock(stockEntries, variation.id);
 
             return {
                 variation: cleanVariation,
@@ -719,7 +719,7 @@ async function fetchItemDetails(identifierRaw) {
             ]);
 
             const stockEntries = extractEntries(stockData); 
-            return formatItemData(variation, itemBaseData, stockEntries);
+            return await formatItemData(variation, itemBaseData, stockEntries);
         };
 
         const isNumeric = /^\d+$/.test(identifier);
@@ -1015,7 +1015,7 @@ async function searchItemsByText(searchText, options = {}) {
 
                 // UPDATE: Smart Stock Calculation (Bundle Warehouse 2 Logic)
                 if (Array.isArray(stockRes)) {
-                    stockNet = calculateSmartStock(stockRes, variationId);
+                    stockNet = await calculateSmartStock(stockRes, variationId);
                 }
 
                 price = (Array.isArray(priceRes) && priceRes[0] && priceRes[0].price != null)
@@ -1081,52 +1081,88 @@ async function searchItemsByText(searchText, options = {}) {
     };
 }
 
+// Cache für Bundle-Rezepte, um API-Calls zu sparen
+const BUNDLE_RECIPE_CACHE = new Map();
+
 /**
  * Berechnet den Bestand basierend auf der Bundle-Logik (Warehouse 2 Indikator).
- * @param {Array} stockEntries - Die Raw-Entries aus der API
+ * Lädt bei Bedarf die Bundle-Konfiguration nach.
+ * * @param {Array} stockEntries - Die Raw-Entries aus der API (Stock Response)
  * @param {number|string} currentVariationId - Die ID der Hauptvariante
  */
-function calculateSmartStock(stockEntries, currentVariationId) {
-    // UPDATE: Wenn Array leer oder null -> "Unendlich"
+async function calculateSmartStock(stockEntries, currentVariationId) {
+    // Wenn Array leer oder null -> "Unendlich" (oder 0, je nach Logik, aber Unendlich ist sicherer für "nicht limitiert")
     if (!Array.isArray(stockEntries) || stockEntries.length === 0) return "Unendlich";
 
     const targetId = Number(currentVariationId);
 
-    // 1. Prüfen: Kommt die eigene ID mit Warehouse 2 vor?
+    // 1. Prüfen: Ist es ein Bundle? (Indikator: WarehouseId 2 ist für die eigene ID vorhanden)
     const hasWarehouse2 = stockEntries.some(e => 
         Number(e.variationId) === targetId && Number(e.warehouseId) === 2
     );
 
     if (hasWarehouse2) {
         // CASE A: BUNDLE LOGIK
-        // Wir ignorieren die eigene ID.
-        // Wir summieren die Bestände der ANDEREN Varianten (falls eine Variante auf mehrere Lager verteilt ist).
-        // Dann nehmen wir das MINIMUM dieser Summen (Flaschenhals-Prinzip).
         
-        const otherTotals = {};
-        let foundOthers = false;
+        // 2. Bundle-Rezept (Komponenten & Mengen) holen
+        let bundleComponents = [];
+        
+        if (BUNDLE_RECIPE_CACHE.has(targetId)) {
+            bundleComponents = BUNDLE_RECIPE_CACHE.get(targetId);
+        } else {
+            try {
+                // Wir nutzen den Search-Endpoint, da wir hier die ItemID nicht zwingend kennen
+                const res = await makePlentyCall(`/rest/items/variations?id=${targetId}&with=variationBundleComponents`);
+                const variation = (res.entries && res.entries.length > 0) ? res.entries[0] : null;
+                
+                if (variation && Array.isArray(variation.variationBundleComponents)) {
+                    bundleComponents = variation.variationBundleComponents;
+                    BUNDLE_RECIPE_CACHE.set(targetId, bundleComponents);
+                }
+            } catch (e) {
+                console.warn(`Fehler beim Laden des Bundle-Rezepts für VarID ${targetId}`, e);
+            }
+        }
 
+        // 3. Bestände der Komponenten summieren (falls eine Komponente auf mehrere Lager verteilt ist)
+        const componentStocks = {};
         stockEntries.forEach(e => {
             const vId = Number(e.variationId);
+            // Wir ignorieren den virtuellen Bundle-Bestand (Warehouse 2 / TargetId)
             if (vId !== targetId) {
-                foundOthers = true;
-                // NetStock sicher parsen
                 const val = parseFloat(e.netStock || e.stockNet || 0);
                 const safeVal = isNaN(val) ? 0 : val;
-                
-                otherTotals[vId] = (otherTotals[vId] || 0) + safeVal;
+                componentStocks[vId] = (componentStocks[vId] || 0) + safeVal;
             }
         });
 
-        // Wenn Warehouse 2 da ist, aber keine anderen Komponenten -> Bestand 0 (defektes Bundle)
-        if (!foundOthers) return 0;
+        // 4. Verfügbare Bundle-Menge berechnen (Flaschenhals-Prinzip)
+        // Wenn keine Komponenten im Rezept sind (oder API Fail), Fallback auf "0" oder bisherige Logik.
+        if (bundleComponents.length === 0) {
+            // Fallback: Wenn wir Bestand haben, aber kein Rezept kennen, nehmen wir das Minimum aller gefundenen Bestände
+            // Das entspricht der alten Logik (1:1 Annahme), ist besser als 0.
+            const totals = Object.values(componentStocks);
+            return totals.length > 0 ? Math.min(...totals) : 0;
+        }
 
-        // Das Minimum aller Komponenten-Bestände zurückgeben
-        const totals = Object.values(otherTotals);
-        return Math.min(...totals);
+        let maxBundles = Infinity;
+
+        for (const comp of bundleComponents) {
+            const compId = Number(comp.componentVariationId);
+            const needed = Number(comp.componentQuantity) || 1;
+            
+            const available = componentStocks[compId] || 0;
+            const possible = Math.floor(available / needed);
+
+            if (possible < maxBundles) {
+                maxBundles = possible;
+            }
+        }
+
+        return (maxBundles === Infinity) ? 0 : maxBundles;
 
     } else {
-        // CASE B: STANDARD LOGIK
+        // CASE B: STANDARD LOGIK (Kein Bundle)
         // Nur eigene Bestände zusammenrechnen, alle anderen ignorieren.
         return stockEntries.reduce((acc, e) => {
             if (Number(e.variationId) === targetId) {

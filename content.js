@@ -2699,6 +2699,60 @@ window.debugPlentyItemSearch = async function(rawSearch) {
 
     const t0 = performance.now();
 
+    // Helper: Smart Stock Berechnung (ASYNC / Validierung)
+    // Muss exakt der Logik in calculateSmartStockLocal (Global) entsprechen
+    const calculateSmartStockLocal = async (stockEntries, currentVariationId) => {
+        if (!Array.isArray(stockEntries) || stockEntries.length === 0) return "Unendlich";
+        const targetId = Number(currentVariationId);
+
+        // 1. Check: Ist es ein Bundle (Warehouse 2)?
+        const hasWarehouse2 = stockEntries.some(e => Number(e.variationId) === targetId && Number(e.warehouseId) === 2);
+
+        if (hasWarehouse2) {
+            // BUNDLE LOGIK
+            const bundleComponents = await fetchBundleComponentsViaBackground(targetId);
+            
+            const componentStocks = {};
+            stockEntries.forEach(e => {
+                const vId = Number(e.variationId);
+                if (vId !== targetId) {
+                    const val = parseFloat(e.netStock || e.stockNet || 0);
+                    const safeVal = isNaN(val) ? 0 : val;
+                    componentStocks[vId] = (componentStocks[vId] || 0) + safeVal;
+                }
+            });
+
+            if (!bundleComponents || bundleComponents.length === 0) {
+                const totals = Object.values(componentStocks);
+                return totals.length > 0 ? Math.min(...totals) : 0;
+            }
+
+            let maxBundles = Infinity;
+            for (const comp of bundleComponents) {
+                const compId = Number(comp.componentVariationId);
+                const needed = Number(comp.componentQuantity) || 1;
+                
+                const available = componentStocks[compId] || 0;
+                const possible = Math.floor(available / needed);
+
+                if (possible < maxBundles) {
+                    maxBundles = possible;
+                }
+            }
+            return (maxBundles === Infinity) ? 0 : maxBundles;
+
+        } else {
+            // STANDARD LOGIK
+            return stockEntries.reduce((acc, e) => {
+                if (Number(e.variationId) === targetId) {
+                    const val = parseFloat(e.netStock || e.stockNet || 0);
+                    return acc + (isNaN(val) ? 0 : val);
+                }
+                return acc;
+            }, 0);
+        }
+    };
+
     try {
         // 1. Die normale Suche ausführen
         const response = await new Promise(resolve => {
@@ -2716,27 +2770,28 @@ window.debugPlentyItemSearch = async function(rawSearch) {
         if (response && response.success) {
             console.log(`✅ Fertig in ${ms}ms`);
             
-            // Kopie der Ergebnisse
+            // Kopie der Ergebnisse für Tabelle
             let results = [...(response.data?.results || [])];
-            // Sortierung nach Bestand erzwingen für Debug-Ansicht
             results.sort((a, b) => b.stockNet - a.stockNet);
 
             console.log(`Gefunden: ${results.length} Artikel`);
             console.table(results);
             
-            // --- RAW STOCK DATA FETCH (KORRIGIERT) ---
+            // --- RAW STOCK DATA FETCH & VALIDATION ---
             if (results.length > 0) {
-                const topResults = results.slice(0, 5);
+                const topResults = results.slice(0, 5); // Nur Top 5 prüfen
                 
-                console.groupCollapsed(`📦 RAW STOCK CHECK (Endpoint: /rest/items/{id}/variations/{vid}/stock)`);
-                console.log("Hinweis: Dies ist der Endpoint, der auch für die Berechnung genutzt wird.");
+                console.groupCollapsed(`📦 RAW STOCK VALIDATION (Top 5 Checks)`);
                 
                 for (const item of topResults) {
-                    if (item.variationId && item.itemNumber) {
+                    // Wir brauchen ItemID und VariationID. 
+                    // Das Tool liefert oft 'id' als ItemID oder 'itemId'. Wir prüfen beides.
+                    const itemId = item.itemId || item.id || item.itemNumber; 
+                    const vid = item.variationId;
+
+                    if (vid && itemId) {
                         try {
-                            // KORREKTUR: Wir nutzen jetzt den Item-Stock Endpoint statt Stockmanagement
-                            // Dieser löst Bundles oft korrekt auf.
-                            const endpoint = `/rest/items/${item.itemNumber}/variations/${item.variationId}/stock`;
+                            const endpoint = `/rest/items/${itemId}/variations/${vid}/stock`;
                             
                             const rawRes = await new Promise(resolve => {
                                 chrome.runtime.sendMessage({
@@ -2747,22 +2802,31 @@ window.debugPlentyItemSearch = async function(rawSearch) {
                             });
 
                             if (rawRes && rawRes.success) {
-                                console.log(`%cVariation ${item.variationId} (List-Bestand: ${item.stockNet})`, "font-weight:bold; color:blue;");
-                                console.log(`GET ${endpoint}`);
-                                console.dir(rawRes.data); // Das Array mit den Einträgen
+                                // ASYNC Check
+                                const computed = await calculateSmartStockLocal(rawRes.data, vid);
+                                const match = computed === item.stockNet;
+                                const icon = match ? "✅" : "⚠️";
+
+                                console.log(`${icon} Item ${itemId} / Var ${vid} -> Tool: ${item.stockNet} | Computed: ${computed}`);
+                                
+                                if (!match) {
+                                    console.warn(`Mismatch bei Var ${vid}!`, rawRes.data);
+                                }
                             } else {
-                                console.warn(`Fehler bei Var ${item.variationId}`, rawRes);
+                                console.warn(`Fehler bei Raw Stock Fetch für Var ${vid}`, rawRes);
                             }
                         } catch (err) {
                             console.error("Fehler im Loop:", err);
                         }
                     } else {
-                        console.warn("Item ohne ID/Number übersprungen:", item);
+                        console.warn("Item übersprungen (ID fehlt):", item);
                     }
                 }
                 console.groupEnd();
             }
-            // --------------------------------
+
+            console.log("%c📋 FINAL AI DATA (Das bekommt Gemini):", "background: #222; color: #bada55; padding: 4px; font-weight: bold;");
+            console.log(JSON.stringify(response.data, null, 2));
 
         } else {
             console.error("❌ Fehler:", response);
@@ -2779,28 +2843,54 @@ window.debugPlentyItemDetails = async function(identifier) {
     console.group(`🚀 DEBUG: fetchItemDetails für Identifier "${identifier}"`);
     console.log("⏳ Sende Anfrage an Background Script...");
 
-    // --- Lokale Kopie der Smart-Stock Logik (zum Validieren der AI-Berechnung) ---
-    const calculateSmartStockLocal = (stockEntries, currentVariationId) => {
-        // UPDATE: Empty Check -> "Unendlich"
+    // Helper: Smart Stock Berechnung (ASYNC / Validierung)
+    // Muss exakt der Logik in calculateSmartStockLocal (Global) entsprechen
+    const calculateSmartStockLocal = async (stockEntries, currentVariationId) => {
         if (!Array.isArray(stockEntries) || stockEntries.length === 0) return "Unendlich";
-
         const targetId = Number(currentVariationId);
+
+        // 1. Check: Ist es ein Bundle (Warehouse 2)?
         const hasWarehouse2 = stockEntries.some(e => Number(e.variationId) === targetId && Number(e.warehouseId) === 2);
 
         if (hasWarehouse2) {
-            const otherTotals = {};
-            let foundOthers = false;
+            // BUNDLE LOGIK
+            // Wir nutzen die globale Helper-Funktion (muss in content.js existieren)
+            const bundleComponents = await fetchBundleComponentsViaBackground(targetId);
+            
+            // Bestände aller Variationen summieren (außer dem Bundle-Hauptartikel selbst)
+            const componentStocks = {};
             stockEntries.forEach(e => {
                 const vId = Number(e.variationId);
                 if (vId !== targetId) {
-                    foundOthers = true;
                     const val = parseFloat(e.netStock || e.stockNet || 0);
-                    otherTotals[vId] = (otherTotals[vId] || 0) + (isNaN(val) ? 0 : val);
+                    const safeVal = isNaN(val) ? 0 : val;
+                    componentStocks[vId] = (componentStocks[vId] || 0) + safeVal;
                 }
             });
-            if (!foundOthers) return 0;
-            return Math.min(...Object.values(otherTotals));
+
+            if (!bundleComponents || bundleComponents.length === 0) {
+                // Fallback ohne Rezept -> Minimum der gefundenen Teile
+                const totals = Object.values(componentStocks);
+                return totals.length > 0 ? Math.min(...totals) : 0;
+            }
+
+            // Rezept matchen
+            let maxBundles = Infinity;
+            for (const comp of bundleComponents) {
+                const compId = Number(comp.componentVariationId);
+                const needed = Number(comp.componentQuantity) || 1;
+                
+                const available = componentStocks[compId] || 0;
+                const possible = Math.floor(available / needed);
+
+                if (possible < maxBundles) {
+                    maxBundles = possible;
+                }
+            }
+            return (maxBundles === Infinity) ? 0 : maxBundles;
+
         } else {
+            // STANDARD LOGIK
             return stockEntries.reduce((acc, e) => {
                 if (Number(e.variationId) === targetId) {
                     const val = parseFloat(e.netStock || e.stockNet || 0);
@@ -2830,18 +2920,20 @@ window.debugPlentyItemDetails = async function(identifier) {
         }
 
         const rawArr = rawRes.data;
-        console.log(`GET ${endpoint} (Raw Entries: ${rawArr.length})`);
-        console.dir(rawArr);
+        // console.log(`GET ${endpoint} (Raw Entries: ${rawArr.length})`);
+        // console.dir(rawArr);
 
-        const computed = calculateSmartStockLocal(rawArr, variationId);
+        // AWAIT HIER WICHTIG FÜR BUNDLES
+        const computed = await calculateSmartStockLocal(rawArr, variationId);
 
-        console.log(`✅ AI stockNet (vom Tool): ${aiStockNet}`);
-        console.log(`🧮 Computed Local (Validierung): ${computed}`);
+        const match = computed === aiStockNet;
+        const icon = match ? "✅" : "⚠️";
 
-        if (computed !== aiStockNet) {
-            console.warn("⚠️ Mismatch! Die AI API hat einen anderen Wert berechnet als die lokale Validierung.");
-        } else {
-            console.log("OK: Berechnung stimmt überein.");
+        console.log(`${icon} AI Result: ${aiStockNet} | Computed Validation: ${computed}`);
+
+        if (!match) {
+            console.warn("Mismatch! Die AI API hat einen anderen Wert berechnet als die lokale Validierung.");
+            console.log("Raw Data:", rawArr);
         }
         console.groupEnd();
     };
@@ -2856,8 +2948,7 @@ window.debugPlentyItemDetails = async function(identifier) {
 
         if (response && response.success) {
             const data = response.data;
-            console.log("✅ API Success! Rückgabe an die AI (Stripped):");
-            console.dir(data);
+            console.log("✅ API Success! Die Daten sind da.");
 
             if (data.meta && data.meta.type === "PLENTY_ITEM_AMBIGUOUS") {
                 console.warn(`⚠️ Ergebnis ist MEHRDEUTIG (${data.candidates.length} Kandidaten).`);
@@ -2872,13 +2963,17 @@ window.debugPlentyItemDetails = async function(identifier) {
                 // Single Match
                 const itemId = data.variation.itemId;
                 const variationId = data.variation.id;
-                const stockVal = data.stockNet; // Sollte jetzt eine Zahl oder "Unendlich" sein
+                const stockVal = data.stockNet; 
 
-                console.log(`ℹ️ Eindeutiger Treffer: VarID ${variationId}, Smart Stock (Net): ${stockVal}`);
+                console.log(`ℹ️ Eindeutiger Treffer: VarID ${variationId}`);
                 if (itemId && variationId) {
                     await debugOne("(single)", itemId, variationId, stockVal);
                 }
             }
+            
+            console.log("%c📋 FINAL AI DATA (Das bekommt Gemini):", "background: #222; color: #bada55; padding: 4px; font-weight: bold;");
+            console.log(JSON.stringify(data, null, 2));
+
         } else {
             console.error("❌ API Error oder kein Ergebnis:", response);
             if (response && response.error) console.error("Details:", response.error);
@@ -2947,34 +3042,61 @@ window.debugCustomerDetails = async function(contactId) {
 
 /**
  * NEUE DEBUG FUNKTION FÜR ORDER DETAILS
- * Simuliert den Tool-Call UND prüft die Smart-Stock Berechnung pro Position.
+ * Simuliert den Tool-Call UND prüft die Smart-Stock Berechnung (inkl. Async Bundle Check) pro Position.
  */
 window.debugOrderDetails = async function(orderId) {
     console.clear();
     console.group(`🚀 DEBUG: fetchOrderDetails für Order ID "${orderId}"`);
     console.log("⏳ Sende Anfragen an Background Script...");
 
-    // Helper: Smart Stock Berechnung (lokal dupliziert zum Abgleich)
-    const calculateSmartStockLocal = (stockEntries, currentVariationId) => {
+    // Helper: Smart Stock Berechnung (ASYNC / Validierung)
+    // Muss exakt der Logik in calculateSmartStockLocal (Global) entsprechen
+    const calculateSmartStockLocal = async (stockEntries, currentVariationId) => {
         if (!Array.isArray(stockEntries) || stockEntries.length === 0) return "Unendlich";
         const targetId = Number(currentVariationId);
+
+        // 1. Check: Ist es ein Bundle (Warehouse 2)?
         const hasWarehouse2 = stockEntries.some(e => Number(e.variationId) === targetId && Number(e.warehouseId) === 2);
 
         if (hasWarehouse2) {
-            const otherTotals = {};
-            let foundOthers = false;
+            // BUNDLE LOGIK
+            // Wir nutzen die globale Helper-Funktion (muss im Scope existieren, siehe unten in content.js)
+            const bundleComponents = await fetchBundleComponentsViaBackground(targetId);
+            
+            // Bestände aller Variationen summieren (außer dem Bundle-Hauptartikel selbst)
+            const componentStocks = {};
             stockEntries.forEach(e => {
                 const vId = Number(e.variationId);
                 if (vId !== targetId) {
-                    foundOthers = true;
                     const val = parseFloat(e.netStock || e.stockNet || 0);
                     const safeVal = isNaN(val) ? 0 : val;
-                    otherTotals[vId] = (otherTotals[vId] || 0) + safeVal;
+                    componentStocks[vId] = (componentStocks[vId] || 0) + safeVal;
                 }
             });
-            if (!foundOthers) return 0;
-            return Math.min(...Object.values(otherTotals));
+
+            if (!bundleComponents || bundleComponents.length === 0) {
+                // Fallback ohne Rezept -> Minimum der gefundenen Teile
+                const totals = Object.values(componentStocks);
+                return totals.length > 0 ? Math.min(...totals) : 0;
+            }
+
+            // Rezept matchen
+            let maxBundles = Infinity;
+            for (const comp of bundleComponents) {
+                const compId = Number(comp.componentVariationId);
+                const needed = Number(comp.componentQuantity) || 1;
+                
+                const available = componentStocks[compId] || 0;
+                const possible = Math.floor(available / needed);
+
+                if (possible < maxBundles) {
+                    maxBundles = possible;
+                }
+            }
+            return (maxBundles === Infinity) ? 0 : maxBundles;
+
         } else {
+            // STANDARD LOGIK (Summe des Artikels über alle Lager)
             return stockEntries.reduce((acc, e) => {
                 if (Number(e.variationId) === targetId) {
                     const val = parseFloat(e.netStock || e.stockNet || 0);
@@ -2996,7 +3118,7 @@ window.debugOrderDetails = async function(orderId) {
 
         if (aiResponse && aiResponse.success) {
             const data = aiResponse.data;
-            console.log("✅ API Success! Rückgabe an die AI (Stripped/Cleaned):");
+            console.log("✅ API Success! Die Daten sind da.");
             
             // Order Info Header
             if (data.order) {
@@ -3007,17 +3129,11 @@ window.debugOrderDetails = async function(orderId) {
                 if (data.stocks && data.stocks.length > 0) {
                     console.groupCollapsed("📦 SMART STOCK VALIDIERUNG (Pro Position)");
                     
-                    // Map für schnellen Zugriff auf Order Items (um ItemID zu finden, falls vorhanden)
-                    // Da fetchOrderDetails die ItemIDs intern auflöst, müssen wir sie hier erraten oder per API holen,
-                    // um den Debug-Call exakt nachzustellen.
-                    // Wir iterieren über die Stocks, die von fetchOrderDetails zurückkamen.
-                    
                     for (const stockEntry of data.stocks) {
                         const vid = stockEntry.variationId;
                         const aiStock = stockEntry.stockNet;
                         
                         // Wir müssen die ItemID herausfinden, um den Raw-Endpoint zu prüfen
-                        // Wir nutzen einen kleinen Trick und fragen die Variation ab
                         try {
                             const varRes = await new Promise(res => chrome.runtime.sendMessage({
                                 action: 'PLENTY_API_CALL',
@@ -3037,16 +3153,18 @@ window.debugOrderDetails = async function(orderId) {
                                 }, res));
 
                                 if(rawStockRes && rawStockRes.success) {
-                                    const computed = calculateSmartStockLocal(rawStockRes.data, vid);
+                                    // AWAIT HIER WICHTIG FÜR BUNDLES
+                                    const computed = await calculateSmartStockLocal(rawStockRes.data, vid);
+                                    
                                     const match = computed === aiStock;
                                     const icon = match ? "✅" : "⚠️";
                                     
-                                    console.log(`${icon} Var ${vid} (Item ${itemId}) -> AI: ${aiStock} | Computed: ${computed}`);
+                                    console.log(`${icon} Var ${vid} (Item ${itemId}) -> AI-Result: ${aiStock} | Computed Validation: ${computed}`);
                                     if(!match) {
-                                        console.warn("Mismatch Data:", rawStockRes.data);
+                                        console.warn(`Mismatch! AI sagt ${aiStock}, lokale Berechnung sagt ${computed}. Raw Data:`, rawStockRes.data);
                                     }
                                 } else {
-                                    console.warn(`Konnt Raw Stock nicht laden für Var ${vid}`);
+                                    console.warn(`Konnte Raw Stock nicht laden für Var ${vid}`);
                                 }
 
                             } else {
@@ -3064,7 +3182,8 @@ window.debugOrderDetails = async function(orderId) {
                 console.groupEnd();
             }
 
-            console.log("📋 JSON Output für AI (Copy/Paste):");
+            console.log("%c📋 FINAL AI DATA (Das bekommt Gemini):", "background: #222; color: #bada55; padding: 4px; font-weight: bold;");
+            // Ausgabe als reiner Text (schön formatiert)
             console.log(JSON.stringify(data, null, 2));
 
         } else {
@@ -3135,40 +3254,90 @@ window.debugOrderDetails = async function(orderId) {
     }
 })();
 
-// Kleiner Helper für die Konsolenausgabe des Bestands (Visualisierung mit Smart Logic)
-function calculateNetStockDebug(stockEntries, currentVariationId) {
-    if (!Array.isArray(stockEntries)) return 0;
-    
+
+// --- HELPER: Bundle-Komponenten via Background abfragen ---
+async function fetchBundleComponentsViaBackground(variationId) {
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+            action: "proxyPlentyApi", // Wir nutzen den existierenden Proxy-Mechanismus oder einen neuen
+            endpoint: `/rest/items/variations?id=${variationId}&with=variationBundleComponents`
+        }, (response) => {
+            if (response && response.success && response.data) {
+                const variation = (response.data.entries && response.data.entries.length > 0) ? response.data.entries[0] : null;
+                if (variation && Array.isArray(variation.variationBundleComponents)) {
+                    resolve(variation.variationBundleComponents);
+                    return;
+                }
+            }
+            // Fallback: Leeres Array bei Fehler
+            resolve([]); 
+        });
+    });
+}
+
+/**
+ * DEBUG / LOCAL VERSION: Berechnet den Bestand (jetzt ASYNC!)
+ * Nutzt Messaging zum Background Script für Bundle-Nachlade-Aktionen.
+ */
+async function calculateSmartStockLocal(stockEntries, currentVariationId) {
+    if (!Array.isArray(stockEntries) || stockEntries.length === 0) return "Unendlich";
+
     const targetId = Number(currentVariationId);
 
-    // 1. Check Warehouse 2 für eigene ID
+    // 1. Prüfen: Ist es ein Bundle?
     const hasWarehouse2 = stockEntries.some(e => 
         Number(e.variationId) === targetId && Number(e.warehouseId) === 2
     );
 
     if (hasWarehouse2) {
-        // Bundle Logik: Min der Summen der Anderen
-        const otherTotals = {};
-        let foundOthers = false;
+        // CASE A: BUNDLE LOGIK
+        console.log(`[SmartStockLocal] Bundle erkannt für VarID ${targetId}. Frage Komponenten ab...`);
 
+        // 2. Bundle-Rezept über Background holen (Async!)
+        const bundleComponents = await fetchBundleComponentsViaBackground(targetId);
+        
+        // 3. Bestände der Komponenten summieren
+        const componentStocks = {};
         stockEntries.forEach(e => {
             const vId = Number(e.variationId);
             if (vId !== targetId) {
-                foundOthers = true;
                 const val = parseFloat(e.netStock || e.stockNet || 0);
                 const safeVal = isNaN(val) ? 0 : val;
-                otherTotals[vId] = (otherTotals[vId] || 0) + safeVal;
+                componentStocks[vId] = (componentStocks[vId] || 0) + safeVal;
             }
         });
 
-        if (!foundOthers) return 0;
-        return Math.min(...Object.values(otherTotals));
+        // 4. Berechnung
+        if (bundleComponents.length === 0) {
+            console.warn("[SmartStockLocal] Keine Bundle-Komponenten gefunden (oder API Fehler). Nutze Fallback-Minimum.");
+            const totals = Object.values(componentStocks);
+            return totals.length > 0 ? Math.min(...totals) : 0;
+        }
+
+        let maxBundles = Infinity;
+
+        for (const comp of bundleComponents) {
+            const compId = Number(comp.componentVariationId);
+            const needed = Number(comp.componentQuantity) || 1;
+            
+            const available = componentStocks[compId] || 0;
+            const possible = Math.floor(available / needed);
+
+            if (possible < maxBundles) {
+                maxBundles = possible;
+            }
+        }
+
+        return (maxBundles === Infinity) ? 0 : maxBundles;
+
     } else {
-        // Standard Logik: Summe der Eigenen
-        return stockEntries.reduce((acc, entry) => {
-            if (Number(entry.variationId) !== targetId) return acc;
-            const net = parseFloat(entry.netStock || entry.stockNet || 0);
-            return acc + (isNaN(net) ? 0 : net);
+        // CASE B: STANDARD LOGIK
+        return stockEntries.reduce((acc, e) => {
+            if (Number(e.variationId) === targetId) {
+                const val = parseFloat(e.netStock || e.stockNet || 0);
+                return acc + (isNaN(val) ? 0 : val);
+            }
+            return acc;
         }, 0);
     }
 }
