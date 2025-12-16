@@ -2779,33 +2779,25 @@ window.debugPlentyItemDetails = async function(identifier) {
     console.group(`🚀 DEBUG: fetchItemDetails für Identifier "${identifier}"`);
     console.log("⏳ Sende Anfrage an Background Script...");
 
-    // --- Lokale Kopie der Smart-Stock Logik (1:1 wie in plentyApi.js) ---
+    // --- Lokale Kopie der Smart-Stock Logik (zum Validieren der AI-Berechnung) ---
     const calculateSmartStockLocal = (stockEntries, currentVariationId) => {
         if (!Array.isArray(stockEntries) || stockEntries.length === 0) return 0;
-
         const targetId = Number(currentVariationId);
-
-        const hasWarehouse2 = stockEntries.some(e =>
-            Number(e.variationId) === targetId && Number(e.warehouseId) === 2
-        );
+        const hasWarehouse2 = stockEntries.some(e => Number(e.variationId) === targetId && Number(e.warehouseId) === 2);
 
         if (hasWarehouse2) {
             const otherTotals = {};
             let foundOthers = false;
-
             stockEntries.forEach(e => {
                 const vId = Number(e.variationId);
                 if (vId !== targetId) {
                     foundOthers = true;
                     const val = parseFloat(e.netStock || e.stockNet || 0);
-                    const safeVal = isNaN(val) ? 0 : val;
-                    otherTotals[vId] = (otherTotals[vId] || 0) + safeVal;
+                    otherTotals[vId] = (otherTotals[vId] || 0) + (isNaN(val) ? 0 : val);
                 }
             });
-
             if (!foundOthers) return 0;
-            const totals = Object.values(otherTotals);
-            return Math.min(...totals);
+            return Math.min(...Object.values(otherTotals));
         } else {
             return stockEntries.reduce((acc, e) => {
                 if (Number(e.variationId) === targetId) {
@@ -2817,54 +2809,10 @@ window.debugPlentyItemDetails = async function(identifier) {
         }
     };
 
-    const explainSmartStock = (stockEntries, currentVariationId) => {
-        const targetId = Number(currentVariationId);
-        const hasWarehouse2 = Array.isArray(stockEntries) && stockEntries.some(e =>
-            Number(e.variationId) === targetId && Number(e.warehouseId) === 2
-        );
-
-        if (!Array.isArray(stockEntries) || stockEntries.length === 0) {
-            return { mode: "empty", hasWarehouse2: false, note: "Stock Array ist leer -> calculateSmartStock = 0" };
-        }
-
-        if (hasWarehouse2) {
-            const otherTotals = {};
-            stockEntries.forEach(e => {
-                const vId = Number(e.variationId);
-                if (vId !== targetId) {
-                    const val = parseFloat(e.netStock || e.stockNet || 0);
-                    otherTotals[vId] = (otherTotals[vId] || 0) + (isNaN(val) ? 0 : val);
-                }
-            });
-            const totals = Object.values(otherTotals);
-            return {
-                mode: "bundle",
-                hasWarehouse2: true,
-                otherTotalsByVariationId: otherTotals,
-                bundleBottleneckMin: totals.length ? Math.min(...totals) : 0
-            };
-        }
-
-        // standard
-        const ownSum = stockEntries.reduce((acc, e) => {
-            if (Number(e.variationId) === targetId) {
-                const val = parseFloat(e.netStock || e.stockNet || 0);
-                return acc + (isNaN(val) ? 0 : val);
-            }
-            return acc;
-        }, 0);
-
-        return { mode: "standard", hasWarehouse2: false, ownSum };
-    };
-
     const fetchRawStock = async (itemId, variationId) => {
         const endpoint = `/rest/items/${itemId}/variations/${variationId}/stock`;
         const rawRes = await new Promise(resolve => {
-            chrome.runtime.sendMessage({
-                action: "PLENTY_API_CALL",
-                endpoint,
-                method: "GET"
-            }, resolve);
+            chrome.runtime.sendMessage({ action: "PLENTY_API_CALL", endpoint, method: "GET" }, resolve);
         });
         return { endpoint, rawRes };
     };
@@ -2873,7 +2821,6 @@ window.debugPlentyItemDetails = async function(identifier) {
         console.groupCollapsed(`📦 RAW STOCK CHECK ${label} (Item ${itemId}, Var ${variationId})`);
         const { endpoint, rawRes } = await fetchRawStock(itemId, variationId);
 
-        console.log(`GET ${endpoint}`);
         if (!rawRes || !rawRes.success) {
             console.warn("❌ RAW Stock Call fehlgeschlagen:", rawRes);
             console.groupEnd();
@@ -2881,17 +2828,18 @@ window.debugPlentyItemDetails = async function(identifier) {
         }
 
         const rawArr = rawRes.data;
+        console.log(`GET ${endpoint} (Raw Entries: ${rawArr.length})`);
         console.dir(rawArr);
 
         const computed = calculateSmartStockLocal(rawArr, variationId);
-        const expl = explainSmartStock(rawArr, variationId);
 
-        console.log("✅ AI stockNet (aus fetchItemDetails):", aiStockNet);
-        console.log("🧮 computed stockNet (local calculateSmartStock):", computed);
-        console.log("🔎 Explanation:", expl);
+        console.log(`✅ AI stockNet (vom Tool): ${aiStockNet}`);
+        console.log(`🧮 Computed Local (Validierung): ${computed}`);
 
         if (computed !== aiStockNet) {
-            console.warn("⚠️ Mismatch! (AI stockNet != local computed) -> deutet auf Endpoint/Format-Diff oder Parsing hin.");
+            console.warn("⚠️ Mismatch! Die AI API hat einen anderen Wert berechnet als die lokale Validierung.");
+        } else {
+            console.log("OK: Berechnung stimmt überein.");
         }
         console.groupEnd();
     };
@@ -2905,59 +2853,30 @@ window.debugPlentyItemDetails = async function(identifier) {
         });
 
         if (response && response.success) {
-            console.log("✅ API Success! Rückgabe an die AI:");
-            console.dir(response.data);
+            const data = response.data;
+            console.log("✅ API Success! Rückgabe an die AI (Stripped):");
+            console.dir(data);
 
-            // --- Preview der Text-Bereinigung (Full Debug) ---
-            if (response.data.item && response.data.item.texts && response.data.item.texts.length > 0) {
-                const txt = response.data.item.texts[0];
-                console.group("📝 Text Formatting Check");
-                console.log("Name:", txt.name1);
-                console.log("Description (Cleaned):", txt.description);
-                console.log("TechData (Cleaned):", txt.technicalData);
-                console.groupEnd();
-            } else if (response.data.candidates && response.data.candidates.length > 0) {
-                const txt = response.data.candidates[0].item?.texts?.[0];
-                console.group("📝 Text Formatting Check (Candidate 1)");
-                console.log("Description (Cleaned):", txt ? txt.description : "N/A");
-                console.groupEnd();
-            }
-
-            console.log("📋 JSON Output (für Copy/Paste):");
-            console.log(JSON.stringify(response.data, null, 2));
-
-            // --- Smart Stock Transparenz (RAW + Recalc) ---
-            if (response.data.meta && response.data.meta.type === "PLENTY_ITEM_AMBIGUOUS") {
-                console.warn(`⚠️ Ergebnis ist MEHRDEUTIG. Gefundene Kandidaten: ${response.data.candidates.length}`);
-
-                // Für Debug: alle Kandidaten (max 5) prüfen
-                for (let i = 0; i < response.data.candidates.length; i++) {
-                    const c = response.data.candidates[i];
-                    const itemId = c?.variation?.itemId;
-                    const variationId = c?.variation?.id;
-                    const aiStockNet = c?.stockNet;
-
-                    if (itemId && variationId) {
-                        await debugOne(`#${i + 1}`, itemId, variationId, aiStockNet);
-                    } else {
-                        console.warn(`Candidate #${i + 1} ohne itemId/variationId:`, c);
+            if (data.meta && data.meta.type === "PLENTY_ITEM_AMBIGUOUS") {
+                console.warn(`⚠️ Ergebnis ist MEHRDEUTIG (${data.candidates.length} Kandidaten).`);
+                for (let i = 0; i < data.candidates.length; i++) {
+                    const c = data.candidates[i];
+                    if (c.variation && c.item) {
+                        // Hier greifen wir jetzt auf das korrekte stockNet zu
+                        await debugOne(`#${i + 1}`, c.variation.itemId, c.variation.id, c.stockNet);
                     }
                 }
-
-            } else if (response.data.variation) {
-                const itemId = response.data.variation.itemId;
-                const variationId = response.data.variation.id;
-                const stockVal = response.data.stockNet;
+            } else if (data.variation) {
+                // Single Match
+                const itemId = data.variation.itemId;
+                const variationId = data.variation.id;
+                const stockVal = data.stockNet; // Sollte jetzt eine Zahl sein, kein Array/Undefined
 
                 console.log(`ℹ️ Eindeutiger Treffer: VarID ${variationId}, Smart Stock (Net): ${stockVal}`);
-
                 if (itemId && variationId) {
                     await debugOne("(single)", itemId, variationId, stockVal);
-                } else {
-                    console.warn("Single Match aber itemId/variationId fehlt:", response.data.variation);
                 }
             }
-
         } else {
             console.error("❌ API Error oder kein Ergebnis:", response);
             if (response && response.error) console.error("Details:", response.error);

@@ -748,7 +748,7 @@ async function fetchItemDetails(identifierRaw) {
         };
 
         // --- Helper: Einheitliche Formatierung (Stripping) ---
-        // Dies garantiert, dass Single-Match und Multi-Match exakt gleiche Strukturen liefern
+        // FIX: Berechnet jetzt SmartStock und entfernt Rohdaten
         const formatItemData = (variation, item, stockEntries) => {
             // 1. Variation bereinigen
             const cleanVariation = {
@@ -767,10 +767,9 @@ async function fetchItemDetails(identifierRaw) {
             // 2. Item bereinigen & Country ID auflösen
             const countryName = COUNTRY_MAP[item.producingCountryId] || `Unknown (ID: ${item.producingCountryId})`;
 
-            // HTML Cleaning anwenden (wie in searchItemsByText)
+            // HTML Cleaning anwenden
             const cleanTexts = (item.texts || []).map(t => ({
                 name1: t.name1,
-                // WICHTIG: HTML tags entfernen und in lesbaren Text wandeln
                 description: stripHtmlToText(t.description),
                 technicalData: stripHtmlToText(t.technicalData)
             }));
@@ -781,20 +780,14 @@ async function fetchItemDetails(identifierRaw) {
                 texts: cleanTexts
             };
 
-            // 3. Stock bereinigen
-            const cleanStock = (stockEntries || []).map(s => ({
-                itemId: (typeof s.itemId !== "undefined") ? s.itemId : item.id,
-                stockNet: (typeof s.stockNet !== "undefined")
-                    ? s.stockNet
-                    : ((typeof s.netStock !== "undefined") ? s.netStock : 0),
-                variationId: (typeof s.variationId !== "undefined") ? s.variationId : variation.id,
-                warehouseId: (typeof s.warehouseId !== "undefined") ? s.warehouseId : null
-            }));
+            // 3. Stock berechnen (Smart Logic: Bundle vs. Single)
+            // Wir nutzen die globale calculateSmartStock Funktion am Ende dieser Datei
+            const smartStock = calculateSmartStock(stockEntries, variation.id);
 
             return {
                 variation: cleanVariation,
                 item: cleanItem,
-                stock: cleanStock
+                stockNet: smartStock // FIX: Nur der berechnete Wert, kein Array mehr!
             };
         };
 
@@ -803,21 +796,19 @@ async function fetchItemDetails(identifierRaw) {
             const itemId = variation.itemId;
             const variationId = variation.id;
 
-            // UPDATE: Wir holen Item & Stock OHNE warehouseId Filter (Globaler Bestand)
+            // UPDATE: Wir holen Item & Stock
             const [stockData, itemBaseData] = await Promise.all([
-                // WICHTIG: gleicher Endpoint wie bei searchItemsByText (Bundle-fähig)
                 makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
                 makePlentyCall(`/rest/items/${itemId}`)
             ]);
 
-            const stockEntries = extractEntries(stockData); // bleibt kompatibel (Array oder {entries})
+            const stockEntries = extractEntries(stockData); 
             return formatItemData(variation, itemBaseData, stockEntries);
         };
 
         const isNumeric = /^\d+$/.test(identifier);
         
-        // --- SUCHE (Identisch zu vorher) ---
-        // 1. Varianten-Suche (ID, ItemID, Number)
+        // --- SUCHE ---
         const searchVariations = async (params, label) => {
             const qs = new URLSearchParams({ itemsPerPage: "50", isActive: "true", ...params }).toString();
             try {
@@ -831,7 +822,6 @@ async function fetchItemDetails(identifierRaw) {
             if (!candidates.length) await searchVariations({ itemId: identifier }, "itemId");
             if (!candidates.length) await searchVariations({ numberExact: identifier }, "numberExact");
             if (!candidates.length) {
-                // Fallback ID Path
                 try {
                     const res = await makePlentyCall(`/rest/items/${identifier}/variations?isActive=true`);
                     addCandidates(extractEntries(res));
@@ -842,7 +832,6 @@ async function fetchItemDetails(identifierRaw) {
         }
 
         if (candidates.length === 0) {
-            // Breite Suche
             const tasks = [
                 searchVariations({ numberExact: identifier }, "numberExact"),
                 searchVariations({ numberFuzzy: identifier }, "numberFuzzy"),
@@ -868,12 +857,11 @@ async function fetchItemDetails(identifierRaw) {
             const data = await loadFullData(candidates[0]);
             return {
                 meta: { type: "PLENTY_ITEM_EXPORT", timestamp: new Date().toISOString(), searchMethod },
-                ...data // Spreadet variation, item, stock
+                ...data // Spreadet variation, item, stockNet
             };
         }
 
         // CASE B: Multi Match (Ambiguous)
-        // Wir laden für die Top 5 die Details und formatieren sie EXAKT wie beim Single Match
         const topCandidates = candidates.slice(0, 5);
         
         const detailedCandidates = await Promise.all(
@@ -894,7 +882,7 @@ async function fetchItemDetails(identifierRaw) {
                 searchMethod,
                 timestamp: new Date().toISOString()
             },
-            candidates: detailedCandidates // Array von Objekten mit { variation, item, stock }
+            candidates: detailedCandidates 
         };
 
     } catch (error) {
