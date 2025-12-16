@@ -121,6 +121,11 @@ Achte streng darauf, **interne Notizen** ("type": "internal_note") nur als Konte
    - RAM: DDR4 ECC (Registered vs. Load Reduced nicht mischbar).
    - Storage: Nur ein Upgrade-Kit pro Server möglich (da Basiskomponenten entfallen).
 
+6. **Erwartungen an den Kunden**
+   - Kunden müssen zumindest eine grobe hardwarebezogene Vorstellung haben, von dem, was sie benötigen. Je präziser desto besser.
+     Wir sind ein Händler, kein Systemhaus - wenn jemand also nur sagt "ich brauch Server für Proxmox", verweisen wir drauf, dass er sich beim Systemhaus erst ne Bedarfsermittlung machen lassen und damit dann zu uns kommen soll.
+     Wenn der Kunde zumindest Kerne pro CPU (oder Kerne gesamt) und RAM formuliert, können wir zumindest grob was vorschlagen, aber je genauer desto besser.
+
 ---
 
 ### INTERPRETATION VON DATEN (TOOL USE):
