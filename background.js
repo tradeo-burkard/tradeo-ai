@@ -9,7 +9,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const isAuthError = error.message === "MISSING_CREDENTIALS" || error.message.includes("Login Failed");
                 sendResponse({ success: false, error: error.toString(), authRequired: isAuthError });
             });
-        return true; // Async wait
+        return true;
     }
 
     // Order Details (Bestehend)

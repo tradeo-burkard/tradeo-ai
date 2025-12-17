@@ -331,7 +331,6 @@ async function processTicket(id, incomingInboxHash) {
 
 // --- API FUNCTIONS ---
 
-
 async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     const stored = await chrome.storage.local.get(['geminiApiKey']);
     const apiKey = stored.geminiApiKey;

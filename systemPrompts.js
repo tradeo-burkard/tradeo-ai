@@ -19,8 +19,6 @@ Entscheide, ob Kevin für die Antwort auf die User-Anweisung neue Fakten braucht
 WICHTIG:
 - Gib NUR JSON zurück. Kein Markdown, kein Text davor/danach.
 - Erfinde keine IDs. Extrahiere nur aus Ticket/Chat/Entwurf.
-- Wenn die User-Anweisung nur eine Umformulierung / Ergänzung am bestehenden Entwurf ist:
-  => tool_calls MUSS [] sein.
 - Tool-Calls bei User Prompts sind nur erlaubt, wenn der User explizit neue Fakten verlangt ("prüf", "suche", "check", "aktuell", "nochmal", etc.)
   oder wenn im aktuellen Entwurf erkennbar Fakten fehlen (z.B. "kann ich nicht prüfen" / "unbekannt").
 - Niemals mehr als 50 Tool Calls machen - Falls du drüber kommen würdest, priorisieren.
@@ -272,5 +270,4 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
   "draft": "HTML Antworttext in der response_language ermittelten Sprache(<p>...</p>)",
   "feedback": "Kurze Info an Agent (z.B. 'Habe Lagerbestand geprüft: 5 Stück verfügbar')"
 }
-
 `;
