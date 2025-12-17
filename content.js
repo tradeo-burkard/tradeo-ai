@@ -2533,7 +2533,14 @@ async function callGeminiWithRotation(payload, model) {
     // 2. Loop durch die Keys
     for (let i = 0; i < keys.length; i++) {
         const currentKey = keys[i];
-        const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${currentKey}`;
+        const PROJECT_ID = "gen-lang-client-0235650387"; // deine Projekt-ID
+        const LOCATION = "europe-west3";                  // EU-Region
+        const API_VERSION = "v1";                         // Vertex: v1 (statt v1beta)
+
+        const endpoint =
+            `https://${LOCATION}-aiplatform.googleapis.com/${API_VERSION}` +
+            `/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${model}:generateContent` +
+            `?key=${currentKey}`;
 
         try {
             const response = await fetch(endpoint, {
