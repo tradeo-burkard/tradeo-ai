@@ -15,7 +15,10 @@ const DASHBOARD_FOLDERS_TO_SCAN = [
 // NOTE: workerPrompt & plannerPrompt wurden nach systemPrompts.js ausgelagert.
 // Model Definitionen
 const AI_MODELS = {
-    "openai/gpt-oss-120b": { id: "openai/gpt-oss-120b", label: "gpt-oss-120b", dropdownText: "gpt-oss-120b (RunPod/vLLM)" }
+    "gemini-2.5-flash-lite": { id: "gemini-2.5-flash-lite", label: "2.5 Flash Lite", dropdownText: "gemini-2.5-flash-lite (sehr schnell)" },
+    "gemini-2.5-flash": { id: "gemini-2.5-flash", label: "2.5 Flash", dropdownText: "gemini-2.5-flash (schnell)" },
+    "gemini-2.5-pro": { id: "gemini-2.5-pro", label: "2.5 Pro", dropdownText: "gemini-2.5-pro (standard)" },
+    "gemini-3-pro-preview": { id: "gemini-3-pro-preview", label: "3 Pro", dropdownText: "gemini-3-pro-preview (langsam)" }
 };
 
 // --- GLOBAL STATE ---
@@ -25,7 +28,7 @@ window.aiState = {
     isGenerating: false,
     preventOverwrite: false,
     chatHistory: [], // Array von Objekten: { type: 'user'|'ai'|'draft', content: string }
-    currentModel: "openai/gpt-oss-120b",
+    currentModel: "gemini-2.5-pro",
     // Ticket-spezifische, wiederverwendbare Tool-Ergebnisse (für Folgeprompts ohne erneute API Calls)
     lastToolDataByCid: {},
     // Cache management V3
@@ -329,11 +332,12 @@ async function processTicket(id, incomingInboxHash) {
 // --- API FUNCTIONS ---
 
 async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
-    const stored = await chrome.storage.local.get(['llmBaseUrl', 'llmApiKey']);
-    if (!stored.llmBaseUrl || !stored.llmApiKey) return null;
+    const stored = await chrome.storage.local.get(['geminiApiKey']);
+    const apiKey = stored.geminiApiKey;
+    if (!apiKey) return null;
 
-    const currentModel = window.aiState.currentModel || "openai/gpt-oss-120b";
-    const isSlowModel = false;
+    const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
+    const isSlowModel = currentModel.includes("gemini-3-pro");
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
     const headlessUserPrompt = "Analysiere das Ticket und erstelle einen Entwurf.";
@@ -397,8 +401,8 @@ Erstelle einen Antwortentwurf im JSON-Format:
             generationConfig: { responseMimeType: "application/json" }
         };
 
-        const response = await callLLM(payload, currentModel);
-        let rawText = response?.choices?.[0]?.message?.content || "";
+        const response = await callGeminiWithRotation(payload, currentModel);
+        let rawText = response?.candidates?.[0]?.content?.parts?.[0]?.text || "";
         rawText = stripGeminiJson(rawText);
 
         let finalResponse;
@@ -460,22 +464,26 @@ Erstelle einen Antwortentwurf im JSON-Format (kein Tool-Calling).
 
 
 async function executeHeadlessLoop(contents, ticketId) {
-    const model = window.aiState.currentModel || "openai/gpt-oss-120b";
+    const model = window.aiState.currentModel || "gemini-2.5-pro";
     
     // Kein Loop mehr, keine Tools Payload -> Einfacher Call
     const payload = { contents: contents };
 
     try {
-        const data = await callLLM(payload, model);
+        const data = await callGeminiWithRotation(payload, model);
 
-        const raw = data?.choices?.[0]?.message?.content || "";
-
-        if (!raw || raw.trim().length === 0) {
-            console.warn("Tradeo AI: LLM content ist leer.", data);
+        const candidate = data.candidates?.[0];
+        if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
+        
+        const content = candidate.content;
+        const parts = content.parts || []; 
+        
+        if (parts.length === 0) {
+            console.warn("Tradeo AI Headless: Gemini Content Parts sind leer.", candidate);
             throw new Error("GEMINI_SAFETY_FILTER_TRIGGERED");
         }
 
-        let rawText = raw; 
+        let rawText = parts[0].text || ""; 
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
         
         let finalResponse = null;
@@ -897,15 +905,9 @@ function initConversationUI(isRestore = false) {
         
         <div id="tradeo-ai-settings-panel">
             <div class="tradeo-setting-row">
-                <label>RunPod Base URL (OpenAI-kompatibel)</label>
-                <input type="text" id="setting-llm-baseurl" placeholder="https://api.runpod.ai/v2/&lt;ENDPOINT_ID&gt;/openai/v1">
-                <div style="font-size:10px; color:#666; margin-top:2px;">
-                    Muss auf <code>/openai/v1</code> enden. (RunPod: <code>.../v2/&lt;ID&gt;/openai/v1</code>)
-                </div>
-            </div>
-            <div class="tradeo-setting-row">
-                <label>RunPod API Key</label>
-                <input type="password" id="setting-llm-apikey" placeholder="Bearer Token">
+                <label>Gemini API Keys (Einer pro Zeile)</label>
+                <textarea id="setting-gemini-key" placeholder="Key 1 (Projekt A)&#10;Key 2 (Projekt B)&#10;..." rows="4" style="width:100%; border:1px solid #ccc; border-radius:4px; padding:6px; font-family:monospace; font-size:11px;"></textarea>
+                <div style="font-size:10px; color:#666; margin-top:2px;">Bei "Rate Limit" Fehlern wird automatisch zum nächsten Key gewechselt.</div>
             </div>
             <div class="tradeo-setting-row">
                 <label>Plenty Username</label>
@@ -927,10 +929,10 @@ function initConversationUI(isRestore = false) {
         <div id="tradeo-ai-resize-handle" title="Höhe anpassen"></div>
         
         <div id="tradeo-ai-input-area">
-            <button id="tradeo-ai-settings-btn" title="Einstellungen (RunPod)"><i class="glyphicon glyphicon-cog"></i></button>
+            <button id="tradeo-ai-settings-btn" title="Einstellungen (API Keys)"><i class="glyphicon glyphicon-cog"></i></button>
             
             <div class="tradeo-ai-model-wrapper">
-                <button id="tradeo-ai-model-btn" type="button">gpt-oss-120b</button>
+                <button id="tradeo-ai-model-btn" type="button">2.5 Pro</button>
                 <div id="tradeo-ai-model-dropdown" class="hidden"></div>
             </div>
 
@@ -1108,9 +1110,16 @@ function setupSettingsLogic() {
         panel.classList.toggle('visible');
         if (panel.classList.contains('visible')) {
             // Beim Öffnen Werte laden
-            chrome.storage.local.get(['llmBaseUrl', 'llmApiKey', 'plentyUser', 'plentyPass'], (res) => {
-                document.getElementById('setting-llm-baseurl').value = res.llmBaseUrl || '';
-                document.getElementById('setting-llm-apikey').value = res.llmApiKey || '';
+            chrome.storage.local.get(['geminiApiKeys', 'geminiApiKey', 'plentyUser', 'plentyPass'], (res) => {
+                // Migration: Falls alter Single-Key existiert, aber keine Liste -> nutze Single Key
+                let keysToShow = "";
+                if (res.geminiApiKeys && Array.isArray(res.geminiApiKeys)) {
+                    keysToShow = res.geminiApiKeys.join('\n');
+                } else if (res.geminiApiKey) {
+                    keysToShow = res.geminiApiKey;
+                }
+                
+                document.getElementById('setting-gemini-key').value = keysToShow;
                 document.getElementById('setting-plenty-user').value = res.plentyUser || '';
                 document.getElementById('setting-plenty-pass').value = res.plentyPass || '';
             });
@@ -1119,39 +1128,40 @@ function setupSettingsLogic() {
 
     // Save Action
     saveBtn.addEventListener('click', async () => {
-        const llmBaseUrl = document.getElementById('setting-llm-baseurl').value.trim();
-        const llmApiKey = document.getElementById('setting-llm-apikey').value.trim();
+        const rawKeys = document.getElementById('setting-gemini-key').value;
         const pUser = document.getElementById('setting-plenty-user').value.trim();
         const pPass = document.getElementById('setting-plenty-pass').value.trim();
 
-        statusDiv.innerText = "Speichere...";
-        statusDiv.style.color = "";
+        // Keys verarbeiten: Splitten, Trimmen, Leere Zeilen entfernen
+        const keyList = rawKeys.split('\n')
+            .map(k => k.trim())
+            .filter(k => k.length > 5); // Mindestlänge Check
 
+        statusDiv.innerText = "Speichere...";
+        
         // Speichern
         await chrome.storage.local.set({
-            llmBaseUrl,
-            llmApiKey,
+            geminiApiKeys: keyList,     // Neue Liste speichern
+            geminiApiKey: keyList[0],   // Ersten Key als Fallback für Legacy-Funktionen speichern
             plentyUser: pUser,
             plentyPass: pPass,
-            plentyToken: null // Re-auth erzwingen
+            plentyToken: null 
         });
 
-        // Reconnect Attempt
+        // Test der Verbindung (optional)
         if (pUser && pPass) {
-            statusDiv.innerText = "Verbinde zu Plenty...";
-            try {
-                // Trigger auth via background (makePlentyCall -> getPlentyToken logs in using stored credentials)
-                await callPlenty("/rest/orders?itemsPerPage=1&page=1", "GET");
-                statusDiv.innerText = "✅ Gespeichert & verbunden!";
-                statusDiv.style.color = "green";
-                setTimeout(() => panel.classList.remove('visible'), 1500);
-            } catch (e) {
-                statusDiv.innerText = "❌ Plenty Login Fehler: " + e;
-                statusDiv.style.color = "red";
-            }
+             statusDiv.innerText = "Teste Plenty Verbindung...";
+             try {
+                 await callPlenty('/rest/login', 'POST', { username: pUser, password: pPass });
+                 statusDiv.innerText = `✅ Gespeichert (${keyList.length} API Keys) & Plenty Verbunden!`;
+                 statusDiv.style.color = "green";
+                 setTimeout(() => panel.classList.remove('visible'), 1500);
+             } catch (e) {
+                 statusDiv.innerText = "❌ Fehler: " + e;
+                 statusDiv.style.color = "red";
+             }
         } else {
-            statusDiv.innerText = "✅ Gespeichert";
-            statusDiv.style.color = "green";
+            statusDiv.innerText = `✅ Gespeichert (${keyList.length} Gemini Keys)`;
             setTimeout(() => panel.classList.remove('visible'), 1000);
         }
     });
@@ -1739,9 +1749,8 @@ async function runAI(isInitial = false) {
     }
     if (lock === false) return;
 
-    const storageData = await chrome.storage.local.get(['llmBaseUrl', 'llmApiKey']);
-    const llmBaseUrl = storageData.llmBaseUrl;
-    const llmApiKey = storageData.llmApiKey;
+    const storageData = await chrome.storage.local.get(['geminiApiKey']);
+    const apiKey = storageData.geminiApiKey;
 
     let userPrompt = "";
     if (isInitial) {
@@ -1756,10 +1765,10 @@ async function runAI(isInitial = false) {
         window.aiState.chatHistory.push({ type: "user", content: userPrompt }); 
     }
 
-    if (!llmBaseUrl || !llmApiKey) {
-        renderChatMessage('system', "⚠️ RunPod nicht konfiguriert (Base URL / API Key fehlt). Öffne das Zahnrad ⚙️ und trage die Werte ein.");
+    if (!apiKey) {
+        renderChatMessage('system', "⚠️ Kein API Key gefunden.");
         await releaseLock(cid);
-        return;
+        return; 
     }
 
     window.aiState.isGenerating = true;
@@ -1774,8 +1783,8 @@ async function runAI(isInitial = false) {
         return `${role}: ${e.content}`;
     }).join("\n");
 
-    const currentModel = window.aiState.currentModel || "openai/gpt-oss-120b";
-    const isSlowModel = false; 
+    const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
+    const isSlowModel = currentModel.includes("gemini-3-pro"); 
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
     // 1. START: Karen Bubble erstellen (UI)
@@ -1909,8 +1918,8 @@ Gib NUR ein JSON-Objekt zurück im Format:
             generationConfig: { responseMimeType: "application/json" }
         };
 
-        const response = await callLLM(payload, currentModel);
-        let rawText = response?.choices?.[0]?.message?.content || "";
+        const response = await callGeminiWithRotation(payload, currentModel);
+        let rawText = response?.candidates?.[0]?.content?.parts?.[0]?.text || "";
         rawText = stripGeminiJson(rawText);
 
         try {
@@ -2066,32 +2075,36 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId, 
 }
 
 async function executeGeminiLoop(contents, cid) {
-    const model = window.aiState.currentModel || "openai/gpt-oss-120b";
+    const model = window.aiState.currentModel || "gemini-2.5-pro";
+    
+    // Einfacher Aufruf ohne Tools
+    const payload = { contents: contents };
 
-    // Wir akzeptieren weiterhin das bestehende "contents" Format (Gemini-Style) und
-    // normalisieren intern zu OpenAI-Chat (siehe callLLM/normalizeOpenAIPayload).
-    const payload = { contents };
+    const data = await callGeminiWithRotation(payload, model);
 
-    const data = await callLLM(payload, model);
-
-    const raw = data?.choices?.[0]?.message?.content || "";
-
-    if (!raw || raw.trim().length === 0) {
-        console.warn("Tradeo AI: LLM content ist leer.", data);
+    const candidate = data.candidates?.[0];
+    if (!candidate || !candidate.content) throw new Error(`Leere Antwort (Reason: ${candidate?.finishReason})`);
+    
+    const content = candidate.content;
+    const parts = content.parts || []; 
+    
+    if (parts.length === 0) {
+        console.warn("Tradeo AI: Gemini Content Parts sind leer.", candidate);
         throw new Error("GEMINI_SAFETY_FILTER_TRIGGERED");
     }
 
-    let rawText = stripGeminiJson(raw);
-
-    try {
+    let rawText = parts[0].text || "";
+    rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+    
+    try { 
         let jsonResp = JSON.parse(rawText);
-        if (!jsonResp.draft && jsonResp.text) jsonResp.draft = jsonResp.text;
+        if(!jsonResp.draft && jsonResp.text) jsonResp.draft = jsonResp.text;
         return jsonResp;
-    } catch (e) {
-        return {
-            draft: rawText.replace(/\n/g, '<br>'),
-            feedback: "Hinweis: AI Formatierung war kein JSON (Rohdaten)."
-        };
+    } catch(e) { 
+        return { 
+            draft: rawText.replace(/\n/g, '<br>'), 
+            feedback: "Hinweis: AI Formatierung war kein JSON (Rohdaten)." 
+        }; 
     }
 }
 
@@ -2226,7 +2239,7 @@ function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(
  * sollen mit welchen Args aufgerufen werden.
  */
 async function analyzeToolPlan(contextText, userPrompt, currentDraft, lastToolData, cid) {
-    const model = window.aiState.currentModel || "openai/gpt-oss-120b";
+    const model = window.aiState.currentModel || "gemini-2.5-pro";
 
     const safeDraft = (currentDraft || "").toString();
     const safeLast = lastToolData ? JSON.stringify(lastToolData) : "null";
@@ -2252,8 +2265,8 @@ ${userPrompt}
         generationConfig: { responseMimeType: "application/json" }
     };
 
-    const response = await callLLM(payload, model);
-    const raw = response?.choices?.[0]?.message?.content || "";
+    const response = await callGeminiWithRotation(payload, model);
+    const raw = response?.candidates?.[0]?.content?.parts?.[0]?.text || "";
     const cleaned = stripGeminiJson(raw);
 
     let plan;
@@ -2491,63 +2504,71 @@ function setupResizeHandler() {
  * Führt einen Gemini API Call mit Key-Rotation durch.
  * Wenn ein Key ein Rate-Limit (429) hat, wird der nächste versucht.
  */
-function geminiContentsToOpenAIMessages(contents = []) {
-    // Gemini-Format: [{ role: "user", parts: [{ text: "..." }, ...] }, ...]
-    // OpenAI-Format: [{ role: "user"|"assistant"|"system", content: "..." }, ...]
-    return (contents || []).map(c => {
-        const role = (c?.role === 'model') ? 'assistant' : (c?.role || 'user');
-        const parts = Array.isArray(c?.parts) ? c.parts : [];
-        const text = parts.map(p => (p && typeof p.text === 'string') ? p.text : '').filter(Boolean).join('\\n');
-        return { role, content: text };
-    }).filter(m => (m.content || '').length > 0);
-}
+async function callGeminiWithRotation(payload, model) {
+    // 1. Keys aus Storage holen
+    const storage = await chrome.storage.local.get(['geminiApiKeys', 'geminiApiKey']);
+    let keys = storage.geminiApiKeys;
 
-function normalizeOpenAIPayload(payload, model) {
-    if (!payload || typeof payload !== 'object') payload = {};
-
-    // Wenn schon OpenAI-kompatibel (messages vorhanden), lassen wir es durch.
-    if (Array.isArray(payload.messages)) {
-        return {
-            model: payload.model || model,
-            messages: payload.messages,
-            temperature: 0,
-            top_p: 1,
-            max_tokens: 131072//,
-            //reasoning_effort: "high"
-        };
+    // Fallback für alte Installationen
+    if (!keys || !Array.isArray(keys) || keys.length === 0) {
+        if (storage.geminiApiKey) keys = [storage.geminiApiKey];
+        else throw new Error("Kein Gemini API Key gefunden. Bitte in den Einstellungen hinterlegen.");
     }
 
-    // Legacy: Gemini "contents"
-    const messages = geminiContentsToOpenAIMessages(payload.contents || []);
+    // --- SAFETY SETTINGS HINZUFÜGEN (WICHTIG!) ---
+    // Verhindert "parts.length 0" bei Wörtern wie "kill", "dead", "attack" etc.
+    if (!payload.safetySettings) {
+        payload.safetySettings = [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" }
+        ];
+    }
+    // ---------------------------------------------
 
-    return {
-        model,
-        messages,
-        temperature: 0,
-        top_p: 1,
-        max_tokens: 131072//,
-        //reasoning_effort: "high"
-    };
-}
+    let lastError = null;
 
-async function callLLM(payload, model, timeoutMs = AI_TIMEOUT_PER_TURN) {
-    const openaiPayload = normalizeOpenAIPayload(payload, model);
+    // 2. Loop durch die Keys
+    for (let i = 0; i < keys.length; i++) {
+        const currentKey = keys[i];
+        const endpoint = `https://generativelanguage.googleapis.com/${API_VERSION}/models/${model}:generateContent?key=${currentKey}`;
 
-    return new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage(
-            { action: 'LLM_CHAT', payload: openaiPayload, timeoutMs },
-            (res) => {
-                const err = chrome.runtime.lastError;
-                if (err) return reject(new Error(err.message));
-                if (!res) return reject(new Error("Kein Response vom Background."));
-                if (!res.success) {
-                    const extra = res?.data ? ` | details: ${JSON.stringify(res.data).slice(0, 1200)}` : '';
-                    return reject(new Error((res.error || "LLM Fehler") + extra));
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            // 3. Fehlerbehandlung
+            if (!response.ok) {
+                // WICHTIG: 429 = Resource Exhausted (Rate Limit)
+                if (response.status === 429) {
+                    console.warn(`Tradeo AI: Key ${i+1} Rate Limit (429). Wechsle zum nächsten Key...`);
+                    continue; // Springe zum nächsten Key im Loop
                 }
-                resolve(res.data);
+                
+                // Bei anderen Fehlern (z.B. 400 Bad Request) bringt Key-Wechsel nichts -> Fehler werfen
+                const errData = await response.json();
+                throw new Error(errData.error?.message || `API Error: ${response.status}`);
             }
-        );
-    });
+
+            // 4. Erfolg!
+            return await response.json();
+
+        } catch (error) {
+            lastError = error;
+            // Wenn es ein Netzwerkfehler war, ggf. auch rotieren? 
+            if (error.message.includes("API Error") && !error.message.includes("429")) {
+                 throw error; // Harter API Fehler (z.B. Bad Request) -> Abbruch
+            }
+        }
+    }
+
+    // Wenn wir hier ankommen, haben alle Keys versagt
+    throw new Error(`Alle ${keys.length} API Keys fehlgeschlagen. Letzter Fehler: ${lastError?.message}`);
 }
 
 // --- BOOTSTRAP ---
