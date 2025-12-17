@@ -31,7 +31,7 @@ WICHTIG:
 
 Verfügbare Tools:
 1) fetchOrderDetails({ "orderId": "STRING" })
-   - Nur nutzen, wenn eine konkrete Bestellnummer (z.B. 581...) bekannt ist.
+   - Nur nutzen, wenn eine konkrete Bestellnummer (z.B. 581121) bekannt ist.
    - orderIds sind immer 6-stellige Zahlen.
    - Kunden und auch Mitarbeiter sagen gerne "OID 581222" oder falls es eine Retoure ist auch "Retoure 581222".
 2) fetchItemDetails({ "identifier": "STRING" })
