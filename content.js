@@ -2513,7 +2513,8 @@ function normalizeOpenAIPayload(payload, model) {
             messages: payload.messages,
             temperature: 0,
             top_p: 1,
-            max_tokens: 131000
+            max_tokens: 131072//,
+            //reasoning_effort: "high"
         };
     }
 
@@ -2525,7 +2526,8 @@ function normalizeOpenAIPayload(payload, model) {
         messages,
         temperature: 0,
         top_p: 1,
-        max_tokens: 131000
+        max_tokens: 131072//,
+        //reasoning_effort: "high"
     };
 }
 
