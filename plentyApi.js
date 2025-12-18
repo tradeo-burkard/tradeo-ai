@@ -753,7 +753,7 @@ async function fetchItemDetails(identifierRaw) {
 
         // --- Helper: Einheitliche Formatierung (Stripping) ---
         // FIX: Berechnet jetzt SmartStock und ergänzt Verkaufspreis (SalesPrice)
-        const formatItemData = async (variation, item, stockEntries, priceEntries) => {
+        const formatItemData = async (variation, item, stockEntries, priceEntries, variationClients) => {
             // 1) Variation bereinigen
             const cleanVariation = {
                 id: variation.id,
@@ -765,7 +765,12 @@ async function fetchItemDetails(identifierRaw) {
                 widthMM: variation.widthMM,
                 lengthMM: variation.lengthMM,
                 heightMM: variation.heightMM,
-                customsTariffNumber: variation.customsTariffNumber
+                customsTariffNumber: variation.customsTariffNumber,
+                isActive: variation.isActive,
+                automaticClientVisibility: variation.automaticClientVisibility,   // 0/-1 = kein Store, 1/2 = mind. ein Store
+                isHiddenInCategoryList: variation.isHiddenInCategoryList,
+                isVisibleIfNetStockIsPositive: variation.isVisibleIfNetStockIsPositive,
+                isInvisibleIfNetStockIsNotPositive: variation.isInvisibleIfNetStockIsNotPositive,
             };
 
             // 2) Item bereinigen & Country ID auflösen
@@ -795,7 +800,6 @@ async function fetchItemDetails(identifierRaw) {
             // Hinweis: "price" ist der in Plenty gepflegte Preis für die SalesPrice-Relation.
             // Ob das bei euch brutto/netto ist, hängt von eurer Plenty-Konfiguration ab.
             let salesPriceGross = null;
-            let salesPriceIdUsed = null;
 
             try {
                 const defaultSpId = await pickDefaultSalesPriceId();
@@ -804,7 +808,6 @@ async function fetchItemDetails(identifierRaw) {
                     const rel = (priceEntries || []).find(p => p && p.salesPriceId === defaultSpId);
                     if (rel) {
                         salesPriceGross = rel.price ?? null;
-                        salesPriceIdUsed = rel.salesPriceId ?? null;
                     }
                 }
 
@@ -812,18 +815,46 @@ async function fetchItemDetails(identifierRaw) {
                 if (salesPriceGross == null && (priceEntries || []).length) {
                     const first = priceEntries[0];
                     salesPriceGross = first?.price ?? null;
-                    salesPriceIdUsed = first?.salesPriceId ?? null;
                 }
             } catch (e) {
                 // silent
             }
 
+            const hasPositiveStock =
+                smartStock === "Unendlich" ||
+                (typeof smartStock === "number" && smartStock > 0) ||
+                (!Number.isNaN(Number(smartStock)) && Number(smartStock) > 0);
+
+            const clientPlentyIds = (Array.isArray(variationClients) ? variationClients : [])
+                .map(x => x?.plentyId)
+                .filter(id => typeof id === "number");
+
+            // OPTIONAL: euren Webshop-Client hier eintragen (oder aus Config holen)
+            const WEBSHOP_PLENTY_ID = 7843; // <- nur Beispielwert, bitte bei euch korrekt setzen
+
+            const webshopAvailable = clientPlentyIds.includes(WEBSHOP_PLENTY_ID);
+
+            const canLinkShop =
+                Boolean(variation.isActive) &&
+                webshopAvailable &&
+                !variation.isHiddenInCategoryList &&
+                (
+                    // wenn diese Regel greift: nur sichtbar bei positivem Bestand
+                    !variation.isVisibleIfNetStockIsPositive || hasPositiveStock
+                ) &&
+                (
+                    // wenn diese Regel greift: unsichtbar wenn Bestand NICHT positiv
+                    !variation.isInvisibleIfNetStockIsNotPositive || hasPositiveStock
+                );
+
             return {
                 variation: cleanVariation,
                 item: cleanItem,
-                stockNet: smartStock,        // FIX: Nur der berechnete Wert, kein Array mehr!
-                salesPriceGross,             // "normaler Verkaufspreis" (laut Standard-SalesPrice bzw. Fallback)
-                salesPriceIdUsed             // Debug: welche SalesPrice-ID genutzt wurde
+                stockNet: smartStock,
+                webshopAvailable,        // <- DAS ist die Checkbox aus deinem Screenshot (für euren Shop)
+                clientPlentyIds,         // <- Debug / für KI nachvollziehbar
+                canLinkShop,
+                salesPriceGross
             };
         };
 
@@ -832,15 +863,24 @@ async function fetchItemDetails(identifierRaw) {
             const itemId = variation.itemId;
             const variationId = variation.id;
 
-            const [stockData, itemBaseData, variationSalesPrices] = await Promise.all([
+            const [stockData, itemBaseData, variationSalesPrices, variationClients] = await Promise.all([
                 makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
                 makePlentyCall(`/rest/items/${itemId}`),
-                makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
+                makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => []),
+                makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_clients`).catch(() => [])
             ]);
 
             const stockEntries = extractEntries(stockData);
             const priceEntries = extractEntries(variationSalesPrices); // meist direkt Array
-            return await formatItemData(variation, itemBaseData, stockEntries, priceEntries);
+            let variationClientsDebug = [];
+            try {
+                variationClientsDebug = await makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_clients`);
+                console.log("variation_clients raw:", variationClientsDebug); // WICHTIG - Konsole im Service Worker anschauen, nicht direkt im Browser!
+            } catch (e) {
+                console.warn("variation_clients failed:", e); // WICHTIG - Konsole im Service Worker anschauen, nicht direkt im Browser!
+                variationClientsDebug = [];
+            }
+            return await formatItemData(variation, itemBaseData, stockEntries, priceEntries, variationClients);
         };
 
         const isNumeric = /^\d+$/.test(identifier);
