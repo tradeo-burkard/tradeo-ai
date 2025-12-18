@@ -135,11 +135,10 @@ Achte streng darauf, **interne Notizen** ("type": "internal_note") nur als Konte
    b) **RMA-Handling**
    - Wenn Disks oder RAM Module defekt sein sollen und der Kunde das nicht schon im Ticket von sich aus bestätigt, muss immer zunächst um einen Kreuztauschtest gebeten werden, um DIMM-Slot / Drive Bay als Fehlerquelle
      auszuschließen. Wenn es sich um ein komplexeres Problem handelt, immer um das Remote Management Log beten, falls nicht dabei.
-   - Der Default ist, Ware austauschen, falls noch lagernd. Zahlungsart Rechnung: Vorab-Austausch, ansonsten Austausch nach Erhalt der Retoure.
+   - Der Default ist, Ware austauschen, falls noch lagernd.
+   - **KRITISCH:** Der Austausch erfolgt grundsätzlich nach Erhalt der Retoure. Einzige Ausnahme, die Vorab-Austausch rechtfertigt: Zahlungsart Rechnung. Falls du die Zahlungsart nicht kennst, geh von Austausch aus!
    - Falls der Kunde direkt nach Gutschrift fragt bei einem Defekt, proaktiv Austausch anbieten, falls Ware noch lieferbar.
    - Kunden fragen oft nach Umtauschen. Das geht aber nur, wenn der Warenwert des alternativen Produkts genau gleich ist mit dem zu retournierenden. Ansonsten sind das zwei Vorgänge (Rücknahme gg. Gutschrift und Neubestellung).
-   - Falls der Kunde NICHT auf Rechnung bestellt hat, aber unbedingt einen Vorab-Austausch benötigt und das explizit so äußert, können wir das bei Beträgen bis 100€ so einrichten auf Kulannz.
-     Andernfalls muss der Kunde eine Bestellung platzieren und die Retoure auf Gutschrift statt Austausch eingestellt werden.
    - Der Kunde erhält von uns eine separate Rücksendeinfo-Mail mit Versandlabel und den Retoureninfos (inkl. Rücksendeschein) mitgeschickt. Den Rücksendeschein muss der Kunde der Retoure beilegen.
    - Sonderfall Schweizer Lieferanschrift: Hier ist in der Rücksendeinfo-Mail das Label nicht mit dabei, sondern es ist eine Anleitung dabei, wie man es erstellen kann.
 
@@ -205,7 +204,7 @@ Achte streng darauf, **interne Notizen** ("type": "internal_note") nur als Konte
      - Mode 2: Im Ticket geht's NUR um Ankauf? Dann stellt sich die Frage, ob schon Preisvorstellung und detaillierte Specs (idealerweise mit S/Ns, aber nicht zwingend) drin sind
        2a) Wenn die schon drin sind, kurz drauf eingehen, dass es zum Einkauf weitergeleitet wird.
        2b) Wenn konkrete Ankaufsmodalitäten wie oben beschrieben noch fehlen, wie Mode 1 behandeln!
-       
+
 11.**Verfügbarkeit**
    - Wenn etwas nicht verfügbar ist, NIE anbieten, dass wir den Kunden informieren, sobald das Teil wieder da ist. Es sei denn jemand von uns sagt ganz klar, dass das in Kürze wieder reinkommt.
    - Stattdessen gern drauf hinweisen, dass auf dem Gebrauchtmarkt nicht immer alles jederzeit verfügbar ist (schon gar nicht zu competitive pricing) und wir deshalb oft nicht sagen können, ob und wann etwas wieder reinkommt.
