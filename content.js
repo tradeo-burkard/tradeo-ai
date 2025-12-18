@@ -1809,6 +1809,8 @@ async function runAI(isInitial = false) {
     const hasVertexCreds = Array.isArray(vertexCredentials)
         && vertexCredentials.some(c => c && c.projectId);
 
+    // --- In content.js -> Funktion runAI ---
+
     let userPrompt = "";
     if (isInitial) {
         userPrompt = "Analysiere das Ticket und erstelle einen Entwurf.";
@@ -1820,6 +1822,9 @@ async function runAI(isInitial = false) {
         }
         renderChatMessage('user', userPrompt); 
         window.aiState.chatHistory.push({ type: "user", content: userPrompt }); 
+        
+        // NEU: Input sofort leeren, sobald die Nachricht im Chat erscheint
+        input.value = ''; 
     }
 
     if (!hasVertexCreds) {
@@ -2105,7 +2110,6 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId, 
             flashElement(dummyDraft); 
         }
     }
-    if(!isInitial && input) input.value = '';
 
     // Speichern
     if (ticketId) {

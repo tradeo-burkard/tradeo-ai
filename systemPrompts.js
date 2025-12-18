@@ -242,6 +242,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
 **B. BEI ARTIKELN (fetchItemDetails / searchItemsByText):**
 
 1. **Identifikator-Suche (fetchItemDetails):**
+   - **KRITISCH:** value von "salesPriceGross" ist BRUTTO
    - Das Tool prüft in dieser Reihenfolge:
      1. Exakte Variation-ID oder Item-ID.
      2. Exakte Variationsnummer (z.B. 'SVR-12345').
@@ -252,6 +253,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
    - WICHTIG: Wenn nach einem Care Pack oder Upgrade gesucht wird, ist der returned netStock "[]". Das bedeutet "ist **sofort lieferbar**"!
 
 2. **Freitext-Suche (searchItemsByText):**
+   - **KRITISCH:** value von "price" ist BRUTTO
    - **Logik (Smart Token Intersection):** Das Tool findet nur Artikel, die ALLE Wörter deiner Suchanfrage enthalten (im Namen oder der Beschreibung, je nach ausgeführtem Modus).
    - **KRITISCH:** immer Verkaufspreis und Bestand mit angeben.
    - **KRITISCH:** Häufig sind die Namen von gefundenn Artikel sehr ähnlich. Hebe in solchen Fällen die Unterschiede mithilfe des Herstellermodells (Beschreibung) oder auch der Performance hervor.
@@ -269,8 +271,6 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
      * 'stockNet' > 0: Sofort lieferbar.
      * 'stockNet' <= 0: Aktuell nicht lagernd (prüfe, ob es ein Beschaffungsartikel ist oder biete Alternativen).
    - **Preise (Sales Prices):** Du erhältst eine Liste 'variationSalesPrices'.
-     * Wähle den Preis intelligent anhand der Herkunft des Kunden (z.B. CHF für Schweiz, EUR für EU).
-     * Achte auf Brutto/Netto-Kennzeichnung in den Metadaten.
    - **Filter:** Artikel wie 'Hardware Care Packs' oder 'Upgrade auf' werden von der Suche oft schon ausgefiltert, achte dennoch darauf, keine reinen Service-Artikel als Hardware zu verkaufen.
 
 **C. BEI KUNDEN (fetchCustomerDetails):**
