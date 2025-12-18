@@ -1943,10 +1943,18 @@ async function runAI(isInitial = false) {
         // --- PHASE 2: EXECUTE (JS) ---
         let gatheredData = null;
         if (toolCallsToExecute.length > 0) {
-            gatheredData = await executePlannedToolCalls(toolCallsToExecute, cid);
+            const freshData = await executePlannedToolCalls(toolCallsToExecute, cid);
+            
+            // MERGE: Neue Daten mit den alten (lastToolData) verschmelzen
+            gatheredData = mergeToolData(lastToolData, freshData);
+
+            // In den State speichern (damit es beim nächsten Klick noch da ist)
             window.aiState.lastToolDataByCid = window.aiState.lastToolDataByCid || {};
             window.aiState.lastToolDataByCid[cid] = gatheredData;
+            
+            console.log(`[CID: ${cid}] Tools ausgeführt & Daten gemerged.`, gatheredData);
         } else {
+            // Keine neuen Tools -> Wir nutzen die alten Daten (die bereits im Cache waren)
             gatheredData = lastToolData;
         }
 
@@ -3497,4 +3505,72 @@ async function calculateSmartStockLocal(stockEntries, currentVariationId) {
             return acc;
         }, 0);
     }
+}
+
+// =============================================================================
+// HELPER: TOOL DATA MERGING (PERSISTENCE & UPDATES)
+// =============================================================================
+function mergeToolData(oldData, newData) {
+    if (!oldData) return newData;
+    if (!newData) return oldData;
+
+    // Wir starten mit einer Kopie der alten Daten
+    const merged = JSON.parse(JSON.stringify(oldData));
+    
+    // Metadata aktualisieren (Zeitstempel vom Neuesten)
+    merged.meta = { ...merged.meta, ...newData.meta, mergedAt: new Date().toISOString() };
+
+    // Helper zum Mergen von Arrays: UPDATE bei gleicher ID
+    const mergeArray = (key, idPath) => {
+        if (!newData[key] || !Array.isArray(newData[key])) return;
+        if (!merged[key]) merged[key] = [];
+
+        newData[key].forEach(newItem => {
+            // ID des neuen Items ermitteln
+            const newId = idPath.split('.').reduce((obj, i) => obj ? obj[i] : null, newItem);
+            
+            if (!newId) {
+                // Fallback: Ohne ID einfach hinzufügen
+                merged[key].push(newItem);
+                return;
+            }
+
+            // Prüfen, ob wir das Item schon haben
+            const existingIndex = merged[key].findIndex(oldItem => {
+                const oldId = idPath.split('.').reduce((obj, i) => obj ? obj[i] : null, oldItem);
+                return String(oldId) === String(newId);
+            });
+
+            if (existingIndex >= 0) {
+                // UPDATE: Existierenden Eintrag mit neuem überschreiben (z.B. neuer Lagerbestand)
+                merged[key][existingIndex] = newItem;
+            } else {
+                // ADD: Neu hinzufügen
+                merged[key].push(newItem);
+            }
+        });
+    };
+
+    // Die spezifischen Arrays mergen
+    mergeArray('orders', 'order.id');
+    mergeArray('customers', 'contact.id');
+    mergeArray('items', 'variation.id');
+    
+    // SearchResults Update-Logik (basierend auf variationId)
+    if (newData.searchResults && Array.isArray(newData.searchResults)) {
+         if (!merged.searchResults) merged.searchResults = [];
+         
+         newData.searchResults.forEach(newItem => {
+             const existingIndex = merged.searchResults.findIndex(r => r.variationId === newItem.variationId);
+             
+             if (existingIndex >= 0) {
+                 // Update (z.B. geänderter Bestand in Suchergebnis)
+                 merged.searchResults[existingIndex] = newItem;
+             } else {
+                 merged.searchResults.push(newItem);
+             }
+         });
+    }
+
+    return merged;
 }
