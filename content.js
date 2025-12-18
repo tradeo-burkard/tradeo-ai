@@ -339,7 +339,7 @@ async function processTicket(id, incomingInboxHash) {
 async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
     const { vertexCredentials } = await chrome.storage.local.get(['vertexCredentials']);
     const hasVertexCreds = Array.isArray(vertexCredentials)
-        && vertexCredentials.some(c => c && c.projectId && c.key);
+        && vertexCredentials.some(c => c && c.projectId);
 
     if (!hasVertexCreds) return null;
 
@@ -913,22 +913,21 @@ function initConversationUI(isRestore = false) {
         
         <div id="tradeo-ai-settings-panel">
             <div class="tradeo-setting-row">
-                <label>Vertex AI Credentials (Rotation)</label>
+                <label>Vertex AI Projekte (Rotation via User-OAuth)</label>
                 
                 <div class="tradeo-api-pair-header">
                     <span style="flex:1">Google Cloud Project ID</span>
-                    <span style="flex:1">Vertex API Key</span>
                     <span style="width:24px"></span>
                 </div>
 
                 <div id="tradeo-api-rows-container">
                     </div>
                 
-                <button id="tradeo-add-api-row-btn" type="button">+ Weiteres Projekt/Key Paar hinzufügen</button>
+                <button id="tradeo-add-api-row-btn" type="button">+ Weiteres Projekt hinzufügen</button>
 
                 <div style="font-size:10px; color:#666; margin-top:2px;">
-                    Bei "Rate Limit" (429) wird automatisch zum nächsten Projekt/Key gewechselt.
-                    <br>Format: Project ID (z.B. <code>gen-lang-client-xxx</code>) und API Key.
+                    Bei "Rate Limit" (429) wird automatisch zum nächsten Projekt gewechselt.
+                    <br>OAuth Login passiert beim ersten Call automatisch (Google Popup).
                 </div>
             </div>
             <div class="tradeo-setting-row">
@@ -1130,20 +1129,15 @@ function setupSettingsLogic() {
     const addBtn = document.getElementById('tradeo-add-api-row-btn');
 
     // Helper: Neue Zeile rendern
-    const renderRow = (pId = "", key = "") => {
+    const renderRow = (pId = "") => {
         const row = document.createElement('div');
         row.className = 'tradeo-api-pair-row';
         row.innerHTML = `
             <input type="text" class="input-pid" placeholder="Project ID" value="${pId}">
-            <input type="password" class="input-key" placeholder="API Key" value="${key}">
             <button class="tradeo-remove-row-btn" title="Entfernen">&times;</button>
         `;
-        
-        // Delete Handler
-        row.querySelector('.tradeo-remove-row-btn').addEventListener('click', () => {
-            row.remove();
-        });
 
+        row.querySelector('.tradeo-remove-row-btn').addEventListener('click', () => row.remove());
         container.appendChild(row);
     };
 
@@ -1164,9 +1158,10 @@ function setupSettingsLogic() {
                 // Migration Check: Falls user noch alte 'geminiApiKeys' hat, aber keine 'vertexCredentials'
                 // Da wir die Project ID nicht raten können, starten wir leer oder mit Platzhalter.
                 if (!creds || !Array.isArray(creds) || creds.length === 0) {
-                    renderRow("", ""); // Eine leere Zeile als Start
+                    renderRow(""); // Eine leere Zeile als Start
                 } else {
-                    creds.forEach(c => renderRow(c.projectId, c.key));
+                    // Migration: falls alte Objekte noch {projectId,key} haben -> Key ignorieren
+                    creds.forEach(c => renderRow(c?.projectId || ""));
                 }
                 
                 document.getElementById('setting-plenty-user').value = res.plentyUser || '';
@@ -1186,14 +1181,11 @@ function setupSettingsLogic() {
 
         rows.forEach(row => {
             const pid = row.querySelector('.input-pid').value.trim();
-            const key = row.querySelector('.input-key').value.trim();
-            if (pid && key) {
-                newCredentials.push({ projectId: pid, key: key });
-            }
+            if (pid) newCredentials.push({ projectId: pid });
         });
 
         if (newCredentials.length === 0) {
-            statusDiv.innerText = "⚠️ Bitte mindestens eine Project ID und einen API Key eingeben.";
+            statusDiv.innerText = "⚠️ Bitte mindestens eine Project ID eingeben.";
             statusDiv.style.color = "orange";
             return;
         }
@@ -1814,8 +1806,7 @@ async function runAI(isInitial = false) {
 
     const { vertexCredentials } = await chrome.storage.local.get(['vertexCredentials']);
     const hasVertexCreds = Array.isArray(vertexCredentials)
-        && vertexCredentials.some(c => c && c.projectId && c.key);
-
+        && vertexCredentials.some(c => c && c.projectId);
 
     let userPrompt = "";
     if (isInitial) {
@@ -2573,16 +2564,14 @@ function setupResizeHandler() {
  * Wenn ein Key ein Rate-Limit (429) hat, wird das nächste Project/Key Paar versucht.
  */
 async function callGeminiWithRotation(payload, model) {
-    // 1. Credentials aus Storage holen
-    // HINWEIS: Wir unterstützen jetzt das neue 'vertexCredentials' Format
     const storage = await chrome.storage.local.get(['vertexCredentials']);
-    let credentials = storage.vertexCredentials;
+    const credentials = storage.vertexCredentials;
 
     if (!credentials || !Array.isArray(credentials) || credentials.length === 0) {
-        throw new Error("Keine Vertex AI Credentials gefunden. Bitte Project ID & API Key in den Einstellungen hinterlegen.");
+        throw new Error("Keine Vertex Projekte gefunden. Bitte Project IDs in den Einstellungen hinterlegen.");
     }
 
-    // --- SAFETY SETTINGS HINZUFÜGEN ---
+    // SAFETY SETTINGS (wie gehabt)
     if (!payload.safetySettings) {
         payload.safetySettings = [
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -2592,72 +2581,84 @@ async function callGeminiWithRotation(payload, model) {
             { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" }
         ];
     }
-    // ---------------------------------------------
 
+    // Token via Background holen (chrome.identity geht nicht im Content Script direkt)
+    const getToken = () => new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: 'GET_GCP_TOKEN' }, (res) => {
+            if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+            if (!res || !res.success || !res.token) return reject(new Error(res?.error || "NO_TOKEN"));
+            resolve(res.token);
+        });
+    });
+
+    const clearToken = () => new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: 'CLEAR_GCP_TOKEN' }, () => resolve());
+    });
+
+    let token = await getToken();
     let lastError = null;
 
-    // 2. Loop durch die Credentials (Rotation)
     for (let i = 0; i < credentials.length; i++) {
         const entry = credentials[i];
-        
-        // Robustheit: Prüfen ob das Format stimmt
-        const currentProject = entry.projectId;
-        const currentKey = entry.key;
+        const currentProject = entry?.projectId;
+        if (!currentProject) continue;
 
-        if (!currentProject || !currentKey) continue;
-
-        const LOCATION = "europe-west3"; 
+        const LOCATION = "europe-west3";
         const API_VERSION = "v1";
 
-        // Deine neue Vertex URL Struktur
         const endpoint =
             `https://${LOCATION}-aiplatform.googleapis.com/${API_VERSION}` +
-            `/projects/${currentProject}/locations/${LOCATION}/publishers/google/models/${model}:generateContent` +
-            `?key=${currentKey}`;
+            `/projects/${currentProject}/locations/${LOCATION}/publishers/google/models/${model}:generateContent`;
+
+        const doFetch = async () => fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(payload)
+        });
 
         try {
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            let response = await doFetch();
 
-            // 3. Fehlerbehandlung
+            // Token abgelaufen/invalid -> einmal Token reset + neu holen + retry
+            if (response.status === 401) {
+                console.warn(`Tradeo AI: 401 (Token) bei Project ${currentProject}. Token wird erneuert...`);
+                await clearToken();
+                token = await getToken();
+                response = await doFetch();
+            }
+
             if (!response.ok) {
-                // WICHTIG: 429 = Resource Exhausted (Rate Limit) oder Quota Exceeded
                 if (response.status === 429) {
-                    console.warn(`Tradeo AI: Project ${currentProject} Rate Limit (429). Wechsle zum nächsten Credential...`);
-                    continue; // Springe zum nächsten Eintrag im Loop
+                    console.warn(`Tradeo AI: Project ${currentProject} Rate Limit (429). Wechsle zum nächsten Projekt...`);
+                    continue;
                 }
-                
-                // Bei anderen Fehlern (z.B. 400 Bad Request, 403 Permission)
+
                 const errData = await response.json().catch(() => ({}));
                 const errMsg = errData.error?.message || `API Error: ${response.status}`;
-                
-                // Falls es ein 403 Permission Denied ist (falsche Project ID/Key Kombi), vielleicht auch rotieren?
-                // Wir rotieren hier sicherheitshalber auch bei 403, falls ein Key deaktiviert wurde.
+
                 if (response.status === 403) {
-                     console.warn(`Tradeo AI: Project ${currentProject} Permission Denied (403). Wechsle...`);
-                     lastError = new Error(`Permission Denied: ${errMsg}`);
-                     continue;
+                    console.warn(`Tradeo AI: Project ${currentProject} Permission Denied (403). Wechsle...`);
+                    lastError = new Error(`Permission Denied: ${errMsg}`);
+                    continue;
                 }
 
                 throw new Error(errMsg);
             }
 
-            // 4. Erfolg!
             return await response.json();
 
         } catch (error) {
             lastError = error;
-            // Wenn es ein Netzwerkfehler war, werfen wir ihn nicht sofort, sondern versuchen den nächsten (könnte DNS/Routing sein)
             console.warn(`Tradeo AI: Fehler bei Project ${currentProject}:`, error.message);
         }
     }
 
-    // Wenn wir hier ankommen, haben alle Credentials versagt
-    throw new Error(`Alle ${credentials.length} Vertex Credentials fehlgeschlagen. Letzter Fehler: ${lastError?.message}`);
+    throw new Error(`Alle ${credentials.length} Projekte fehlgeschlagen. Letzter Fehler: ${lastError?.message}`);
 }
+
 
 // --- BOOTSTRAP ---
 function bootstrapTradeo() {

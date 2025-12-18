@@ -3,12 +3,18 @@
   "name": "Tradeo Support AI (Gemini + Plenty)",
   "version": "3.3",
   "description": "FreeScout AI Integration mit Plentymarkets Anbindung.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "identity"],
   "host_permissions": [
     "https://desk.tradeo.de/*",
     "https://p7843.my.plentysystems.com/*",
     "https://europe-west3-aiplatform.googleapis.com/*"
   ],
+  "oauth2": {
+    "client_id": "PASTE_YOUR_CLIENT_ID.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/cloud-platform"
+    ]
+  },
   "background": {
     "service_worker": "background.js"
   },
