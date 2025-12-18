@@ -671,7 +671,7 @@ async function fetchItemDetails(identifierRaw) {
                 id: variation.id,
                 itemId: variation.itemId,
                 model: variation.model,
-                purchasePrice: variation.purchasePrice,
+                price: variation.price,
                 weightG: variation.weightG,
                 weightNetG: variation.weightNetG,
                 widthMM: variation.widthMM,

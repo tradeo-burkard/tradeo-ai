@@ -18,7 +18,7 @@ gcloud auth application-default login
 
 5. das hier einfach copy pasten (bis zum echo "DONE." vor der großen Lücke):
 
-REGION="europe-west3"
+REGION="europe-west1"
 HOST="https://${REGION}-aiplatform.googleapis.com"
 TOKEN="$(gcloud auth print-access-token)"
 
@@ -78,7 +78,7 @@ echo "DONE."
 
 
 
-andre@https://europe-west3-aiplatform tradeo-ai-artikelsuche-db % REGION="europe-west3"
+andre@https://europe-west1-aiplatform tradeo-ai-artikelsuche-db % REGION="europe-west1"
 HOST="https://${REGION}-aiplatform.googleapis.com"
 TOKEN="$(gcloud auth print-access-token)"
 
@@ -132,7 +132,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/869762210772/locations/europe-west3/projects/869762210772/cacheConfig/operations/6143712810099539968",
+  "name": "projects/869762210772/locations/europe-west1/projects/869762210772/cacheConfig/operations/6143712810099539968",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -156,7 +156,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/331375644850/locations/europe-west3/projects/331375644850/cacheConfig/operations/8224375837944709120",
+  "name": "projects/331375644850/locations/europe-west1/projects/331375644850/cacheConfig/operations/8224375837944709120",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -180,7 +180,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/969562020748/locations/europe-west3/projects/969562020748/cacheConfig/operations/4972776906983211008",
+  "name": "projects/969562020748/locations/europe-west1/projects/969562020748/cacheConfig/operations/4972776906983211008",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -204,7 +204,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/894786217826/locations/europe-west3/projects/894786217826/cacheConfig/operations/6151031159494017024",
+  "name": "projects/894786217826/locations/europe-west1/projects/894786217826/cacheConfig/operations/6151031159494017024",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -228,7 +228,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/439600306696/locations/europe-west3/projects/439600306696/cacheConfig/operations/2584180254616584192",
+  "name": "projects/439600306696/locations/europe-west1/projects/439600306696/cacheConfig/operations/2584180254616584192",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -243,7 +243,7 @@ GET cacheConfig (nachher)
 }
 
 DONE.
-andre@https://europe-west3-aiplatform tradeo-ai-artikelsuche-db % 
+andre@https://europe-west1-aiplatform tradeo-ai-artikelsuche-db % 
 
 
 
@@ -283,4 +283,5 @@ andre@https://europe-west3-aiplatform tradeo-ai-artikelsuche-db %
 
 20. App Type Chrome Extension, name tradeoAi, item ID adlmedafagdmeaojdaefhmhfjfjeklec (prüfen, ob sich geändert hat) -> create
 
-21. kopieren: 1232342342-bla08bla80...bla23bla.apps.googleusercontent.com und ins manifest.json
+21. kopieren: xxx.apps.googleusercontent.com und ins manifest.json
+

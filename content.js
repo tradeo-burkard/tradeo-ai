@@ -22,7 +22,7 @@ const AI_MODELS = {
     "gemini-2.5-flash-lite": { id: "gemini-2.5-flash-lite", label: "2.5 Flash Lite", dropdownText: "gemini-2.5-flash-lite (sehr schnell)" },
     "gemini-2.5-flash": { id: "gemini-2.5-flash", label: "2.5 Flash", dropdownText: "gemini-2.5-flash (schnell)" },
     "gemini-2.5-pro": { id: "gemini-2.5-pro", label: "2.5 Pro", dropdownText: "gemini-2.5-pro (standard)" },
-    "gemini-3-pro-preview": { id: "gemini-3-pro-preview", label: "3 Pro", dropdownText: "gemini-3-pro-preview (langsam)" }
+    //"gemini-3-pro-preview": { id: "gemini-3-pro-preview", label: "3 Pro", dropdownText: "gemini-3-pro-preview (langsam)" }
 };
 
 // --- GLOBAL STATE ---
@@ -345,7 +345,7 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
 
 
     const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
-    const isSlowModel = currentModel.includes("gemini-3-pro");
+    const isSlowModel = currentModel.includes("gemini-2.5-pro");
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
     const headlessUserPrompt = "Analysiere das Ticket und erstelle einen Entwurf.";
@@ -950,7 +950,7 @@ function initConversationUI(isRestore = false) {
         <div id="tradeo-ai-resize-handle" title="Höhe anpassen"></div>
         
         <div id="tradeo-ai-input-area">
-            <button id="tradeo-ai-settings-btn" title="Einstellungen (API Keys)"><i class="glyphicon glyphicon-cog"></i></button>
+            <button id="tradeo-ai-settings-btn" title="Einstellungen"><i class="glyphicon glyphicon-cog"></i></button>
             
             <div class="tradeo-ai-model-wrapper">
                 <button id="tradeo-ai-model-btn" type="button">2.5 Pro</button>
@@ -1824,7 +1824,7 @@ async function runAI(isInitial = false) {
     if (!hasVertexCreds) {
         renderChatMessage(
             'system',
-            "⚠️ Keine Vertex AI Credentials gefunden (Project ID + API Key)."
+            "⚠️ Keine Vertex AI Credentials gefunden (Project ID)."
         );
         await releaseLock(cid);
         return;
@@ -1843,7 +1843,7 @@ async function runAI(isInitial = false) {
     }).join("\n");
 
     const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
-    const isSlowModel = currentModel.includes("gemini-3-pro"); 
+    const isSlowModel = currentModel.includes("gemini-2.5-pro"); 
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
     // 1. START: Karen Bubble erstellen (UI)
@@ -2302,7 +2302,7 @@ async function analyzeToolPlan(contextText, userPrompt, currentDraft, lastToolDa
 
     const safeDraft = (currentDraft || "").toString();
     const safeLast = lastToolData ? JSON.stringify(lastToolData) : "null";
-    const trimmedLast = safeLast.length > 12000 ? safeLast.slice(0, 12000) + "\n... (gekürzt)" : safeLast;
+    // const trimmedLast = safeLast.length > 12000 ? safeLast.slice(0, 12000) + "\n... (gekürzt)" : safeLast;
     // Planner prompt is defined in systemPrompts.js (as const plannerPrompt)
     const fullPlannerPrompt = `${plannerPrompt}
 
@@ -2313,7 +2313,7 @@ ${contextText}
 ${safeDraft}
 
 === LETZTE TOOL-ERGEBNISSE (falls vorhanden, zum Wiederverwenden) ===
-${trimmedLast}
+${safeLast}
 
 === USER ANWEISUNG ===
 ${userPrompt}
@@ -2414,7 +2414,6 @@ async function executePlannedToolCalls(toolCalls, cid) {
 async function performFullReset() {
     console.log("💣 Tradeo AI: Starte kompletten Reset...");
     
-    // 1. Storage bereinigen (Nur Ticket-Daten, API Key behalten)
     try {
         const allData = await chrome.storage.local.get(null);
         const keysToRemove = Object.keys(allData).filter(key => key.startsWith('draft_'));
@@ -2560,8 +2559,8 @@ function setupResizeHandler() {
 }
 
 /**
- * Führt einen Vertex AI API Call mit Key-Rotation durch.
- * Wenn ein Key ein Rate-Limit (429) hat, wird das nächste Project/Key Paar versucht.
+ * Führt einen Vertex AI API Call mit Projekt-Rotation durch.
+ * Wenn ein Projekt ein Rate-Limit (429) hat, wird das nächste Project/Projekt Paar versucht.
  */
 async function callGeminiWithRotation(payload, model) {
     const storage = await chrome.storage.local.get(['vertexCredentials']);
@@ -2603,7 +2602,7 @@ async function callGeminiWithRotation(payload, model) {
         const currentProject = entry?.projectId;
         if (!currentProject) continue;
 
-        const LOCATION = "europe-west3";
+        const LOCATION = "europe-west1";
         const API_VERSION = "v1";
 
         const endpoint =
