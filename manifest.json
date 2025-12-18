@@ -7,10 +7,10 @@
   "host_permissions": [
     "https://desk.tradeo.de/*",
     "https://p7843.my.plentysystems.com/*",
-    "https://europe-west1-aiplatform.googleapis.com/*"
+    "https://europe-west4-aiplatform.googleapis.com/*"
   ],
   "oauth2": {
-    "client_id": "869762210772-nfc07pppkjd96errolm1qkpreqd0mv9n.apps.googleusercontent.com",
+    "client_id": "331375644850-jrtvpc4kjfgq0pgemoic43ukldudnba3.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/cloud-platform"
     ]

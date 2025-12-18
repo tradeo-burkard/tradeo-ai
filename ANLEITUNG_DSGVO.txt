@@ -18,7 +18,7 @@ gcloud auth application-default login
 
 5. das hier einfach copy pasten (bis zum echo "DONE." vor der großen Lücke):
 
-REGION="europe-west1"
+REGION="europe-west4"
 HOST="https://${REGION}-aiplatform.googleapis.com"
 TOKEN="$(gcloud auth print-access-token)"
 
@@ -78,7 +78,7 @@ echo "DONE."
 
 
 
-andre@https://europe-west1-aiplatform tradeo-ai-artikelsuche-db % REGION="europe-west1"
+andre@https://europe-west4-aiplatform tradeo-ai-artikelsuche-db % REGION="europe-west4"
 HOST="https://${REGION}-aiplatform.googleapis.com"
 TOKEN="$(gcloud auth print-access-token)"
 
@@ -132,7 +132,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/869762210772/locations/europe-west1/projects/869762210772/cacheConfig/operations/6143712810099539968",
+  "name": "projects/869762210772/locations/europe-west4/projects/869762210772/cacheConfig/operations/6143712810099539968",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -156,7 +156,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/331375644850/locations/europe-west1/projects/331375644850/cacheConfig/operations/8224375837944709120",
+  "name": "projects/331375644850/locations/europe-west4/projects/331375644850/cacheConfig/operations/8224375837944709120",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -180,7 +180,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/969562020748/locations/europe-west1/projects/969562020748/cacheConfig/operations/4972776906983211008",
+  "name": "projects/969562020748/locations/europe-west4/projects/969562020748/cacheConfig/operations/4972776906983211008",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -204,7 +204,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/894786217826/locations/europe-west1/projects/894786217826/cacheConfig/operations/6151031159494017024",
+  "name": "projects/894786217826/locations/europe-west4/projects/894786217826/cacheConfig/operations/6151031159494017024",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -228,7 +228,7 @@ GET cacheConfig (vorher)
 
 PATCH disableCache=true
 {
-  "name": "projects/439600306696/locations/europe-west1/projects/439600306696/cacheConfig/operations/2584180254616584192",
+  "name": "projects/439600306696/locations/europe-west4/projects/439600306696/cacheConfig/operations/2584180254616584192",
   "done": true,
   "response": {
     "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
@@ -243,7 +243,7 @@ GET cacheConfig (nachher)
 }
 
 DONE.
-andre@https://europe-west1-aiplatform tradeo-ai-artikelsuche-db % 
+andre@https://europe-west4-aiplatform tradeo-ai-artikelsuche-db % 
 
 
 
@@ -267,21 +267,22 @@ andre@https://europe-west1-aiplatform tradeo-ai-artikelsuche-db %
 - Deutschland: BayLDA
 - Deutschland: BayLfD
 
-13. Cloud Console Sprache auf englisch stellen in Settings
+13. in irgendein Projekt rein 
 
-14. in irgendein Projekt rein 
+14. APIs & Dienste -> Anmeldedaten
 
-15. APIs & Services -> Credentials
+15. Anmeldedaten erstellen
 
-16. Create Credentials
+16. das Erst-Setup durchgehen (Erste Schritte, Intern auswählen, Rest ausfüllen)
 
-17. das Erst-Setup durchgehen (Internal auswählen, Rest irgendwie ausfüllen)
+17. man wird automatisch weitergeleitet zu Google Auth Platform / Übersicht
 
-18. Zurück zu APIs & Services -> Credentials
+18. OAuth-Client erstellen
 
-19. Create Credentials -> OAuth client id 
+19. App Type Chrome Extension, name tradeoAI, item ID adlmedafagdmeaojdaefhmhfjfjeklec (prüfen, ob sich geändert hat) -> create
 
-20. App Type Chrome Extension, name tradeoAi, item ID adlmedafagdmeaojdaefhmhfjfjeklec (prüfen, ob sich geändert hat) -> create
+20. kopieren: xxx.apps.googleusercontent.com und ins manifest.json
 
-21. kopieren: xxx.apps.googleusercontent.com und ins manifest.json
+21. OAuth testen
 
+22. Falls OAuth noch NICHT geht: Google Auth Platform / Zielgruppe -> Testnutzer (add users) und google acc email vom google acc selber eintragen (glaub is aber nicht nötig)

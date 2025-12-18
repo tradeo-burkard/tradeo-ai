@@ -8,11 +8,12 @@ const MAX_TURNS = 8; // Maximale Anzahl an Runden (Thought/Action Loops)
 
 // Feature-Flag: Hintergrund-Überwachung / Pre-Fetch komplett abschalten
 // (Revert: einfach auf true setzen)
-const ENABLE_BACKGROUND_PREFETCH = false;
+const ENABLE_BACKGROUND_PREFETCH = true;
 
 const DASHBOARD_FOLDERS_TO_SCAN = [
     "https://desk.tradeo.de/mailbox/3/27",  // Servershop24 -> Nicht zugewiesen
-    "https://desk.tradeo.de/mailbox/3/155"  // Servershop24 -> Meine
+    "https://desk.tradeo.de/mailbox/3/155",  // Servershop24 -> Meine
+    "https://desk.tradeo.de/mailbox/3/29" // Servershop24 -> Zugewiesen
 ];
 
 // SYSTEM PROMPTS
@@ -2602,7 +2603,7 @@ async function callGeminiWithRotation(payload, model) {
         const currentProject = entry?.projectId;
         if (!currentProject) continue;
 
-        const LOCATION = "europe-west1";
+        const LOCATION = "europe-west4";
         const API_VERSION = "v1";
 
         const endpoint =
