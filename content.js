@@ -1651,22 +1651,53 @@ function scrollToBottom() {
 function setupModelSelector() {
     const modelBtn = document.getElementById('tradeo-ai-model-btn');
     const modelDropdown = document.getElementById('tradeo-ai-model-dropdown');
+    
+    // Sicherheitshalber leeren, falls UI neu aufgebaut wird
+    modelDropdown.innerHTML = '';
+
     Object.values(AI_MODELS).forEach(model => {
         const item = document.createElement('div');
         item.className = 'model-item';
         item.innerText = model.dropdownText;
+
+        // FIX: Initial prüfen, ob dies das aktive Model ist und Klasse setzen
+        if (model.id === window.aiState.currentModel) {
+            item.classList.add('selected');
+            // Button Label synchronisieren (falls Default abweicht)
+            if (modelBtn) modelBtn.innerText = model.label;
+        }
+
         item.onclick = (e) => {
             window.aiState.currentModel = model.id;
             modelBtn.innerText = model.label;
-            document.querySelectorAll('.model-item').forEach(el => el.classList.remove('selected'));
+            
+            // Visuelles Update aller Items
+            const container = document.getElementById('tradeo-ai-model-dropdown');
+            if (container) {
+                container.querySelectorAll('.model-item').forEach(el => el.classList.remove('selected'));
+            }
             item.classList.add('selected');
+            
             modelDropdown.classList.add('hidden');
             e.stopPropagation();
         };
         modelDropdown.appendChild(item);
     });
-    modelBtn.addEventListener('click', (e) => { e.stopPropagation(); modelDropdown.classList.toggle('hidden'); });
-    document.addEventListener('click', () => modelDropdown.classList.add('hidden'));
+
+    // Toggle Handler (Direct assignment verhindert Listener-Duplikate bei Re-Init)
+    modelBtn.onclick = (e) => { 
+        e.stopPropagation(); 
+        modelDropdown.classList.toggle('hidden'); 
+    };
+
+    // Global Close Handler (nur einmal registrieren via Flag oder simpler Check)
+    if (!window._tradeoGlobalClickInit) {
+        document.addEventListener('click', () => {
+            const dd = document.getElementById('tradeo-ai-model-dropdown');
+            if (dd) dd.classList.add('hidden');
+        });
+        window._tradeoGlobalClickInit = true;
+    }
 }
 
 function setupButtons(originalReplyBtn) {
