@@ -138,15 +138,6 @@
     position: relative;
 }
 
-.user-msg {
-    background-color: #ffffff;
-    border: 1px solid #e0e0e0;
-    color: #333;
-    align-self: flex-end;
-    border-top-right-radius: 0;
-    text-align: right;
-}
-
 .ai-msg {
     background-color: #e8f0fe;
     color: #1a73e8;
@@ -671,4 +662,42 @@
 #tradeo-add-api-row-btn:hover {
     background: #e8eaed;
     border-color: #999;
+}
+
+/* --- Styles.css Updates --- */
+
+.user-msg {
+    background-color: #ffffff;
+    border: 1px solid #e0e0e0;
+    color: #333;
+    align-self: flex-end;
+    border-top-right-radius: 0;
+    text-align: right;
+    
+    /* NEU: Wichtig für Absolute Positioning des Labels */
+    position: relative;
+    /* NEU: Platz oben schaffen, damit Text nicht überlappt */
+    padding-top: 24px !important; 
+    padding-bottom: 8px;
+    padding-left: 12px;
+    padding-right: 12px;
+    
+    min-width: 60px; /* Damit bei "Ja" das Label noch passt */
+}
+
+/* Das Label "DU" oben links fixiert */
+.user-msg .msg-label {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    font-size: 11px;
+    font-weight: bold;
+    color: #999; /* Dezent grau */
+    text-transform: uppercase;
+}
+
+/* Der eigentliche Text */
+.user-msg .msg-content {
+    word-wrap: break-word; /* Verhindert Layout-Bruch bei langen Wörtern */
+    line-height: 1.4;
 }

@@ -2487,7 +2487,10 @@ function setEditorContent(editableElement, htmlContent) {
     flashElement(flashTarget);
 }
 
-// Render Funktion für Text (Blau/Weiß)
+// --- In content.js -> renderChatMessage ersetzen ---
+
+// --- In content.js -> renderChatMessage ersetzen ---
+
 function renderChatMessage(role, text) {
     const historyContainer = document.getElementById('tradeo-ai-chat-history');
     if(!historyContainer) return;
@@ -2496,11 +2499,23 @@ function renderChatMessage(role, text) {
     // role kann 'user', 'ai' oder 'system' sein
     if (role === 'user') { 
         msgDiv.className = 'user-msg'; 
-        msgDiv.innerHTML = `<strong>DU</strong> ${text}`; 
+        
+        const temp = document.createElement('div');
+        temp.textContent = text;
+        // Umbrüche in <br> wandeln für korrekte Anzeige
+        const safeHtml = temp.innerHTML.replace(/\n/g, '<br>');
+
+        // NEU: Label und Content getrennt für sauberes CSS-Positioning
+        msgDiv.innerHTML = `
+            <span class="msg-label">DU</span>
+            <div class="msg-content">${safeHtml}</div>
+        `;
+        
     } else if (role === 'ai') { 
         msgDiv.className = 'ai-msg'; 
         msgDiv.innerHTML = `<strong>AI</strong> ${text}`; 
     } else { 
+        // System Nachrichten
         msgDiv.className = 'ai-msg'; 
         msgDiv.style.fontStyle = 'italic'; 
         msgDiv.innerHTML = text; 
