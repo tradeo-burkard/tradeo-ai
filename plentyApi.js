@@ -642,7 +642,7 @@ async function fetchItemDetails(identifierRaw) {
         const identifier = String(identifierRaw).trim();
         let candidates = [];
         let searchMethod = "unknown";
-        const seenIds = new Set(); 
+        const seenIds = new Set();
 
         // --- Helper: Response normalisieren ---
         const extractEntries = (res) => {
@@ -663,15 +663,31 @@ async function fetchItemDetails(identifierRaw) {
             }
         };
 
+        // --- SalesPrice Cache / Helper ---
+        let _salesPricesCache = null; // cached list from /rest/items/sales_prices
+        const getSalesPrices = async () => {
+            if (_salesPricesCache) return _salesPricesCache;
+            const res = await makePlentyCall(`/rest/items/sales_prices`).catch(() => null);
+            _salesPricesCache = extractEntries(res) || [];
+            return _salesPricesCache;
+        };
+
+        const pickDefaultSalesPriceId = async () => {
+            const salesPrices = await getSalesPrices();
+            const defaults = (salesPrices || []).filter(sp => sp && sp.type === "default");
+            const picked = defaults.find(sp => sp.isDisplayedByDefault) || defaults[0] || null;
+            return picked?.id ?? null;
+        };
+
         // --- Helper: Einheitliche Formatierung (Stripping) ---
-        // FIX: Berechnet jetzt SmartStock und entfernt Rohdaten
-        const formatItemData = async (variation, item, stockEntries) => {
-            // 1. Variation bereinigen
+        // FIX: Berechnet jetzt SmartStock und ergänzt Verkaufspreis (SalesPrice)
+        const formatItemData = async (variation, item, stockEntries, priceEntries) => {
+            // 1) Variation bereinigen
             const cleanVariation = {
                 id: variation.id,
                 itemId: variation.itemId,
                 model: variation.model,
-                price: variation.price,
+                //purchasePrice: variation.purchasePrice,
                 weightG: variation.weightG,
                 weightNetG: variation.weightNetG,
                 widthMM: variation.widthMM,
@@ -680,30 +696,62 @@ async function fetchItemDetails(identifierRaw) {
                 customsTariffNumber: variation.customsTariffNumber
             };
 
-            // 2. Item bereinigen & Country ID auflösen
-            const countryName = COUNTRY_MAP[item.producingCountryId] || `Unknown (ID: ${item.producingCountryId})`;
+            // 2) Item bereinigen & Country ID auflösen
+            const countryName =
+                COUNTRY_MAP?.[item?.producingCountryId] ||
+                (typeof item?.producingCountryId !== "undefined"
+                    ? `Unknown (ID: ${item.producingCountryId})`
+                    : "Unknown");
 
-            // HTML Cleaning anwenden
-            const cleanTexts = (item.texts || []).map(t => ({
-                name1: t.name1,
-                description: stripHtmlToText(t.description),
-                technicalData: stripHtmlToText(t.technicalData)
+            const cleanTexts = (item?.texts || []).map(t => ({
+                name1: t?.name1,
+                description: stripHtmlToText(t?.description),
+                technicalData: stripHtmlToText(t?.technicalData)
             }));
 
             const cleanItem = {
-                id: item.id,
+                id: item?.id,
                 producingCountry: countryName,
                 texts: cleanTexts
             };
 
-            // 3. Stock berechnen (Smart Logic: Bundle vs. Single)
+            // 3) Stock berechnen (Smart Logic: Bundle vs. Single)
             // Wir nutzen die globale calculateSmartStock Funktion am Ende dieser Datei
             const smartStock = await calculateSmartStock(stockEntries, variation.id);
+
+            // 4) Verkaufspreis (SalesPrice) bestimmen
+            // Hinweis: "price" ist der in Plenty gepflegte Preis für die SalesPrice-Relation.
+            // Ob das bei euch brutto/netto ist, hängt von eurer Plenty-Konfiguration ab.
+            let salesPriceGross = null;
+            let salesPriceIdUsed = null;
+
+            try {
+                const defaultSpId = await pickDefaultSalesPriceId();
+
+                if (defaultSpId != null) {
+                    const rel = (priceEntries || []).find(p => p && p.salesPriceId === defaultSpId);
+                    if (rel) {
+                        salesPriceGross = rel.price ?? null;
+                        salesPriceIdUsed = rel.salesPriceId ?? null;
+                    }
+                }
+
+                // Fallback: irgendein vorhandener Preis
+                if (salesPriceGross == null && (priceEntries || []).length) {
+                    const first = priceEntries[0];
+                    salesPriceGross = first?.price ?? null;
+                    salesPriceIdUsed = first?.salesPriceId ?? null;
+                }
+            } catch (e) {
+                // silent
+            }
 
             return {
                 variation: cleanVariation,
                 item: cleanItem,
-                stockNet: smartStock // FIX: Nur der berechnete Wert, kein Array mehr!
+                stockNet: smartStock,        // FIX: Nur der berechnete Wert, kein Array mehr!
+                salesPriceGross,             // "normaler Verkaufspreis" (laut Standard-SalesPrice bzw. Fallback)
+                salesPriceIdUsed             // Debug: welche SalesPrice-ID genutzt wurde
             };
         };
 
@@ -712,25 +760,28 @@ async function fetchItemDetails(identifierRaw) {
             const itemId = variation.itemId;
             const variationId = variation.id;
 
-            // UPDATE: Wir holen Item & Stock
-            const [stockData, itemBaseData] = await Promise.all([
+            const [stockData, itemBaseData, variationSalesPrices] = await Promise.all([
                 makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
-                makePlentyCall(`/rest/items/${itemId}`)
+                makePlentyCall(`/rest/items/${itemId}`),
+                makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
             ]);
 
-            const stockEntries = extractEntries(stockData); 
-            return await formatItemData(variation, itemBaseData, stockEntries);
+            const stockEntries = extractEntries(stockData);
+            const priceEntries = extractEntries(variationSalesPrices); // meist direkt Array
+            return await formatItemData(variation, itemBaseData, stockEntries, priceEntries);
         };
 
         const isNumeric = /^\d+$/.test(identifier);
-        
+
         // --- SUCHE ---
         const searchVariations = async (params, label) => {
             const qs = new URLSearchParams({ itemsPerPage: "50", isActive: "true", ...params }).toString();
             try {
                 const res = await makePlentyCall(`/rest/items/variations?${qs}`);
                 addCandidates(extractEntries(res));
-            } catch (e) { console.warn(`Suche ${label} failed`, e); }
+            } catch (e) {
+                console.warn(`Suche ${label} failed`, e);
+            }
         };
 
         if (isNumeric) {
@@ -742,7 +793,7 @@ async function fetchItemDetails(identifierRaw) {
                     const res = await makePlentyCall(`/rest/items/${identifier}/variations?isActive=true`);
                     addCandidates(extractEntries(res));
                     if (candidates.length) searchMethod = "itemId_path";
-                } catch(e) {}
+                } catch (e) {}
             }
             if (candidates.length > 0 && searchMethod === "unknown") searchMethod = "priority_numeric";
         }
@@ -763,7 +814,6 @@ async function fetchItemDetails(identifierRaw) {
         }
 
         // --- ERGEBNISSE VERARBEITEN ---
-
         if (candidates.length === 0) {
             throw new Error(`Artikel '${identifier}' nicht gefunden.`);
         }
@@ -773,19 +823,19 @@ async function fetchItemDetails(identifierRaw) {
             const data = await loadFullData(candidates[0]);
             return {
                 meta: { type: "PLENTY_ITEM_EXPORT", timestamp: new Date().toISOString(), searchMethod },
-                ...data // Spreadet variation, item, stockNet
+                ...data
             };
         }
 
         // CASE B: Multi Match (Ambiguous)
         const topCandidates = candidates.slice(0, 5);
-        
+
         const detailedCandidates = await Promise.all(
             topCandidates.map(async (cand) => {
                 try {
                     return await loadFullData(cand);
                 } catch (e) {
-                    return { error: "Details konnten nicht geladen werden", id: cand.id };
+                    return { error: "Details konnten nicht geladen werden", id: cand?.id };
                 }
             })
         );
@@ -798,14 +848,14 @@ async function fetchItemDetails(identifierRaw) {
                 searchMethod,
                 timestamp: new Date().toISOString()
             },
-            candidates: detailedCandidates 
+            candidates: detailedCandidates
         };
-
     } catch (error) {
         console.error("Fehler bei fetchItemDetails:", error);
         throw error;
     }
 }
+
 
 
 // --- plentyApi.js ---
