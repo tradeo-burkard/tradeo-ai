@@ -611,3 +611,64 @@
 #tradeo-ai-dummy-draft.tradeo-flash-active {
     animation-name: tradeo-flash-pulse-strong;
 }
+
+/* --- SETTINGS PANEL UPDATE (VERTEX) --- */
+.tradeo-api-pair-header {
+    display: flex;
+    gap: 10px;
+    font-size: 10px;
+    font-weight: bold;
+    color: #666;
+    margin-bottom: 5px;
+}
+
+.tradeo-api-pair-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 8px;
+    align-items: center;
+}
+
+.tradeo-api-pair-row input {
+    flex: 1; /* Beide Inputs teilen sich den Platz */
+    padding: 6px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 11px;
+}
+
+.tradeo-remove-row-btn {
+    background: #ff6b6b;
+    color: white;
+    border: none;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tradeo-remove-row-btn:hover {
+    background: #fa5252;
+}
+
+#tradeo-add-api-row-btn {
+    background: #f1f3f4;
+    border: 1px dashed #ccc;
+    color: #555;
+    width: 100%;
+    padding: 5px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-bottom: 15px;
+    font-size: 11px;
+}
+
+#tradeo-add-api-row-btn:hover {
+    background: #e8eaed;
+    border-color: #999;
+}

@@ -1,0 +1,286 @@
+ANLEITUNG:
+
+1. erst ABMELDEN (bin vermutlich noch als risingsilencegaming@gmail.com angemeldet):
+
+gcloud auth revoke --all
+gcloud auth application-default revoke
+
+
+2. neu ANMELDEN:
+
+gcloud auth login
+
+3. neu ANMELDEN application teil:
+
+gcloud auth application-default login
+
+4. die project-ids in schritt 5 updaten!!
+
+5. das hier einfach copy pasten (bis zum echo "DONE." vor der großen Lücke):
+
+REGION="europe-west3"
+HOST="https://${REGION}-aiplatform.googleapis.com"
+TOKEN="$(gcloud auth print-access-token)"
+
+PROJECT_IDS=(
+  "gen-lang-client-0159645273"
+  "gen-lang-client-0235650387"
+  "gen-lang-client-0775640840"
+  "gen-lang-client-0194477178"
+  "gen-lang-client-0360736786"
+)
+
+for PROJECT_ID in "${PROJECT_IDS[@]}"; do
+  echo "=============================="
+  echo "PROJECT: ${PROJECT_ID}"
+
+  echo "GET cacheConfig (vorher)"
+  curl -s -X GET \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    "${HOST}/v1/projects/${PROJECT_ID}/cacheConfig"
+  echo ""
+
+  echo "PATCH disableCache=true"
+  curl -s -X PATCH \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    "${HOST}/v1/projects/${PROJECT_ID}/cacheConfig" \
+    -d '{
+      "name": "projects/'"${PROJECT_ID}"'/cacheConfig",
+      "disableCache": true
+    }'
+  echo ""
+
+  echo "GET cacheConfig (nachher)"
+  curl -s -X GET \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    "${HOST}/v1/projects/${PROJECT_ID}/cacheConfig"
+  echo ""
+done
+
+echo "DONE."
+
+
+
+
+
+
+
+
+6. überprüfen, ob das ergebnis so aussieht:
+
+
+
+
+
+
+
+
+andre@https://europe-west3-aiplatform tradeo-ai-artikelsuche-db % REGION="europe-west3"
+HOST="https://${REGION}-aiplatform.googleapis.com"
+TOKEN="$(gcloud auth print-access-token)"
+
+PROJECT_IDS=(
+  "gen-lang-client-0159645273"
+  "gen-lang-client-0235650387"
+  "gen-lang-client-0775640840"
+  "gen-lang-client-0194477178"
+  "gen-lang-client-0360736786"
+)
+
+for PROJECT_ID in "${PROJECT_IDS[@]}"; do
+  echo "=============================="
+  echo "PROJECT: ${PROJECT_ID}"
+
+  echo "GET cacheConfig (vorher)"
+  curl -s -X GET \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    "${HOST}/v1/projects/${PROJECT_ID}/cacheConfig"
+  echo ""
+
+  echo "PATCH disableCache=true"
+  curl -s -X PATCH \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    "${HOST}/v1/projects/${PROJECT_ID}/cacheConfig" \
+    -d '{
+      "name": "projects/'"${PROJECT_ID}"'/cacheConfig",
+      "disableCache": true
+    }'
+  echo ""
+
+  echo "GET cacheConfig (nachher)"
+  curl -s -X GET \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    "${HOST}/v1/projects/${PROJECT_ID}/cacheConfig"
+  echo ""
+done
+
+echo "DONE."
+
+==============================
+PROJECT: gen-lang-client-0159645273
+GET cacheConfig (vorher)
+{
+  "name": "projects/869762210772/cacheConfig",
+  "disableCache": true
+}
+
+PATCH disableCache=true
+{
+  "name": "projects/869762210772/locations/europe-west3/projects/869762210772/cacheConfig/operations/6143712810099539968",
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
+    "name": "projects/869762210772/cacheConfig"
+  }
+}
+
+GET cacheConfig (nachher)
+{
+  "name": "projects/869762210772/cacheConfig",
+  "disableCache": true
+}
+
+==============================
+PROJECT: gen-lang-client-0235650387
+GET cacheConfig (vorher)
+{
+  "name": "projects/331375644850/cacheConfig",
+  "disableCache": true
+}
+
+PATCH disableCache=true
+{
+  "name": "projects/331375644850/locations/europe-west3/projects/331375644850/cacheConfig/operations/8224375837944709120",
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
+    "name": "projects/331375644850/cacheConfig"
+  }
+}
+
+GET cacheConfig (nachher)
+{
+  "name": "projects/331375644850/cacheConfig",
+  "disableCache": true
+}
+
+==============================
+PROJECT: gen-lang-client-0775640840
+GET cacheConfig (vorher)
+{
+  "name": "projects/969562020748/cacheConfig",
+  "disableCache": true
+}
+
+PATCH disableCache=true
+{
+  "name": "projects/969562020748/locations/europe-west3/projects/969562020748/cacheConfig/operations/4972776906983211008",
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
+    "name": "projects/969562020748/cacheConfig"
+  }
+}
+
+GET cacheConfig (nachher)
+{
+  "name": "projects/969562020748/cacheConfig",
+  "disableCache": true
+}
+
+==============================
+PROJECT: gen-lang-client-0194477178
+GET cacheConfig (vorher)
+{
+  "name": "projects/894786217826/cacheConfig",
+  "disableCache": true
+}
+
+PATCH disableCache=true
+{
+  "name": "projects/894786217826/locations/europe-west3/projects/894786217826/cacheConfig/operations/6151031159494017024",
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
+    "name": "projects/894786217826/cacheConfig"
+  }
+}
+
+GET cacheConfig (nachher)
+{
+  "name": "projects/894786217826/cacheConfig",
+  "disableCache": true
+}
+
+==============================
+PROJECT: gen-lang-client-0360736786
+GET cacheConfig (vorher)
+{
+  "name": "projects/439600306696/cacheConfig",
+  "disableCache": true
+}
+
+PATCH disableCache=true
+{
+  "name": "projects/439600306696/locations/europe-west3/projects/439600306696/cacheConfig/operations/2584180254616584192",
+  "done": true,
+  "response": {
+    "@type": "type.googleapis.com/google.cloud.aiplatform.v1.CacheConfig",
+    "name": "projects/439600306696/cacheConfig"
+  }
+}
+
+GET cacheConfig (nachher)
+{
+  "name": "projects/439600306696/cacheConfig",
+  "disableCache": true
+}
+
+DONE.
+andre@https://europe-west3-aiplatform tradeo-ai-artikelsuche-db % 
+
+
+
+
+
+
+
+
+7. in cloud console auf "IAM und Verwaltung -> Datenschutz und Sicherheit"
+
+8. Zusatz zur Verarbeitung von Cloud-Daten -> Abschließen
+
+9. Angabe zur Anwendbarkeit des europäischen Datenschutzgesetzes -> bestätigen
+
+10. Lokaler Datenschutzbeauftragter eintragen
+
+11. Datenschutzbeauftragter
+
+12. Regulierungs- und Aufsichtsbehörde(n):
+- Deutschland: Die Bundesbeauftragte ...
+- Deutschland: BayLDA
+- Deutschland: BayLfD
+
+13. Cloud Console Sprache auf englisch stellen in Settings
+
+14. in irgendein Projekt rein 
+
+15. APIs & Services -> Credentials
+
+16. Create Credentials
+
+17. das Erst-Setup durchgehen (Internal auswählen, Rest irgendwie ausfüllen)
+
+18. Zurück zu APIs & Services -> Credentials
+
+19. Create Credentials -> OAuth client id 
+
+20. App Type Chrome Extension, name tradeoAi, item ID adlmedafagdmeaojdaefhmhfjfjeklec (prüfen, ob sich geändert hat) -> create
+
+21. kopieren: 1232342342-bla08bla80...bla23bla.apps.googleusercontent.com und ins manifest.json

@@ -6,6 +6,10 @@ const AI_TIMEOUT_PER_TURN = 60000; // 60 Sekunden pro Turn
 const AI_TIMEOUT_SLOW = 600000;     // 10 Min total für langsame Modelle (3 Pro)
 const MAX_TURNS = 8; // Maximale Anzahl an Runden (Thought/Action Loops)
 
+// Feature-Flag: Hintergrund-Überwachung / Pre-Fetch komplett abschalten
+// (Revert: einfach auf true setzen)
+const ENABLE_BACKGROUND_PREFETCH = false;
+
 const DASHBOARD_FOLDERS_TO_SCAN = [
     "https://desk.tradeo.de/mailbox/3/27",  // Servershop24 -> Nicht zugewiesen
     "https://desk.tradeo.de/mailbox/3/155"  // Servershop24 -> Meine
@@ -89,10 +93,12 @@ function startHeartbeat() {
     
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // 3. Langsamerer Interval für Hintergrund-Aufgaben (Inbox Scan etc.)
-    setInterval(() => {
-        runLifecycleCheck();
-    }, POLL_INTERVAL_MS);
+    // 3. Polling nur, wenn Background-Prefetch aktiv ist
+    if (ENABLE_BACKGROUND_PREFETCH) {
+        setInterval(() => {
+            runLifecycleCheck();
+        }, POLL_INTERVAL_MS);
+    }
 }
 
 // Die Hauptlogik ausgelagert, damit wir sie sofort + per Interval + per Observer rufen können
@@ -110,13 +116,12 @@ function runLifecycleCheck() {
         }
     } 
     else if (pageType === 'inbox') {
-        // Wir sind in einer Liste -> Scannen der SICHTBAREN Tabelle
-        scanInboxTable();
+        // Inbox-Scan nur, wenn Background-Prefetch aktiv ist
+        if (ENABLE_BACKGROUND_PREFETCH) scanInboxTable();
     } 
     
-    // 2. Globaler Hintergrund-Scan (ServerShop24 -> Nicht zugewiesen & Meine)
-    // Das muss nicht bei jedem Millisekunden-Event laufen, daher kleiner Schutz:
-    if (!window.aiState.isBackgroundScanning) {
+    // 2. Globaler Hintergrund-Scan nur, wenn Background-Prefetch aktiv ist
+    if (ENABLE_BACKGROUND_PREFETCH && !window.aiState.isBackgroundScanning) {
         scanDashboardFolders();
     }
 }
@@ -332,9 +337,12 @@ async function processTicket(id, incomingInboxHash) {
 // --- API FUNCTIONS ---
 
 async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
-    const stored = await chrome.storage.local.get(['geminiApiKey']);
-    const apiKey = stored.geminiApiKey;
-    if (!apiKey) return null;
+    const { vertexCredentials } = await chrome.storage.local.get(['vertexCredentials']);
+    const hasVertexCreds = Array.isArray(vertexCredentials)
+        && vertexCredentials.some(c => c && c.projectId && c.key);
+
+    if (!hasVertexCreds) return null;
+
 
     const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
     const isSlowModel = currentModel.includes("gemini-3-pro");
@@ -905,9 +913,23 @@ function initConversationUI(isRestore = false) {
         
         <div id="tradeo-ai-settings-panel">
             <div class="tradeo-setting-row">
-                <label>Gemini API Keys (Einer pro Zeile)</label>
-                <textarea id="setting-gemini-key" placeholder="Key 1 (Projekt A)&#10;Key 2 (Projekt B)&#10;..." rows="4" style="width:100%; border:1px solid #ccc; border-radius:4px; padding:6px; font-family:monospace; font-size:11px;"></textarea>
-                <div style="font-size:10px; color:#666; margin-top:2px;">Bei "Rate Limit" Fehlern wird automatisch zum nächsten Key gewechselt.</div>
+                <label>Vertex AI Credentials (Rotation)</label>
+                
+                <div class="tradeo-api-pair-header">
+                    <span style="flex:1">Google Cloud Project ID</span>
+                    <span style="flex:1">Vertex API Key</span>
+                    <span style="width:24px"></span>
+                </div>
+
+                <div id="tradeo-api-rows-container">
+                    </div>
+                
+                <button id="tradeo-add-api-row-btn" type="button">+ Weiteres Projekt/Key Paar hinzufügen</button>
+
+                <div style="font-size:10px; color:#666; margin-top:2px;">
+                    Bei "Rate Limit" (429) wird automatisch zum nächsten Projekt/Key gewechselt.
+                    <br>Format: Project ID (z.B. <code>gen-lang-client-xxx</code>) und API Key.
+                </div>
             </div>
             <div class="tradeo-setting-row">
                 <label>Plenty Username</label>
@@ -1104,22 +1126,49 @@ function setupSettingsLogic() {
     const btn = document.getElementById('tradeo-ai-settings-btn');
     const saveBtn = document.getElementById('tradeo-save-settings-btn');
     const statusDiv = document.getElementById('tradeo-settings-status');
+    const container = document.getElementById('tradeo-api-rows-container');
+    const addBtn = document.getElementById('tradeo-add-api-row-btn');
+
+    // Helper: Neue Zeile rendern
+    const renderRow = (pId = "", key = "") => {
+        const row = document.createElement('div');
+        row.className = 'tradeo-api-pair-row';
+        row.innerHTML = `
+            <input type="text" class="input-pid" placeholder="Project ID" value="${pId}">
+            <input type="password" class="input-key" placeholder="API Key" value="${key}">
+            <button class="tradeo-remove-row-btn" title="Entfernen">&times;</button>
+        `;
+        
+        // Delete Handler
+        row.querySelector('.tradeo-remove-row-btn').addEventListener('click', () => {
+            row.remove();
+        });
+
+        container.appendChild(row);
+    };
+
+    // Add Button Handler
+    addBtn.addEventListener('click', () => renderRow());
 
     // Toggle Panel
     btn.addEventListener('click', () => {
         panel.classList.toggle('visible');
         if (panel.classList.contains('visible')) {
             // Beim Öffnen Werte laden
-            chrome.storage.local.get(['geminiApiKeys', 'geminiApiKey', 'plentyUser', 'plentyPass'], (res) => {
-                // Migration: Falls alter Single-Key existiert, aber keine Liste -> nutze Single Key
-                let keysToShow = "";
-                if (res.geminiApiKeys && Array.isArray(res.geminiApiKeys)) {
-                    keysToShow = res.geminiApiKeys.join('\n');
-                } else if (res.geminiApiKey) {
-                    keysToShow = res.geminiApiKey;
+            chrome.storage.local.get(['vertexCredentials', 'plentyUser', 'plentyPass'], (res) => {
+                // UI leeren
+                container.innerHTML = '';
+
+                let creds = res.vertexCredentials;
+
+                // Migration Check: Falls user noch alte 'geminiApiKeys' hat, aber keine 'vertexCredentials'
+                // Da wir die Project ID nicht raten können, starten wir leer oder mit Platzhalter.
+                if (!creds || !Array.isArray(creds) || creds.length === 0) {
+                    renderRow("", ""); // Eine leere Zeile als Start
+                } else {
+                    creds.forEach(c => renderRow(c.projectId, c.key));
                 }
                 
-                document.getElementById('setting-gemini-key').value = keysToShow;
                 document.getElementById('setting-plenty-user').value = res.plentyUser || '';
                 document.getElementById('setting-plenty-pass').value = res.plentyPass || '';
             });
@@ -1128,32 +1177,45 @@ function setupSettingsLogic() {
 
     // Save Action
     saveBtn.addEventListener('click', async () => {
-        const rawKeys = document.getElementById('setting-gemini-key').value;
         const pUser = document.getElementById('setting-plenty-user').value.trim();
         const pPass = document.getElementById('setting-plenty-pass').value.trim();
 
-        // Keys verarbeiten: Splitten, Trimmen, Leere Zeilen entfernen
-        const keyList = rawKeys.split('\n')
-            .map(k => k.trim())
-            .filter(k => k.length > 5); // Mindestlänge Check
+        // Credentials auslesen
+        const rows = Array.from(container.querySelectorAll('.tradeo-api-pair-row'));
+        const newCredentials = [];
+
+        rows.forEach(row => {
+            const pid = row.querySelector('.input-pid').value.trim();
+            const key = row.querySelector('.input-key').value.trim();
+            if (pid && key) {
+                newCredentials.push({ projectId: pid, key: key });
+            }
+        });
+
+        if (newCredentials.length === 0) {
+            statusDiv.innerText = "⚠️ Bitte mindestens eine Project ID und einen API Key eingeben.";
+            statusDiv.style.color = "orange";
+            return;
+        }
 
         statusDiv.innerText = "Speichere...";
         
         // Speichern
         await chrome.storage.local.set({
-            geminiApiKeys: keyList,     // Neue Liste speichern
-            geminiApiKey: keyList[0],   // Ersten Key als Fallback für Legacy-Funktionen speichern
+            vertexCredentials: newCredentials, // NEUES FORMAT
+            // Legacy Keys löschen oder null setzen, um Verwirrung zu vermeiden
+            geminiApiKeys: null, 
+            geminiApiKey: null,   
             plentyUser: pUser,
-            plentyPass: pPass,
-            plentyToken: null 
+            plentyPass: pPass
         });
 
-        // Test der Verbindung (optional)
+        // Test der Verbindung (Plenty)
         if (pUser && pPass) {
              statusDiv.innerText = "Teste Plenty Verbindung...";
              try {
                  await callPlenty('/rest/login', 'POST', { username: pUser, password: pPass });
-                 statusDiv.innerText = `✅ Gespeichert (${keyList.length} API Keys) & Plenty Verbunden!`;
+                 statusDiv.innerText = `✅ Gespeichert (${newCredentials.length} Credentials) & Plenty Verbunden!`;
                  statusDiv.style.color = "green";
                  setTimeout(() => panel.classList.remove('visible'), 1500);
              } catch (e) {
@@ -1161,7 +1223,8 @@ function setupSettingsLogic() {
                  statusDiv.style.color = "red";
              }
         } else {
-            statusDiv.innerText = `✅ Gespeichert (${keyList.length} Gemini Keys)`;
+            statusDiv.innerText = `✅ Gespeichert (${newCredentials.length} Credentials)`;
+            statusDiv.style.color = "green";
             setTimeout(() => panel.classList.remove('visible'), 1000);
         }
     });
@@ -1749,8 +1812,10 @@ async function runAI(isInitial = false) {
     }
     if (lock === false) return;
 
-    const storageData = await chrome.storage.local.get(['geminiApiKey']);
-    const apiKey = storageData.geminiApiKey;
+    const { vertexCredentials } = await chrome.storage.local.get(['vertexCredentials']);
+    const hasVertexCreds = Array.isArray(vertexCredentials)
+        && vertexCredentials.some(c => c && c.projectId && c.key);
+
 
     let userPrompt = "";
     if (isInitial) {
@@ -1765,10 +1830,13 @@ async function runAI(isInitial = false) {
         window.aiState.chatHistory.push({ type: "user", content: userPrompt }); 
     }
 
-    if (!apiKey) {
-        renderChatMessage('system', "⚠️ Kein API Key gefunden.");
+    if (!hasVertexCreds) {
+        renderChatMessage(
+            'system',
+            "⚠️ Keine Vertex AI Credentials gefunden (Project ID + API Key)."
+        );
         await releaseLock(cid);
-        return; 
+        return;
     }
 
     window.aiState.isGenerating = true;
@@ -2501,22 +2569,20 @@ function setupResizeHandler() {
 }
 
 /**
- * Führt einen Gemini API Call mit Key-Rotation durch.
- * Wenn ein Key ein Rate-Limit (429) hat, wird der nächste versucht.
+ * Führt einen Vertex AI API Call mit Key-Rotation durch.
+ * Wenn ein Key ein Rate-Limit (429) hat, wird das nächste Project/Key Paar versucht.
  */
 async function callGeminiWithRotation(payload, model) {
-    // 1. Keys aus Storage holen
-    const storage = await chrome.storage.local.get(['geminiApiKeys', 'geminiApiKey']);
-    let keys = storage.geminiApiKeys;
+    // 1. Credentials aus Storage holen
+    // HINWEIS: Wir unterstützen jetzt das neue 'vertexCredentials' Format
+    const storage = await chrome.storage.local.get(['vertexCredentials']);
+    let credentials = storage.vertexCredentials;
 
-    // Fallback für alte Installationen
-    if (!keys || !Array.isArray(keys) || keys.length === 0) {
-        if (storage.geminiApiKey) keys = [storage.geminiApiKey];
-        else throw new Error("Kein Gemini API Key gefunden. Bitte in den Einstellungen hinterlegen.");
+    if (!credentials || !Array.isArray(credentials) || credentials.length === 0) {
+        throw new Error("Keine Vertex AI Credentials gefunden. Bitte Project ID & API Key in den Einstellungen hinterlegen.");
     }
 
-    // --- SAFETY SETTINGS HINZUFÜGEN (WICHTIG!) ---
-    // Verhindert "parts.length 0" bei Wörtern wie "kill", "dead", "attack" etc.
+    // --- SAFETY SETTINGS HINZUFÜGEN ---
     if (!payload.safetySettings) {
         payload.safetySettings = [
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
@@ -2530,16 +2596,23 @@ async function callGeminiWithRotation(payload, model) {
 
     let lastError = null;
 
-    // 2. Loop durch die Keys
-    for (let i = 0; i < keys.length; i++) {
-        const currentKey = keys[i];
-        const PROJECT_ID = "gen-lang-client-0235650387"; // deine Projekt-ID
-        const LOCATION = "europe-west3";                  // EU-Region
-        const API_VERSION = "v1";                         // Vertex: v1 (statt v1beta)
+    // 2. Loop durch die Credentials (Rotation)
+    for (let i = 0; i < credentials.length; i++) {
+        const entry = credentials[i];
+        
+        // Robustheit: Prüfen ob das Format stimmt
+        const currentProject = entry.projectId;
+        const currentKey = entry.key;
 
+        if (!currentProject || !currentKey) continue;
+
+        const LOCATION = "europe-west3"; 
+        const API_VERSION = "v1";
+
+        // Deine neue Vertex URL Struktur
         const endpoint =
             `https://${LOCATION}-aiplatform.googleapis.com/${API_VERSION}` +
-            `/projects/${PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${model}:generateContent` +
+            `/projects/${currentProject}/locations/${LOCATION}/publishers/google/models/${model}:generateContent` +
             `?key=${currentKey}`;
 
         try {
@@ -2551,15 +2624,25 @@ async function callGeminiWithRotation(payload, model) {
 
             // 3. Fehlerbehandlung
             if (!response.ok) {
-                // WICHTIG: 429 = Resource Exhausted (Rate Limit)
+                // WICHTIG: 429 = Resource Exhausted (Rate Limit) oder Quota Exceeded
                 if (response.status === 429) {
-                    console.warn(`Tradeo AI: Key ${i+1} Rate Limit (429). Wechsle zum nächsten Key...`);
-                    continue; // Springe zum nächsten Key im Loop
+                    console.warn(`Tradeo AI: Project ${currentProject} Rate Limit (429). Wechsle zum nächsten Credential...`);
+                    continue; // Springe zum nächsten Eintrag im Loop
                 }
                 
-                // Bei anderen Fehlern (z.B. 400 Bad Request) bringt Key-Wechsel nichts -> Fehler werfen
-                const errData = await response.json();
-                throw new Error(errData.error?.message || `API Error: ${response.status}`);
+                // Bei anderen Fehlern (z.B. 400 Bad Request, 403 Permission)
+                const errData = await response.json().catch(() => ({}));
+                const errMsg = errData.error?.message || `API Error: ${response.status}`;
+                
+                // Falls es ein 403 Permission Denied ist (falsche Project ID/Key Kombi), vielleicht auch rotieren?
+                // Wir rotieren hier sicherheitshalber auch bei 403, falls ein Key deaktiviert wurde.
+                if (response.status === 403) {
+                     console.warn(`Tradeo AI: Project ${currentProject} Permission Denied (403). Wechsle...`);
+                     lastError = new Error(`Permission Denied: ${errMsg}`);
+                     continue;
+                }
+
+                throw new Error(errMsg);
             }
 
             // 4. Erfolg!
@@ -2567,15 +2650,13 @@ async function callGeminiWithRotation(payload, model) {
 
         } catch (error) {
             lastError = error;
-            // Wenn es ein Netzwerkfehler war, ggf. auch rotieren? 
-            if (error.message.includes("API Error") && !error.message.includes("429")) {
-                 throw error; // Harter API Fehler (z.B. Bad Request) -> Abbruch
-            }
+            // Wenn es ein Netzwerkfehler war, werfen wir ihn nicht sofort, sondern versuchen den nächsten (könnte DNS/Routing sein)
+            console.warn(`Tradeo AI: Fehler bei Project ${currentProject}:`, error.message);
         }
     }
 
-    // Wenn wir hier ankommen, haben alle Keys versagt
-    throw new Error(`Alle ${keys.length} API Keys fehlgeschlagen. Letzter Fehler: ${lastError?.message}`);
+    // Wenn wir hier ankommen, haben alle Credentials versagt
+    throw new Error(`Alle ${credentials.length} Vertex Credentials fehlgeschlagen. Letzter Fehler: ${lastError?.message}`);
 }
 
 // --- BOOTSTRAP ---
