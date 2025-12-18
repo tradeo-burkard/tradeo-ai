@@ -256,7 +256,7 @@ async function fetchOrderDetails(orderId) {
         // ------------------------------------------------------------
         // 0) BUNDLE-PARENT: Item-Description anreichern (VOR Stripping)
         // ------------------------------------------------------------
-        const enrichBundleParentDescriptions = async (order) => {
+        /*const enrichBundleParentDescriptions = async (order) => {
             const items = order?.orderItems || [];
             if (!items.length) return;
 
@@ -339,11 +339,83 @@ async function fetchOrderDetails(orderId) {
             order.orderItems = items;
         };
 
-        await enrichBundleParentDescriptions(orderData);
+        await enrichBundleParentDescriptions(orderData);*/
+
+        // ------------------------------------------------------------
+        // 0) ALLE ITEMS: Item-Description anreichern (Ersetzt Bundle-Logic)
+        // ------------------------------------------------------------
+        const enrichAllItemDescriptions = async (order) => {
+            const items = order?.orderItems || [];
+            if (!items.length) return;
+
+            // Cache für Beschreibungen innerhalb dieses Aufrufs
+            const itemIdToDescription = new Map();
+
+            // Helper: Bevorzugten Text (Deutsch) wählen
+            const pickPreferredText = (texts) => {
+                if (!Array.isArray(texts) || texts.length === 0) return null;
+                const norm = (v) => String(v ?? "").toLowerCase().trim();
+                const langOf = (t) =>
+                    norm(t.lang ?? t.language ?? t.langCode ?? t.languageCode ?? t.langId ?? t.languageId);
+                return texts.find((t) => langOf(t) === "de") || texts[0];
+            };
+
+            // Helper: Beschreibung holen
+            const fetchItemDescriptionByItemId = async (itemId) => {
+                const key = String(itemId);
+                if (itemIdToDescription.has(key)) return itemIdToDescription.get(key);
+                let desc = "";
+                try {
+                    const item = await makePlentyCall(`/rest/items/${itemId}`);
+                    const t = pickPreferredText(item?.texts || []);
+                    desc = stripHtmlToText(t?.description || "");
+                } catch (e) { desc = ""; }
+                itemIdToDescription.set(key, desc);
+                return desc;
+            };
+
+            // Worker Funktion für einzelne Items
+            const enrichWorker = async (item, index) => {
+                // Wenn schon eine Description da ist und sie lang genug wirkt, behalten? 
+                // Hier überschreiben wir sie sicherheitshalber, um immer die aktuelle aus dem Stammartikel zu haben.
+                
+                const variationId = item.itemVariationId;
+                if (!variationId) return item;
+
+                // 1. Item ID auflösen (nutzt den Cache aus dem Scope von fetchOrderDetails)
+                const itemId = await resolveItemIdFromVariationId(variationId);
+                if (!itemId) return item;
+
+                // 2. Beschreibung laden
+                const desc = await fetchItemDescriptionByItemId(itemId);
+                
+                // Nur updaten, wenn wir eine Beschreibung gefunden haben
+                if (desc) {
+                    // Wir klonen das Objekt sauber
+                    return {
+                        ...item,
+                        orderItemDescription: desc
+                    };
+                }
+                
+                return item;
+            };
+
+            // Parallelisierung: Wir nutzen __mapLimit (global in background.js),
+            // um 5 Artikel gleichzeitig zu laden. Das ist schneller als eine Schleife, 
+            // killt aber nicht das Rate-Limit.
+            const enrichedItems = await __mapLimit(items, 20, enrichWorker);
+            
+            order.orderItems = enrichedItems;
+        };
+
+        // Aufruf der neuen Funktion
+        await enrichAllItemDescriptions(orderData);
 
         // ------------------------------------------------------------
         // 2) Adressen auflösen & Zielland ermitteln
         // ------------------------------------------------------------
+
         if (orderData.addressRelations && orderData.addressRelations.length > 0) {
             const addressPromises = orderData.addressRelations.map(async (rel) => {
                 try {
