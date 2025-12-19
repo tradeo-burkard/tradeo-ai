@@ -11,9 +11,9 @@ const MAX_TURNS = 8; // Maximale Anzahl an Runden (Thought/Action Loops)
 const ENABLE_BACKGROUND_PREFETCH = true;
 
 const DASHBOARD_FOLDERS_TO_SCAN = [
-    "https://desk.tradeo.de/mailbox/3/27",  // Servershop24 -> Nicht zugewiesen
-    "https://desk.tradeo.de/mailbox/3/155",  // Servershop24 -> Meine
-    "https://desk.tradeo.de/mailbox/3/29" // Servershop24 -> Zugewiesen
+    //"https://desk.tradeo.de/mailbox/3/27",  // Servershop24 -> Nicht zugewiesen
+    "https://desk.tradeo.de/mailbox/3/155"  // Servershop24 -> Meine
+    //"https://desk.tradeo.de/mailbox/3/29" // Servershop24 -> Zugewiesen
 ];
 
 // SYSTEM PROMPTS
@@ -236,8 +236,14 @@ function checkAndQueue(id, currentHash) {
 // --- LOGIC: QUEUE MANAGEMENT & PROCESSING ---
 
 async function processTicket(id, incomingInboxHash) {
+    // 1. Notbremse: Wenn User gerade in DIESEM Ticket ist, darf Background NICHTS tun.
+    const activeId = getTicketIdFromUrl();
+    if (activeId && String(id) === String(activeId)) {
+        return;
+    }
+
     try {
-        // 1. Locking prüfen
+        // 2. Locking prüfen
         const lockAcquired = await acquireLock(id, 'background');
         if (!lockAcquired) {
             return;
@@ -245,19 +251,20 @@ async function processTicket(id, incomingInboxHash) {
 
         const storageKey = `draft_${id}`;
         const storedRes = await chrome.storage.local.get([storageKey]);
-        const storedData = storedRes[storageKey];
+        let storedData = storedRes[storageKey];
 
-        // Abbruch wenn Inbox-Hash identisch
-        if (storedData) {
-            const lastInboxHash = storedData.inboxHash;
-            if (lastInboxHash === incomingInboxHash) {
-                await releaseLock(id); 
-                return; 
-            }
+        // 3. Quick Check: Wenn Inbox-Hash exakt matcht -> Alles aktuell, Abbruch.
+        if (storedData && storedData.inboxHash === incomingInboxHash) {
+            await releaseLock(id); 
+            return; 
         }
 
-        console.log(`[CID: ${id}] Tradeo AI: ⚡ Verarbeite Ticket im Hintergrund...`);
+        // HINWEIS: Hier haben wir früher blind dem "manual_live" Hash vertraut. 
+        // Das machen wir jetzt NICHT mehr. Wir prüfen erst den echten Inhalt.
 
+        // console.log(`[CID: ${id}] Tradeo AI: ⚡ Prüfe Ticket auf inhaltliche Änderungen...`);
+
+        // 4. Content Fetch & Hash Calculation (Die Wahrheit holen)
         const response = await fetch(`https://desk.tradeo.de/conversation/${id}`);
         const text = await response.text();
         const parser = new DOMParser();
@@ -271,18 +278,40 @@ async function processTicket(id, incomingInboxHash) {
             return;
         }
 
+        // 5. Smart Sync Check (Der "Hand und Fuß" Fix)
+        // Wir vergleichen den echten Inhalt (ContentHash) mit dem gespeicherten.
+        if (storedData && storedData.contentHash === realContentHash) {
+            // INHALT IST GLEICH: Der Unterschied im Inbox-Hash war nur kosmetisch 
+            // (z.B. "manual_live_..." vs. echter Hash), aber es gibt keine neuen Nachrichten.
+            
+            // Wir "heilen" den Inbox-Hash, damit der Scanner beim nächsten Mal Ruhe gibt.
+            if (storedData.inboxHash !== incomingInboxHash) {
+                console.log(`[CID: ${id}] 🛠️ Content identisch. Synchronisiere nur Inbox-Hash.`);
+                storedData.inboxHash = incomingInboxHash;
+                await chrome.storage.local.set({ [storageKey]: storedData });
+                
+                // RAM Cache updaten
+                window.aiState.knownTickets.set(id, incomingInboxHash);
+            }
+            
+            // WICHTIG: Abbruch! Wir starten KEINE neue Generierung, da Inhalt gleich ist.
+            await releaseLock(id);
+            return;
+        }
+
+        // 6. Wenn wir hier sind, hat sich der CONTENT geändert (z.B. neue Notiz) -> Headless Starten!
+        console.log(`[CID: ${id}] 🔄 Änderung erkannt! (Hash: ${realContentHash}). Starte Headless Analysis...`);
+
         // Headless Draft erstellen
         const aiResult = await generateDraftHeadless(contextText, id);
 
         if (aiResult) {
             let initialHistory = [];
             
-            // 1. KAREN START (Damit loadFromCache die Bubble initialisiert)
-            // Dieser String muss exakt mit dem in loadFromCache übereinstimmen
+            // 1. KAREN START
             initialHistory.push({ type: "system", content: "Karen prüft, ob wir aus Plenty Daten brauchen..." });
 
-            // 2. KAREN RESULT (Tools oder Log)
-            // A: Tools wurden ausgeführt -> Structured Bubble
+            // 2. KAREN RESULT
             if (aiResult.toolExec && aiResult.toolExec.summary) {
                 initialHistory.push({ 
                     type: 'tool_exec', 
@@ -291,7 +320,6 @@ async function processTicket(id, incomingInboxHash) {
                     calls: aiResult.toolExec.calls 
                 });
             } 
-            // B: Keine Tools -> Textnachricht (die loadFromCache als Karen erkennt)
             else if (aiResult.toolLogs && Array.isArray(aiResult.toolLogs)) {
                 aiResult.toolLogs.forEach(logText => {
                     initialHistory.push({ type: 'system', content: logText });
@@ -302,7 +330,6 @@ async function processTicket(id, incomingInboxHash) {
             initialHistory.push({ type: 'draft', content: aiResult.draft });
 
             // 4. KEVIN REASONING
-            // FIX: Fallback für Summary, falls AI mal leer zurückgab (selten, aber möglich)
             const safeSummary = aiResult.feedback && aiResult.feedback.trim() !== "" 
                 ? aiResult.feedback 
                 : "Automatisch vorbereitet";
@@ -325,7 +352,7 @@ async function processTicket(id, incomingInboxHash) {
             };
             
             await chrome.storage.local.set(data);
-            console.log(`[CID: ${id}] Tradeo AI: ✅ Draft gespeichert (Hash: ${realContentHash}).`);
+            console.log(`[CID: ${id}] Tradeo AI: ✅ Draft aktualisiert.`);
         }
 
     } catch (e) {
@@ -344,45 +371,73 @@ async function generateDraftHeadless(contextText, ticketId = 'UNKNOWN') {
 
     if (!hasVertexCreds) return null;
 
-
-    const currentModel = window.aiState.currentModel || "gemini-2.5-pro";
+    const currentModel = window.aiState.currentModel || "gemini-2.5-flash";
     const isSlowModel = currentModel.includes("gemini-2.5-pro");
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
     const headlessUserPrompt = "Analysiere das Ticket und erstelle einen Entwurf.";
 
     const primaryTask = async () => {
-        // PHASE 1: PLAN
+        // --- SCHRITT 0: CONTEXT PATCHING (Zuerst!) ---
+        let languageInstruction = ""; 
+        const freshTranslations = await getTranslations(ticketId);
+        
+        if (Object.keys(freshTranslations).length > 0) {
+             try {
+                const contextArr = JSON.parse(contextText); 
+                let patched = false;
+                const detectedLangs = new Set();
+
+                contextArr.forEach(msg => {
+                    const t = freshTranslations[msg.id] || freshTranslations[`thread-${msg.id}`];
+                    if (t && t.text) {
+                        msg.msg = `[TRANSLATION FROM ${t.lang}]: ${t.text}`;
+                        if (t.lang !== 'DE' && t.lang !== 'EN') detectedLangs.add(t.lang);
+                        patched = true;
+                    }
+                });
+
+                if(patched) {
+                    contextText = JSON.stringify(contextArr);
+                    console.log(`[CID: ${ticketId}] 🌐 Headless Context VOR Karen-Call gepatcht.`);
+                    if (detectedLangs.size > 0) {
+                        const langsStr = Array.from(detectedLangs).join(',');
+                        languageInstruction = `ACHTUNG: Fremdsprache erkannt (${langsStr}). Antworte ZWINGEND auf ENGLISCH.`;
+                    }
+                }
+             } catch(e) {
+                 console.warn("Headless Translation Patch failed:", e);
+             }
+        }
+
+        // --- SCHRITT 1: PLAN (Karen) ---
         const plan = await analyzeToolPlan(contextText, headlessUserPrompt, "", null, ticketId);
 
         // Tool Logs & Exec Info bauen
         const toolLogs = [];
         const toolExec = buildToolExecutionInfo(plan.tool_calls || []);
-        
-        // Konstante muss exakt zum Live-Modus passen für loadFromCache!
         const MSG_NO_TOOLS_NEEDED = "✅ Keine Datenabfrage nötig.";
 
         if (toolExec) {
-            // Im Headless Modus loggen wir das Summary (wird aber meist durch toolExec Objekt ersetzt)
             toolLogs.push(toolExec.summary);
         } else {
-            // WICHTIG: Exakt gleicher String wie im Live-Modus, ohne "Hintergrund:" Präfix
             toolLogs.push(MSG_NO_TOOLS_NEEDED);
         }
 
-        // PHASE 2: EXECUTE
+        // --- SCHRITT 2: EXECUTE (Tools) ---
         const gatheredData = await executePlannedToolCalls(plan.tool_calls || [], ticketId);
 
         // --- DEBUG LOGGING START ---
+        // FIX: Hier stand vorher 'cid' statt 'ticketId' -> ReferenceError
         console.groupCollapsed(`🤖 AI Payload Debug (Headless CID: ${ticketId})`);
-        console.log("1. Live Object (Interactive):", gatheredData);
+        console.log("1. Headless Object:", gatheredData);
         const debugString = gatheredData ? JSON.stringify(gatheredData) : "null";
         console.log("2. Final String to AI (Minified):", debugString);
         console.log(`3. Payload Size: ~${debugString.length} chars`);
         console.groupEnd();
         // --- DEBUG LOGGING END ---
 
-        // PHASE 3: GENERATE
+        // --- SCHRITT 3: GENERATE (Kevin) ---
         const generatorPrompt = `
 ${workerPrompt}
 
@@ -397,6 +452,7 @@ ${JSON.stringify(gatheredData)}
 ${contextText}
 
 === AUFGABE ===
+${languageInstruction}
 Erstelle einen Antwortentwurf im JSON-Format:
 {
   "draft": "<html>...</html>",
@@ -460,7 +516,6 @@ Erstelle einen Antwortentwurf im JSON-Format (kein Tool-Calling).
             
             if (fallbackResponse) {
                 if (!fallbackResponse.toolLogs) fallbackResponse.toolLogs = [];
-                // Auch hier sauberes Wording
                 fallbackResponse.toolLogs.push("⚠️ Hintergrund: Fallback (Datenabfrage fehlgeschlagen).");
             }
             return fallbackResponse;
@@ -511,25 +566,26 @@ async function executeHeadlessLoop(contents, ticketId) {
 }
 
 // =============================================================================
-// FUNKTION: CONTEXT EXTRACTION (Robust V6 - Hash Source)
+// FUNKTION: CONTEXT EXTRACTION (Robust V7 - Structure Preserved + Backup Logic)
 // =============================================================================
 function extractContextFromDOM(docRoot) {
     const mainContainer = docRoot.querySelector('#conv-layout-main');
     if (!mainContainer) return "[]"; 
 
     const messages = [];
-    // Threads von Alt nach Neu sortieren
     const threads = Array.from(mainContainer.querySelectorAll('.thread')).reverse();
 
     threads.forEach(thread => {
-        // 1. SENDER: Whitespace normalisieren
+        // --- FIX: NESTED THREADS IGNORIEREN ---
+        // Wenn ein Thread-Element einen weiteren .thread in sich trägt, ist es nur ein Wrapper (z.B. thread-type-new).
+        // Wir ignorieren den Wrapper, da der innere Thread separat in dieser Schleife auftaucht.
+        if (thread.querySelector('.thread')) return;
+        
+        // 1. SENDER
         const personEl = thread.querySelector('.thread-person');
         const senderName = personEl ? personEl.textContent.trim().replace(/\s+/g, ' ') : "Unbekannt";
 
-        // Filter: Entwürfe ignorieren (verhindert Hash-Änderung während des Tippens)
-        if (senderName.includes("[Entwurf]") || senderName.includes("[Draft]")) {
-            return; 
-        }
+        if (senderName.includes("[Entwurf]") || senderName.includes("[Draft]")) return; 
 
         // 2. TYP & ID
         const threadId = thread.getAttribute('data-thread_id') || "unknown";
@@ -538,10 +594,7 @@ function extractContextFromDOM(docRoot) {
         else if (thread.classList.contains('thread-type-customer')) type = "customer_message";
         else if (thread.classList.contains('thread-type-message')) type = "support_reply";
 
-        // 3. ZEIT (ROBUST FIX)
-        // Hintergrund (Raw HTML): Datum steht in 'title'.
-        // Live (Bootstrap JS): Datum steht in 'data-original-title', 'title' ist leer.
-        // Wir prüfen beide, um Konsistenz zu garantieren.
+        // 3. ZEIT
         const dateEl = thread.querySelector('.thread-date');
         let timestamp = "";
         if (dateEl) {
@@ -560,29 +613,30 @@ function extractContextFromDOM(docRoot) {
                 .filter(s => s.length > 0 && !s.toLowerCase().includes('an:')); 
         }
 
-        // 5. NACHRICHT (DOM PARSER COMPATIBILITY FIX)
-        // Problem: 'innerText' existiert im Background-Worker (DOMParser) nicht korrekt.
-        // 'textContent' klebt aber "Hallo<br>Welt" zu "HalloWelt" zusammen.
-        // Lösung: Wir klonen den Node, ersetzen Block-Elemente durch Spaces und nehmen dann textContent.
+        // 5. NACHRICHT (Struktur-Erhaltend!)
         let bodyText = "";
         const contentEl = thread.querySelector('.thread-content');
+        
         if (contentEl) {
-            // Klonen, um das Live-DOM nicht zu verändern
-            const clone = contentEl.cloneNode(true);
-            
-            // Block-Breaks simulieren für textContent
-            const blockTags = clone.querySelectorAll('br, p, div, li, tr');
-            blockTags.forEach(tag => {
-                // Füge ein Leerzeichen nach jedem Block-Element ein
-                if(tag.parentNode) {
-                    const space = document.createTextNode(' ');
-                    tag.parentNode.insertBefore(space, tag.nextSibling);
-                }
-            });
-
-            const rawText = clone.textContent || "";
-            // Alles zu einer Zeile normalisieren -> Garantiert gleichen Hash
-            bodyText = rawText.replace(/\s+/g, ' ').trim();
+            // --- NEU: BACKUP CHECK ---
+            if (thread.dataset.originalContent) {
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = thread.dataset.originalContent;
+                processCloneContent(tempDiv); // Helper nutzen
+                
+                const rawText = tempDiv.textContent || "";
+                let cleaned = rawText.replace(/[ \t]+/g, ' ');
+                cleaned = cleaned.replace(/\n\s*\n/g, '\n\n');
+                bodyText = cleaned.trim();
+            } else {
+                const clone = contentEl.cloneNode(true);
+                processCloneContent(clone); // Helper nutzen
+                
+                const rawText = clone.textContent || "";
+                let cleaned = rawText.replace(/[ \t]+/g, ' ');
+                cleaned = cleaned.replace(/\n\s*\n/g, '\n\n');
+                bodyText = cleaned.trim();
+            }
         }
 
         // 6. ANHÄNGE
@@ -598,17 +652,14 @@ function extractContextFromDOM(docRoot) {
             }).filter(Boolean);
         }
 
-        // Leere "Geister-Threads" ignorieren
-        if (senderName === "Unbekannt" && type === "unknown" && !bodyText && fileList.length === 0) {
-            return;
-        }
+        if (senderName === "Unbekannt" && type === "unknown" && !bodyText && fileList.length === 0) return;
 
         const msgObj = {
-            id: threadId,      // ID garantiert Eindeutigkeit
+            id: threadId,
             type: type,
             sender: senderName,
-            time: timestamp,   // Jetzt stabil dank title/data-original-title Fallback
-            msg: bodyText      // Jetzt stabil dank Normalisierung
+            time: timestamp,
+            msg: bodyText 
         };
         
         if (recipientsList.length > 0) msgObj.cc = recipientsList;
@@ -682,10 +733,11 @@ async function handleStartupSync(ticketId) {
     const cached = res[storageKey];
 
     if (cached) {
-        // MATCH: Alles gut
+        // MATCH
         if (cached.contentHash === currentHash) {
             console.log(`[CID: ${ticketId}] Cache gültig. Lade...`);
             loadFromCache(ticketId);
+            applyTranslationsToUi(ticketId); // <--- HIER EINFÜGEN
             return;
         } 
         
@@ -821,6 +873,7 @@ function loadFromCache(ticketId) {
 
 /**
  * Überwacht den Chat-Verlauf auf Änderungen und stellt die UI bei Verlust wieder her.
+ * UPDATE: Erzwingt jetzt aggressiv die Positionierung der AI GANZ OBEN, wenn neue Nachrichten reinkommen.
  */
 function setupThreadObserver() {
     if (window.aiState.threadObserverActive) return;
@@ -841,21 +894,22 @@ function setupThreadObserver() {
         let shouldReset = false;
         let newTextContent = "";
         let isRedraw = false;
+        let triggerUiUpdate = false; 
 
         mutations.forEach((mutation) => {
+            // 1. CHECK: Hinzugefügte Knoten
             if (mutation.addedNodes.length > 0) {
                 mutation.addedNodes.forEach((node) => {
                     if (node.nodeType === 1) {
                         if (node.classList.contains('thread') || 
                             node.classList.contains('conv-message') ||
-                            node.id.startsWith('thread-')) {
+                            (node.id && node.id.startsWith('thread-'))) {
                             
-                            if (node.id.includes('tradeo-ai')) return;
+                            if (node.id && node.id.includes('tradeo-ai')) return;
 
                             const contentEl = node.querySelector('.thread-content');
                             const text = contentEl ? contentEl.innerText.trim() : node.innerText.trim();
 
-                            // Vergleich: Ist es derselbe Inhalt?
                             if (text && text === window.aiState.lastThreadText) {
                                 isRedraw = true;
                                 return; 
@@ -867,30 +921,68 @@ function setupThreadObserver() {
                     }
                 });
             }
+
+            // 2. CHECK: Entfernte Knoten
+            if (mutation.removedNodes.length > 0) {
+                mutation.removedNodes.forEach((node) => {
+                    if (node.nodeType === 1) {
+                        // FIX: Wenn "Neue Nachricht" Banner (.thread-type-new) entfernt wird:
+                        // Kein Reset, ABER wir triggern UI Update (Buttons) und Positions-Check.
+                        if (node.classList.contains('thread-type-new')) {
+                            triggerUiUpdate = true;
+                            return; 
+                        }
+
+                        if (node.classList.contains('thread') || 
+                            node.classList.contains('conv-message') ||
+                            (node.id && node.id.startsWith('thread-'))) {
+                            
+                            if (node.id && node.id.includes('tradeo-ai')) return;
+
+                            console.log("Tradeo AI: Echte Nachricht/Notiz gelöscht -> Resetting...");
+                            shouldReset = true;
+                        }
+                    }
+                });
+            }
         });
 
-        // FALL A: Echter neuer Inhalt -> Alles Resetten
+        // --- POSITIONS KORREKTUR (Der "Türsteher") ---
+        // FreeScout schiebt neue Threads gerne an Position 0.
+        // Wenn wir im "Lesemodus" (Editor zu) sind, muss die AI Zone aber an Position 0 sein.
+        const copilotZone = document.getElementById('tradeo-ai-copilot-zone');
+        if (copilotZone) {
+            const editorBlock = document.querySelector('.conv-reply-block');
+            // Prüfen: Ist Editor offen? (Dann gehört AI nach unten -> macht repositionCopilotZone)
+            const isEditorOpen = editorBlock && !editorBlock.classList.contains('hidden') && editorBlock.style.display !== 'none';
+            
+            // Wenn Editor ZU ist (Lesemodus), muss AI ganz oben sein.
+            // Hat sich der neue Thread vorgedrängelt (firstChild != copilotZone)? -> Korrigieren!
+            if (!isEditorOpen && mainContainer.firstChild !== copilotZone) {
+                // console.log("Tradeo AI: Korrigiere Position (Zone wieder nach ganz oben).");
+                mainContainer.prepend(copilotZone);
+            }
+        }
+
+        // --- REAKTIONEN ---
+
+        // FALL A: Echter neuer Inhalt -> Reset (lädt AI neu und positioniert sich eh neu)
         if (shouldReset) {
             if (newTextContent) window.aiState.lastThreadText = newTextContent;
             resetUiToLoadingState();
         } 
-        // FALL B: Redraw erkannt (Inhalt gleich) -> UI prüfen & Retten
+        // FALL B: Banner entfernt -> Nur UI nachladen (Buttons)
+        else if (triggerUiUpdate) {
+            const cid = getTicketIdFromUrl();
+            if (cid) applyTranslationsToUi(cid);
+        }
+        // FALL C: Redraw -> UI retten
         else if (isRedraw) {
-            console.log("Tradeo AI: Redraw erkannt. Prüfe UI Integrität...");
-            
-            const zone = document.getElementById('tradeo-ai-copilot-zone');
-            
-            if (!zone) {
-                // UI ist komplett weg -> Neu aufbauen im Restore Mode
-                console.log("Tradeo AI: UI verloren gegangen. Stelle wieder her...");
+            if (!copilotZone) {
                 initConversationUI(true); 
             } else {
-                // UI ist noch da, aber vielleicht nicht mehr ganz oben?
-                // FreeScout schiebt oft neue Elemente davor
-                const main = document.getElementById('conv-layout-main');
-                if (main && main.firstChild !== zone) {
-                    console.log("Tradeo AI: UI verrutscht. Schiebe nach oben...");
-                    main.prepend(zone);
+                if (mainContainer.firstChild !== copilotZone) {
+                    mainContainer.prepend(copilotZone);
                 }
             }
         }
@@ -1446,24 +1538,26 @@ function renderReasoningMessage(summary, details, isLoading = false, targetEleme
 // HELPER: SINGLE TICKET RESET
 // =============================================================================
 async function performSingleTicketReset() {
-    const ticketId = getTicketIdFromUrl();
-    if (!ticketId) {
+    const ticketId = getTicketIdFromUrl() || "UNKNOWN";
+    if (ticketId === 'UNKNOWN') {
         console.warn("Tradeo AI: Kein Ticket-ID für Reset gefunden.");
         return;
     }
 
     console.log(`🔄 Tradeo AI: Starte Reset für Ticket #${ticketId}...`);
 
-    // 1. Storage NUR für dieses Ticket löschen
-    await chrome.storage.local.remove([`draft_${ticketId}`, `processing_${ticketId}`]);
+    // 1. Storage für dieses Ticket löschen (INKLUSIVE Übersetzungen!)
+    await chrome.storage.local.remove([
+        `draft_${ticketId}`, 
+        `processing_${ticketId}`,
+        `translations_${ticketId}` // <--- NEU: Löscht die gespeicherten Übersetzungen
+    ]);
 
     // 2. RAM State für dieses Ticket bereinigen
     if (window.aiState) {
         window.aiState.knownTickets.delete(ticketId);
-        // Da wir uns gerade in diesem Ticket befinden, leeren wir auch den aktuellen View-State
         window.aiState.chatHistory = [];
         window.aiState.lastDraft = "";
-        // Wichtig: auch ggf. gecachte Tool-Ergebnisse für dieses Ticket löschen
         if (window.aiState.lastToolDataByCid) {
             delete window.aiState.lastToolDataByCid[ticketId];
         }
@@ -1483,10 +1577,19 @@ async function performSingleTicketReset() {
     const input = document.getElementById('tradeo-ai-input');
     if (input) input.value = '';
 
+    // NEU: Badges aus der UI entfernen (damit man sieht, dass sie weg sind)
+    document.querySelectorAll('.karen-translation-wrapper').forEach(el => el.remove());
+    // Originaltexte wiederherstellen (optional, aber sauberer)
+    document.querySelectorAll('.thread').forEach(t => {
+        if(t.dataset.originalContent) {
+            const contentEl = t.querySelector('.thread-content');
+            if(contentEl) contentEl.innerHTML = t.dataset.originalContent;
+            delete t.dataset.originalContent;
+        }
+    });
+
     // 4. Neu-Initialisierung anstoßen
-    // Da der Cache gelöscht ist, wird handleStartupSync dies als "neues Ticket" erkennen 
-    // und automatisch runAI(true) feuern.
-    expandInterface(); // UI sicherheitshalber aufklappen
+    expandInterface(); 
     handleStartupSync(ticketId);
 }
 
@@ -1605,7 +1708,7 @@ async function resetUiToLoadingState() {
 
     if (dummyDraft) {
         // Platzhalter anzeigen
-        dummyDraft.innerHTML = '<em>🤖 Neuer Thread erkannt! Analysiere Ticket neu...</em>';
+        dummyDraft.innerHTML = '<em>🤖 Conversation-Änderung erkannt! Analysiere Ticket neu...</em>';
         dummyDraft.style.display = 'block';
         
         // Visuellen Effekt auslösen
@@ -1837,10 +1940,7 @@ async function runAI(isInitial = false) {
     if (lock === false) return;
 
     const { vertexCredentials } = await chrome.storage.local.get(['vertexCredentials']);
-    const hasVertexCreds = Array.isArray(vertexCredentials)
-        && vertexCredentials.some(c => c && c.projectId);
-
-    // --- In content.js -> Funktion runAI ---
+    const hasVertexCreds = Array.isArray(vertexCredentials) && vertexCredentials.some(c => c && c.projectId);
 
     let userPrompt = "";
     if (isInitial) {
@@ -1853,16 +1953,11 @@ async function runAI(isInitial = false) {
         }
         renderChatMessage('user', userPrompt); 
         window.aiState.chatHistory.push({ type: "user", content: userPrompt }); 
-        
-        // NEU: Input sofort leeren, sobald die Nachricht im Chat erscheint
         input.value = ''; 
     }
 
     if (!hasVertexCreds) {
-        renderChatMessage(
-            'system',
-            "⚠️ Keine Vertex AI Credentials gefunden (Project ID)."
-        );
+        renderChatMessage('system', "⚠️ Keine Vertex AI Credentials gefunden (Project ID).");
         await releaseLock(cid);
         return;
     }
@@ -1870,7 +1965,35 @@ async function runAI(isInitial = false) {
     window.aiState.isGenerating = true;
     if(btn) { btn.disabled = true; btn.innerText = "⏳"; }
 
-    const contextText = extractContextFromDOM(document);
+    // --- NEU: Zuerst UI-Check ---
+    await applyTranslationsToUi(cid);
+
+    let contextText = extractContextFromDOM(document);
+
+    // --- NEU: Context für KEVIN patchen ---
+    const knownTranslations = await getTranslations(cid);
+    if (Object.keys(knownTranslations).length > 0) {
+        try {
+            const contextArr = JSON.parse(contextText);
+            let patched = false;
+            
+            contextArr.forEach(msg => {
+                const t = knownTranslations[msg.id] || knownTranslations[`thread-${msg.id}`];
+                if (t && t.text) {
+                    msg.msg = `[TRANSLATION FROM ${t.lang}]: ${t.text}`;
+                    patched = true;
+                }
+            });
+            
+            if (patched) {
+                console.log(`[CID: ${cid}] 🌐 Context für Kevin gepatcht mit Übersetzungen.`);
+                contextText = JSON.stringify(contextArr);
+            }
+        } catch (e) {
+            console.warn("Translation Patch failed:", e);
+        }
+    }
+
     const currentDraft = window.aiState.isRealMode ? document.querySelector('.note-editable')?.innerHTML : dummyDraft.innerHTML;
 
     const historyString = window.aiState.chatHistory.map(e => {
@@ -1883,44 +2006,35 @@ async function runAI(isInitial = false) {
     const isSlowModel = currentModel.includes("gemini-2.5-pro"); 
     const dynamicTimeoutMs = isSlowModel ? AI_TIMEOUT_SLOW : (AI_TIMEOUT_PER_TURN * MAX_TURNS);
 
-    // 1. START: Karen Bubble erstellen (UI)
     const karenStartText = "Karen prüft, ob wir aus Plenty Daten brauchen...";
     const karenBubble = renderKarenBubble(karenStartText);
-
-    // 2. START: History Eintrag synchron halten (WICHTIG für Reload)
     window.aiState.chatHistory.push({ type: "system", content: karenStartText });
 
     const primaryTask = async () => {
-        // --- PHASE 1: PLAN ---
-        
         const lastToolData = (window.aiState.lastToolDataByCid && window.aiState.lastToolDataByCid[cid]) ? window.aiState.lastToolDataByCid[cid] : null;
+        
+        // HIER passiert jetzt die Übersetzung "on the fly" im Planner
         const plan = await analyzeToolPlan(contextText, userPrompt, currentDraft, lastToolData, cid);
 
-        // "Triggerhappy" Schutz
         const forceRefresh = wantsFreshData(userPrompt);
         const editOnly = isLikelyEditOnly(userPrompt);
         let toolCallsToExecute = Array.isArray(plan.tool_calls) ? plan.tool_calls : [];
         
         if (!forceRefresh && lastToolData && toolCallsToExecute.length > 0) {
-            console.log(`[CID: ${cid}] Unterdrücke neue Tool-Abfragen: vorhandene Daten vorhanden und kein expliziter Refresh.`);
+            console.log(`[CID: ${cid}] Unterdrücke neue Tool-Abfragen: vorhandene Daten vorhanden.`);
             toolCallsToExecute = [];
         } else if (!forceRefresh && editOnly && toolCallsToExecute.length > 0) {
-            console.log(`[CID: ${cid}] Planner wollte Tools, aber Prompt ist Edit-Only. Unterdrücke neue Abfragen.`);
+            console.log(`[CID: ${cid}] Planner wollte Tools, aber Prompt ist Edit-Only.`);
             toolCallsToExecute = [];
         }
 
-        // --- UPDATE KAREN BUBBLE (PLAN) ---
         const toolExec = buildToolExecutionInfo(toolCallsToExecute);
         
-        // Konstanten für konsistente Nachrichten (Live & Cache)
         const MSG_TOOLS_SKIPPED_CACHE = "♻️ Keine neuen Tool-Aufrufe (Daten vorhanden).";
         const MSG_NO_TOOLS_NEEDED = "✅ Keine Datenabfrage nötig.";
 
         if (toolExec) {
-            // Zeige an, welche Tools geplant sind
             updateKarenBubble(karenBubble, toolExec.summary, toolExec.details);
-            
-            // History Update: Wir merken uns, was Karen getan hat
             window.aiState.chatHistory.push({
                 type: "tool_exec",
                 summary: toolExec.summary,
@@ -1928,33 +2042,19 @@ async function runAI(isInitial = false) {
                 calls: toolExec.calls
             });
         } else {
-            // Keine Tools nötig
-            let noToolsMsg = "";
-            if (lastToolData) {
-                noToolsMsg = MSG_TOOLS_SKIPPED_CACHE;
-            } else {
-                noToolsMsg = MSG_NO_TOOLS_NEEDED;
-            }
-            
+            let noToolsMsg = lastToolData ? MSG_TOOLS_SKIPPED_CACHE : MSG_NO_TOOLS_NEEDED;
             updateKarenBubble(karenBubble, noToolsMsg, null);
             window.aiState.chatHistory.push({ type: "system", content: noToolsMsg });
         }
 
-        // --- PHASE 2: EXECUTE (JS) ---
+        // EXECUTE
         let gatheredData = null;
         if (toolCallsToExecute.length > 0) {
             const freshData = await executePlannedToolCalls(toolCallsToExecute, cid);
-            
-            // MERGE: Neue Daten mit den alten (lastToolData) verschmelzen
             gatheredData = mergeToolData(lastToolData, freshData);
-
-            // In den State speichern (damit es beim nächsten Klick noch da ist)
             window.aiState.lastToolDataByCid = window.aiState.lastToolDataByCid || {};
             window.aiState.lastToolDataByCid[cid] = gatheredData;
-            
-            console.log(`[CID: ${cid}] Tools ausgeführt & Daten gemerged.`, gatheredData);
         } else {
-            // Keine neuen Tools -> Wir nutzen die alten Daten (die bereits im Cache waren)
             gatheredData = lastToolData;
         }
 
@@ -1967,33 +2067,35 @@ async function runAI(isInitial = false) {
         console.groupEnd();
         // --- DEBUG LOGGING END ---
 
-        // --- KAREN FINISH & KEVIN START ---
-        // 1. Karen grün machen
-        // FIX: Hier nutzen wir exakt dieselben Strings wie oben für Konsistenz
+        // FINISH KAREN
         let finalStatus = "";
-        if (toolExec) {
-            finalStatus = toolExec.summary;
-        } else if (lastToolData) {
-            finalStatus = MSG_TOOLS_SKIPPED_CACHE;
-        } else {
-            finalStatus = MSG_NO_TOOLS_NEEDED;
-        }
+        if (toolExec) finalStatus = toolExec.summary;
+        else if (lastToolData) finalStatus = MSG_TOOLS_SKIPPED_CACHE;
+        else finalStatus = MSG_NO_TOOLS_NEEDED;
 
         updateKarenBubble(karenBubble, finalStatus, toolExec ? toolExec.details : null, true);
 
-        // 2. Kevin Bubbles sofort anzeigen (Loading State)
+        // KEVIN START
         const draftPlaceholder = renderDraftMessage(null, true);
         const reasoningPlaceholder = renderReasoningMessage(null, null, true);
 
+        // --- OPTIONAL: Context NOCHMAL patchen ---
+        const freshTranslations = await getTranslations(cid);
+        if (Object.keys(freshTranslations).length > 0) {
+             try {
+                const contextArr = JSON.parse(extractContextFromDOM(document)); 
+                contextArr.forEach(msg => {
+                    const t = freshTranslations[msg.id] || freshTranslations[`thread-${msg.id}`];
+                    if (t && t.text) msg.msg = `[TRANSLATION FROM ${t.lang}]: ${t.text}`;
+                });
+                contextText = JSON.stringify(contextArr);
+             } catch(e) {}
+        }
 
-        // --- PHASE 3: GENERATE ---
         const generatorPrompt = `
 ${workerPrompt}
 
 === HINTERGRUND-DATEN (PLENTY API ERGEBNISSE) ===
-Falls hier "null" steht, wurden für diese Runde keine neuen Daten abgefragt – nutze dann den aktuellen Entwurf als Faktenbasis.
-Wenn Daten vorhanden sind: Nutze sie als Faktenbasis. Wenn Felder fehlen oder ok=false ist, sage das kurz und frage gezielt nach.
-WICHTIG: Du darfst KEINE Tools/Funktionen aufrufen – die Datenbeschaffung ist abgeschlossen.
 ${gatheredData ? JSON.stringify(gatheredData) : "null"}
 
 === TICKET VERLAUF ===
@@ -2029,10 +2131,7 @@ Gib NUR ein JSON-Objekt zurück im Format:
         try {
             const jsonResp = JSON.parse(rawText);
             if(!jsonResp.draft && jsonResp.text) jsonResp.draft = jsonResp.text;
-            
-            // Result an die Handler weitergeben (mit Referenz auf die Placeholders)
             return { result: jsonResp, placeholders: { draft: draftPlaceholder, reasoning: reasoningPlaceholder } };
-
         } catch (e) {
             return { 
                 result: { 
@@ -2049,7 +2148,6 @@ Gib NUR ein JSON-Objekt zurück im Format:
     );
 
     try {
-        // Wir erwarten jetzt ein Objekt { result: ..., placeholders: ... }
         const finalData = await Promise.race([primaryTask(), timeoutPromise]);
         
         handleAiSuccess(
@@ -2058,7 +2156,7 @@ Gib NUR ein JSON-Objekt zurück im Format:
             input, 
             dummyDraft, 
             cid, 
-            finalData.placeholders // Neue Params
+            finalData.placeholders 
         );
 
     } catch (error) {
@@ -2084,8 +2182,7 @@ ${historyString}
 ${fallbackPrompt}
 `}]
             }];
-            
-            // Rendere Placeholder für Fallback falls noch nicht da
+
             const fbDraftEl = renderDraftMessage(null, true);
             const fbReasonEl = renderReasoningMessage(null, null, true);
 
@@ -2336,6 +2433,119 @@ function stripGeminiJson(rawText) {
 
 function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
 
+// =============================================================================
+// KAREN POLYGLOT LAYER (Translations)
+// =============================================================================
+
+// Helper für Text-Aufbereitung (wichtig für stabilen Hash)
+function processCloneContent(element) {
+    const brs = element.querySelectorAll('br');
+    brs.forEach(br => br.replaceWith('\n'));
+
+    const blocks = element.querySelectorAll('p, div, li, tr, h1, h2, h3');
+    blocks.forEach(tag => {
+        if(tag.parentNode) {
+            const newline = document.createTextNode('\n');
+            tag.parentNode.insertBefore(newline, tag);
+        }
+    });
+}
+
+async function saveTranslations(ticketId, newTranslations) {
+    if (!newTranslations || Object.keys(newTranslations).length === 0) return;
+
+    const key = `translations_${ticketId}`;
+    const storage = await chrome.storage.local.get([key]);
+    const existing = storage[key] || {};
+
+    const merged = { ...existing, ...newTranslations };
+    
+    await chrome.storage.local.set({ [key]: merged });
+    console.log(`[CID: ${ticketId}] 🌐 Karen hat ${Object.keys(newTranslations).length} Übersetzungen gespeichert.`);
+}
+
+
+async function getTranslations(ticketId) {
+    const key = `translations_${ticketId}`;
+    const storage = await chrome.storage.local.get([key]);
+    return storage[key] || {};
+}
+
+/**
+ * Injiziert die Badges und Toggles in die FreeScout Threads
+ */
+async function applyTranslationsToUi(ticketId) {
+    const translations = await getTranslations(ticketId);
+    if (Object.keys(translations).length === 0) return;
+
+    const threads = document.querySelectorAll('.thread');
+    
+    threads.forEach(threadEl => {
+        // NEU: Wenn der Thread noch im "Neue Nachricht" Wrapper steckt -> Finger weg!
+        // Wir warten, bis der User auf "Anzeigen" klickt und der Wrapper weg ist.
+        if (threadEl.closest('.thread-type-new')) return;
+
+        const threadId = threadEl.getAttribute('data-thread_id'); 
+        if(!threadId) return;
+
+        let transData = translations[threadId] || translations[`thread-${threadId}`];
+        if (!transData) return;
+
+        if (threadEl.querySelector('.karen-translation-wrapper')) return;
+
+        const infoEl = threadEl.querySelector('.thread-info');
+        const contentEl = threadEl.querySelector('.thread-content');
+
+        if (infoEl && contentEl) {
+            const wrapper = document.createElement('span');
+            wrapper.className = 'karen-translation-wrapper';
+            
+            // Button bekommt initial die Klasse 'is-original' (Blau)
+            wrapper.innerHTML = `
+                <span class="karen-badge">Translated by Karen</span>
+                <button class="karen-toggle-btn is-original" type="button">Original (${transData.lang})</button>
+            `;
+
+            // Insert links neben Status
+            const statusEl = infoEl.querySelector('.thread-status');
+            if (statusEl) {
+                infoEl.insertBefore(wrapper, statusEl);
+            } else {
+                infoEl.appendChild(wrapper);
+            }
+
+            // WICHTIG: Original sichern FÜR DIE ANZEIGE
+            if (!threadEl.dataset.originalContent) {
+                threadEl.dataset.originalContent = contentEl.innerHTML;
+            }
+
+            const translatedHtml = transData.text.replace(/\n/g, '<br>');
+            contentEl.innerHTML = translatedHtml; 
+
+            const btn = wrapper.querySelector('.karen-toggle-btn');
+            
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                const isShowingTranslated = btn.textContent.includes('Original');
+                
+                if (isShowingTranslated) {
+                    contentEl.innerHTML = threadEl.dataset.originalContent;
+                    btn.textContent = "Englisch (Karen)";
+                    btn.classList.remove('is-original');
+                    btn.classList.add('is-translated');
+                } else {
+                    contentEl.innerHTML = translatedHtml;
+                    btn.textContent = `Original (${transData.lang})`;
+                    btn.classList.remove('is-translated');
+                    btn.classList.add('is-original');
+                }
+            });
+        }
+    });
+}
+
 /**
  * SCHRITT 1: Planner / Analyzer
  * Gibt NUR einen Plan zurück: welche vorhandenen Tools (fetchOrderDetails, fetchItemDetails, fetchCustomerDetails, searchItemsByText)
@@ -2346,8 +2556,8 @@ async function analyzeToolPlan(contextText, userPrompt, currentDraft, lastToolDa
 
     const safeDraft = (currentDraft || "").toString();
     const safeLast = lastToolData ? JSON.stringify(lastToolData) : "null";
-    // const trimmedLast = safeLast.length > 12000 ? safeLast.slice(0, 12000) + "\n... (gekürzt)" : safeLast;
-    // Planner prompt is defined in systemPrompts.js (as const plannerPrompt)
+    
+    // Prompt Konstruktion (unverändert)
     const fullPlannerPrompt = `${plannerPrompt}
 
 === TICKET VERLAUF ===
@@ -2379,7 +2589,17 @@ ${userPrompt}
         return { type: "plan", schema_version: "plan.v1", tool_calls: [], notes: "JSON_PARSE_ERROR", needs_more_info: [] };
     }
 
-    // Minimal Validation / Sanitization
+    // --- NEU: TRANSLATIONS HANDLING ---
+    if (plan.translations && typeof plan.translations === 'object') {
+        // WICHTIG: Wir warten mit 'await', damit die Daten sicher im Storage sind,
+        // bevor der nächste Schritt (z.B. Context Patching) versucht, sie zu lesen.
+        await saveTranslations(cid, plan.translations);
+        
+        // UI Update versuchen (feuert nur, wenn wir zufällig gerade in diesem Ticket sind)
+        applyTranslationsToUi(cid);
+    }
+    // ----------------------------------
+
     if (!isPlainObject(plan)) plan = { type: "plan", schema_version: "plan.v1", tool_calls: [] };
     if (!Array.isArray(plan.tool_calls)) plan.tool_calls = [];
 
@@ -2393,7 +2613,6 @@ ${userPrompt}
             args: c.args,
             purpose: typeof c.purpose === 'string' ? c.purpose : ""
         }))
-        // harte Validierung (keine Platzhalter wie "c1.xxx")
         .map(validateAndNormalizeToolCall)
         .filter(Boolean);
 
@@ -2451,20 +2670,25 @@ async function executePlannedToolCalls(toolCalls, cid) {
     return gathered;
 }
 
-// --- STANDARD UTILS ---
-
-// --- DEBUGGING / KONSOLE ---
-// Wurde umgebaut von window.resetAI zu interner Funktion für den Button
+// =============================================================================
+// HELPER: FULL RESET (GLOBAL)
+// =============================================================================
 async function performFullReset() {
     console.log("💣 Tradeo AI: Starte kompletten Reset...");
     
     try {
         const allData = await chrome.storage.local.get(null);
-        const keysToRemove = Object.keys(allData).filter(key => key.startsWith('draft_'));
+        
+        // 1. Lösche Drafts UND Translations UND Locks (Global)
+        const keysToRemove = Object.keys(allData).filter(key => 
+            key.startsWith('draft_') || 
+            key.startsWith('processing_') ||
+            key.startsWith('translations_') 
+        );
         
         if (keysToRemove.length > 0) {
             await chrome.storage.local.remove(keysToRemove);
-            console.log(`🗑️ Storage: ${keysToRemove.length} Tickets/Entwürfe gelöscht.`);
+            console.log(`🗑️ Storage: ${keysToRemove.length} Einträge gelöscht.`);
         } else {
             console.log("ℹ️ Storage: War bereits sauber.");
         }
@@ -2482,17 +2706,42 @@ async function performFullReset() {
         console.log("🧠 RAM: State zurückgesetzt.");
     }
 
-    // 3. UI Feedback
-    const historyDiv = document.getElementById('tradeo-ai-chat-history');
-    if (historyDiv) historyDiv.innerHTML = '<div style="padding:20px; text-align:center; color:#856404; background:#fff3cd; border:1px solid #ffeeba; margin:10px; border-radius:4px;"><strong>♻️ Reset erfolgreich!</strong><br>Der Verlauf wurde gelöscht.<br>Lade AI neu...</div>';
+    // --- 3. UI CLEANUP (Das Upgrade für das aktuelle Ticket) ---
     
-    const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
-    if (dummyDraft) dummyDraft.innerHTML = '<em>Reset...</em>';
+    // A) Input Feld leeren
+    const input = document.getElementById('tradeo-ai-input');
+    if (input) input.value = '';
 
-    // 4. Automatisch neu starten nach kurzem Delay
+    // B) Badges entfernen & TEXT WIEDERHERSTELLEN (Wichtig!)
+    document.querySelectorAll('.karen-translation-wrapper').forEach(el => el.remove());
+    
+    document.querySelectorAll('.thread').forEach(t => {
+        // Prüfen ob Original-Inhalt gesichert war -> Zurückschreiben
+        if(t.dataset.originalContent) {
+            const contentEl = t.querySelector('.thread-content');
+            if(contentEl) contentEl.innerHTML = t.dataset.originalContent;
+            // Backup-Attribut löschen, damit alles wie neu ist
+            delete t.dataset.originalContent;
+        }
+    });
+
+    // C) Chat History Feedback
+    const historyDiv = document.getElementById('tradeo-ai-chat-history');
+    if (historyDiv) {
+        historyDiv.innerHTML = '<div style="padding:20px; text-align:center; color:#856404; background:#fff3cd; border:1px solid #ffeeba; margin:10px; border-radius:4px;"><strong>♻️ Globaler Reset erfolgreich!</strong><br>Alles gelöscht.<br>Lade AI neu...</div>';
+    }
+
+    // D) Dummy Draft Status
+    const dummyDraft = document.getElementById('tradeo-ai-dummy-draft');
+    if (dummyDraft) {
+        dummyDraft.innerHTML = '<em>🔄 Globaler Reset... Lade neu...</em>';
+        dummyDraft.style.display = 'block';
+    }
+
+    // 4. Automatisch neu starten
     setTimeout(() => {
         console.log("🔄 Starte AI neu...");
-        runAI(true); // Neustart mit Initial-Prompt
+        runAI(true); 
     }, 1500);
 }
 

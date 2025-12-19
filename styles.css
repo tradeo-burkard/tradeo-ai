@@ -701,3 +701,65 @@
     word-wrap: break-word; /* Verhindert Layout-Bruch bei langen Wörtern */
     line-height: 1.4;
 }
+
+/* --- KAREN TRANSLATION STYLES (UPDATED) --- */
+
+.karen-translation-wrapper {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-right: 10px;
+    margin-left: 0;
+    vertical-align: middle;
+}
+
+/* Basis-Stil für Badge UND Button */
+.karen-badge, .karen-toggle-btn {
+    border-radius: 12px;
+    padding: 2px 10px; /* Etwas mehr Padding für Klickbarkeit */
+    font-size: 11px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.2s ease;
+    text-decoration: none;
+    line-height: 1.5;
+}
+
+/* 1. Der Info-Badge (Grün, statisch) */
+.karen-badge {
+    background-color: #f0fff4;
+    color: #276749;
+    border: 1px solid #c6f6d5;
+    cursor: default;
+}
+.karen-badge::before { content: "🌐"; font-size: 10px; }
+
+/* 2. Der Button (Interaktiv) */
+.karen-toggle-btn {
+    cursor: pointer;
+    outline: none;
+}
+
+/* Zustand A: "Original anzeigen" -> BLAU */
+.karen-toggle-btn.is-original {
+    background-color: #ebf8ff;
+    color: #2b6cb0;
+    border: 1px solid #bee3f8;
+}
+.karen-toggle-btn.is-original:hover {
+    background-color: #bee3f8;
+    border-color: #90cdf4;
+}
+
+/* Zustand B: "Englisch (Karen) anzeigen" -> GRÜN (wie der Badge) */
+.karen-toggle-btn.is-translated {
+    background-color: #f0fff4;
+    color: #276749;
+    border: 1px solid #c6f6d5;
+}
+.karen-toggle-btn.is-translated:hover {
+    background-color: #c6f6d5;
+    border-color: #9ae6b4;
+}
