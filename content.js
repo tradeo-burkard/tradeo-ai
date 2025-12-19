@@ -3227,7 +3227,7 @@ window.debugPlentyItemSearch = async function(rawSearch) {
                 searchText,
                 mode: 'nameAndDescription',
                 maxResults: 30,
-                onlyWithStock: true 
+                onlyWithStock: false 
             }, (res) => resolve(res));
         });
 

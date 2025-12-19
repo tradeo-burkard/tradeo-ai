@@ -441,9 +441,9 @@ async function fetchOrderDetails(orderId) {
         }
 
         // ------------------------------------------------------------
-        // 3) Bestände holen & STRIPPEN (SMART STOCK LOGIK)
+        // 3) Bestände & Shop-Status holen (SMART STOCK & CAN LINK SHOP)
         // ------------------------------------------------------------
-        const stockMap = new Map(); // Lokaler Speicher für die Zuordnung
+        const infoMap = new Map(); // Speichert { stockNet, canLinkShop }
 
         if (orderData.orderItems) {
             const variationIds = orderData.orderItems
@@ -457,23 +457,55 @@ async function fetchOrderDetails(orderId) {
                 try {
                     // 1. Item ID auflösen
                     const itemId = await resolveItemIdFromVariationId(vid);
-                    if (!itemId) return { variationId: vid, stockNet: 0 };
+                    // Default Fallback
+                    if (!itemId) return { variationId: vid, stockNet: 0, canLinkShop: false };
 
-                    // 2. Rufe spezifischen Item-Stock Endpoint auf
-                    const stockData = await makePlentyCall(`/rest/items/${itemId}/variations/${vid}/stock`);
+                    // 2. Parallel: Stock, Variation-Details (für Flags) und Clients (für Webshop)
+                    const [stockData, varData, clientData] = await Promise.all([
+                        makePlentyCall(`/rest/items/${itemId}/variations/${vid}/stock`).catch(() => []),
+                        makePlentyCall(`/rest/items/${itemId}/variations/${vid}`).catch(() => null),
+                        makePlentyCall(`/rest/items/${itemId}/variations/${vid}/variation_clients`).catch(() => [])
+                    ]);
 
-                    // 3. Nutze Smart Stock Berechnung
+                    // 3. Smart Stock Berechnung
                     const net = await calculateSmartStock(stockData, vid);
 
-                    return { variationId: vid, stockNet: net };
+                    // 4. canLinkShop Berechnung
+                    const hasPositiveStock =
+                        net === "Unendlich" ||
+                        (typeof net === "number" && net > 0) ||
+                        (!Number.isNaN(Number(net)) && Number(net) > 0);
+
+                    const clientPlentyIds = (Array.isArray(clientData) ? clientData : [])
+                        .map(x => x?.plentyId)
+                        .filter(id => typeof id === "number");
+
+                    const WEBSHOP_PLENTY_ID = 7843; 
+                    const webshopAvailable = clientPlentyIds.includes(WEBSHOP_PLENTY_ID);
+                    
+                    const v = varData || {};
+                    const canLinkShop =
+                        Boolean(v.isActive) &&
+                        webshopAvailable &&
+                        !v.isHiddenInCategoryList &&
+                        (
+                            !v.isVisibleIfNetStockIsPositive || hasPositiveStock
+                        ) &&
+                        (
+                            !v.isInvisibleIfNetStockIsNotPositive || hasPositiveStock
+                        );
+
+                    return { variationId: vid, stockNet: net, canLinkShop };
                 } catch (e) {
-                    return { variationId: vid, stockNet: 0 };
+                    return { variationId: vid, stockNet: 0, canLinkShop: false };
                 }
             });
 
-            const stockResults = await Promise.all(stockPromises);
-            // Ergebnisse in die Map übertragen für schnellen Zugriff
-            stockResults.forEach(res => stockMap.set(res.variationId, res.stockNet));
+            const results = await Promise.all(stockPromises);
+            results.forEach(res => infoMap.set(res.variationId, { 
+                stockNet: res.stockNet, 
+                canLinkShop: res.canLinkShop 
+            }));
         }
 
         // ------------------------------------------------------------
@@ -554,17 +586,22 @@ async function fetchOrderDetails(orderId) {
             };
         };
 
-        const cleanItems = (orderData.orderItems || []).map((item) => ({
-            id: item.id,
-            itemId: item.itemId, 
-            itemVariationId: item.itemVariationId,
-            quantity: item.quantity,
-            stockNet: stockMap.get(item.itemVariationId) ?? 0, // <--- NEU: Bestand direkt am Item
-            orderItemName: item.orderItemName,
-            orderItemDescription: item.orderItemDescription,
-            references: cleanReferences(item.references),
-            amounts: cleanOrderItemAmounts(item)
-        }));
+        const cleanItems = (orderData.orderItems || []).map((item) => {
+            const info = infoMap.get(item.itemVariationId) || { stockNet: 0, canLinkShop: false };
+            
+            return {
+                id: item.id,
+                itemId: item.itemId, 
+                itemVariationId: item.itemVariationId,
+                quantity: item.quantity,
+                stockNet: info.stockNet,     // <--- Aus Map
+                canLinkShop: info.canLinkShop, // <--- NEU
+                orderItemName: item.orderItemName,
+                orderItemDescription: item.orderItemDescription,
+                references: cleanReferences(item.references),
+                amounts: cleanOrderItemAmounts(item)
+            };
+        });
 
         const cleanShippingPackages = (orderData.shippingPackages || []).map((p) => ({
             weight: p.weight,
@@ -1166,10 +1203,14 @@ async function searchItemsByText(searchText, options = {}) {
             let stockNet = 0;
             let price = "N/A";
 
+            let canLinkShop = false;
+
             if (variationId) {
-                const [stockRes, priceRes] = await Promise.all([
+                // NEU: clientRes (variation_clients) mit abfragen
+                const [stockRes, priceRes, clientRes] = await Promise.all([
                     makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/stock`).catch(() => []),
-                    makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => [])
+                    makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_sales_prices`).catch(() => []),
+                    makePlentyCall(`/rest/items/${itemId}/variations/${variationId}/variation_clients`).catch(() => [])
                 ]);
 
                 // UPDATE: Smart Stock Calculation (Bundle Warehouse 2 Logic)
@@ -1180,6 +1221,32 @@ async function searchItemsByText(searchText, options = {}) {
                 price = (Array.isArray(priceRes) && priceRes[0] && priceRes[0].price != null)
                     ? priceRes[0].price
                     : "N/A";
+
+                // --- CAN LINK SHOP CALCULATION (Analog fetchItemDetails) ---
+                const hasPositiveStock =
+                    stockNet === "Unendlich" ||
+                    (typeof stockNet === "number" && stockNet > 0) ||
+                    (!Number.isNaN(Number(stockNet)) && Number(stockNet) > 0);
+
+                const clientPlentyIds = (Array.isArray(clientRes) ? clientRes : [])
+                    .map(x => x?.plentyId)
+                    .filter(id => typeof id === "number");
+
+                const WEBSHOP_PLENTY_ID = 7843; // Hardcoded ID analog zu fetchItemDetails
+                const webshopAvailable = clientPlentyIds.includes(WEBSHOP_PLENTY_ID);
+
+                canLinkShop =
+                    Boolean(v.isActive) &&
+                    webshopAvailable &&
+                    !v.isHiddenInCategoryList &&
+                    (
+                        // wenn diese Regel greift: nur sichtbar bei positivem Bestand
+                        !v.isVisibleIfNetStockIsPositive || hasPositiveStock
+                    ) &&
+                    (
+                        // wenn diese Regel greift: unsichtbar wenn Bestand NICHT positiv
+                        !v.isInvisibleIfNetStockIsNotPositive || hasPositiveStock
+                    );
             }
 
             const descText = stripHtmlToText(dbDescHtml);
@@ -1193,7 +1260,8 @@ async function searchItemsByText(searchText, options = {}) {
                 model,
                 name,
                 description,
-                stockNet, 
+                stockNet,
+                canLinkShop,
                 price
             };
         } catch (e) {
