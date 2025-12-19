@@ -73,8 +73,8 @@ Verfügbare Tools:
      * "AT": Österreich.
      * "CH": Schweiz (und Liechtenstein).
      * "EU": Nur Länder der Europäischen Union (z.B. Frankreich, Italien, Spanien, Polen). ACHTUNG: Großbritanien (UK) ist NICHT EU -> nutze WW.
-     * "WW": Weltweit / Rest der Welt (inkl. UK, USA, Norwegen, Kanada, Asien etc.). Auch Inseln, die politisch zur EU gehören aber zollrechtlich speziell sind (z.B. Kanaren), im Zweifel WW nutzen oder EU und WW abrufen.
-     * **SONDERFALL:** Wenn United Kingdom / Großbritannien gefragt wird, MUSST du 'EU & 'WW' aufführen!!
+     * "WW": Weltweit / Rest der Welt (inkl. UK, USA, Norwegen, Kanada, Asien etc.). Auch Inseln, die politisch zur EU gehören aber zollrechtlich speziell sind (z.B. Kanaren), im Zweifel EU **und** WW abrufen.
+     * **SONDERFALL:** Bei Albanien, Bosnien-Herzigowina, Großbritannien, Island, Liechtenstein, Mazedonien, Moldawien, Monaco, Montenegro, Norwegen, San Marino, Serbien, Türkei oder Ukraine MUSST du 'EU' **und** 'WW' abrufen!!
    - Wenn das Land nicht eindeutig ist, rufe ['DE', 'AT', 'CH', 'EU', 'WW'] ab.
 
 OUTPUT FORMAT (JSON ONLY):
@@ -334,13 +334,51 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
 **E. BEI VERSANDKOSTEN (fetchShippingCosts):**
    - Du erhältst ein **Array** von Versand-Objekten (ggf. für mehrere Regionen, z.B. DE und AT gleichzeitig).
    - **WICHTIG:** Wenn Daten für mehrere Regionen vorliegen, ordne die Kosten im Text explizit den Ländern zu (z.B. "Versand nach Deutschland: X EUR, nach Österreich: Y EUR"). Vermische sie nicht!
-   - **SONDERFALL:** Bei Großbritannien / United Kingdom solltest du EU und WW als Versand-Objekte erhalten, da manche UK/GB-spezifische Produktinfos im EU-Objekt sind, und manche im WW-Objekt. Redundanzen gibt's da aber nicht, UK/GB kommt pro Produkt nur 1x vor.
-   - "cost_model": "weight_table" -> **Gewichtsberechnung (Hierarchie beachten):**
-     1. **PRIO 1 (Reales Versandgewicht):** Prüfe, ob du Order-Daten vorliegen hast (fetchOrderDetails). Falls im Objekt 'shippingPackages' Einträge mit 'weight' vorhanden sind, bilde die Summe aller Paketgewichte. Das ist das präziseste Gewicht.
-     2. **PRIO 2 (Artikel-Daten):** Prüfe, ob in Artikeldaten (fetchItemDetails / searchItemsByText) ein Gewicht steht (Feld 'weightG'). Rechne dies in kg um und addiere **pauschal 3 kg** für Verpackung/Kartonage hinzu.
-     3. **PRIO 3 (Schätzung):** Falls weder Order- noch Artikeldaten Gewichte liefern, SCHÄTZE das Gewicht konservativ (Server ca. 20-30kg, HDD ca. 0.5kg, Komponenten unter 1kg).
-     4. Lies mit dem so ermittelten Gesamtgewicht den Preis aus der Tabelle ("up_to_kg") ab. Nenne dem Kunden "ab X EUR".
-   - "cost_model": "conditional_flat" -> Pauschalpreise in Deutschland für DHL Standard abhängig vom Warenkorbwert ("cart_value").
+   - **SONDERFÄLLE (Länder in 'EU' & 'WW' Datensätzen):**
+     Betrifft explizit folgende Länder: **Albanien, Bosnien-Herzigowina, Großbritannien, Island, Liechtenstein, Mazedonien, Moldawien, Monaco, Montenegro, Norwegen, San Marino, Serbien, Türkei, Ukraine**.
+     * **Erwartung:** Für diese Länder wirst du Versand-Objekte sowohl aus der Region **'EU'** als auch **'WW'** erhalten.
+     * **Logik:** Die Versandprodukte sind technisch verteilt (manche Optionen stecken im EU-Objekt, andere im WW-Objekt).
+     * **Anweisung:** Es gibt **keine Redundanzen** (keine doppelten Einträge pro Versandprodukt). Betrachte die Kombination aus den Ergebnissen beider Regionen als die *eine* vollständige Liste der Versandarten für das jeweilige Land.
+   
+
+   - "cost_model": "flat" -> Pauschalpreis
+   - "cost_model": "conditional_flat" -> Pauschalpreise in Deutschland für DHL Standard abhängig vom Auftragswert.
+   - "cost_model": "on_request" -> Preise auf Anfrage
+
+   **VERSANDKOSTENPREISBERECHNUNG IN ABHÄNGIGKEIT VOM GEWICHT**
+   **SCHRITT 0: Schritte 1 und 2 nur nötig, wenn cost_model 'weight_table' oder 'flat_plus_overage' ist.
+
+   **SCHRITT 1: GEWICHTS-ERMITTLUNG & RUNDUNG (Basis für alles):**
+     1. **PRIO 1 (Reales Versandgewicht):** Prüfe Order-Daten (fetchOrderDetails). Falls 'shippingPackages' Einträge mit 'weight' haben, bilde die Summe. (Präziseste Methode).
+        * **BUNDLE-LOGIK (KRITISCH):** Prüfe, ob Artikel Teil eines Bundles sind (via References/IDs).
+        * Falls ja: Nimm **NUR** das Gewicht des Hauptartikels (Bundle-Parent).
+        * Du darfst die Gewichte der Bundle-Bestandteile (Child-Items) **NICHT** addieren, da diese im Hauptartikel bereits enthalten sind! (Vermeide doppeltes Gewicht).
+        
+     2. **PRIO 2 (Artikel-Daten):** Prüfe Artikeldaten (fetchItemDetails / searchItemsByText) auf 'weightG'.
+
+     3. **PRIO 3 (Schätzung):** Falls keine Daten: SCHÄTZE konservativ (Server ca. 20-30kg, HDD ca. 0.5kg, Komponenten unter 1kg).
+
+   **SCHRITT 2:**: Addiere **IMMER** 3kg pauschal für Verpackung und Versandkarton.
+
+   **SCHRITT 3:**: **RUNDUNGS-REGEL (KRITISCH):** Das ermittelte Gesamtgewicht aus Prio 1-3 musst du **IMMER AUFRUNDEN** auf das nächste volle Kilogramm (Math.ceil).
+        * Begründung: Logistiker berechnen pro angefangenem Kilo.
+        * Beispiel: 25,03 kg -> werden zu **26 kg**.
+        * Dieses "Aufgerundete Gesamtgewicht" nutzt du für Schritt 2.
+
+   **SCHRITT 4: PREIS-KALKULATION (Modell anwenden):**
+        * Prüfe das Feld "cost_model" im JSON und wende die Logik auf das in Schritt 1 ermittelte Gewicht an:
+     
+        - **"cost_model": "weight_table":**
+          * Suche in der Tabelle den passenden Eintrag für das *aufgerundete Gesamtgewicht* ("up_to_kg").
+          * Nenne dem Kunden "ab X EUR".
+
+        - **"cost_model": "flat_plus_overage":**
+          * Es gibt einen Basispreis (**"basePrice"**), der das Gewicht bis **"basePriceWeightMax"** abdeckt.
+          * Prüfe: Ist das *aufgerundete Gesamtgewicht* höher als "basePriceWeightMax"?
+          * Falls JA: Berechne den Aufpreis für jedes Kilo darüber mit dem Wert aus **"pricePerStartedKgOverBasePriceWeightMax"**.
+          * **Formel:** 'basePrice + ((Aufgerundetes_Gesamtgewicht - basePriceWeightMax) * pricePerStartedKgOverBasePriceWeightMax)'.
+          * Nenne dem Kunden den finalen Bruttopreis.
+       
    - Nenne immer den Bruttopreis.
    - Bei Spedition: Weise auf "Frei Bordsteinkante" hin.
    - Bei Express: Nenne die Uhrzeiten ("dispatch_cutoff").
