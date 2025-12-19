@@ -2018,17 +2018,33 @@ async function runAI(isInitial = false) {
 
         const forceRefresh = wantsFreshData(userPrompt);
         const editOnly = isLikelyEditOnly(userPrompt);
+        // content.js - Innerhalb von runAI(), ca. Zeile 1560
+
+        // ... (Vorheriger Code: const forceRefresh = ... const editOnly = ...)
+
         let toolCallsToExecute = Array.isArray(plan.tool_calls) ? plan.tool_calls : [];
         
-        if (!forceRefresh && lastToolData && toolCallsToExecute.length > 0) {
-            console.log(`[CID: ${cid}] Unterdrücke neue Tool-Abfragen: vorhandene Daten vorhanden.`);
-            toolCallsToExecute = [];
-        } else if (!forceRefresh && editOnly && toolCallsToExecute.length > 0) {
-            console.log(`[CID: ${cid}] Planner wollte Tools, aber Prompt ist Edit-Only.`);
+        // FIX: Aggressive Unterdrückung entfernt. 
+        // Wir vertrauen Karen: Wenn sie Tools plant, obwohl sie "lastToolData" im Prompt gesehen hat,
+        // dann braucht sie vermutlich neue Daten (z.B. andere Region bei Versand).
+        // Wir blocken NUR, wenn es sich zu 100% nur um eine Text-Umformulierung handelt.
+        
+        if (editOnly && !forceRefresh && toolCallsToExecute.length > 0) {
+            console.log(`[CID: ${cid}] Planner wollte Tools, aber User-Prompt ist reines 'Edit-Only' -> Unterdrücke Calls.`);
             toolCallsToExecute = [];
         }
 
+        // ALTER CODE (GELÖSCHT/KOMMENTIERT), DER DEN FEHLER VERURSACHT HAT:
+        /*
+        if (!forceRefresh && lastToolData && toolCallsToExecute.length > 0) {
+            console.log(`[CID: ${cid}] Unterdrücke neue Tool-Abfragen: vorhandene Daten vorhanden.`);
+            toolCallsToExecute = [];
+        }
+        */
+
         const toolExec = buildToolExecutionInfo(toolCallsToExecute);
+        
+        // ... (Weiter im Code mit const MSG_TOOLS_SKIPPED_CACHE ...)
         
         const MSG_TOOLS_SKIPPED_CACHE = "♻️ Keine neuen Tool-Aufrufe (Daten vorhanden).";
         const MSG_NO_TOOLS_NEEDED = "✅ Keine Datenabfrage nötig.";
@@ -2372,9 +2388,11 @@ async function executeToolAction(fnName, fnArgs, cid) {
 // UPDATE: Massive Erweiterung um Wortstämme wie "biet..." (biete, bieten, bietest), "prüf...", "check..." etc.
 const FORCE_REFRESH_KEYWORDS_RE = /\b(nochmal\w*|erneut|aktuell\w*|refresh\w*|neu\s*(?:laden|abfragen|prüfen|checken)|verifizier\w*|fetch\w*|abgleich\w*|aktualisier\w*|such\w*|find\w*|schau\w*|guck\w*|abruf\w*|biet\w*|anbiet\w*|recherchier\w*|prüf\w*|check\w*|scan\w*|ermittel\w*)\b/i;
 
-// Wenn der User *explizit* neue Fakten will, dürfen Tools laufen.
-// UPDATE: Artikelnummern-Pattern und spezifische Hardware-Begriffe ergänzt.
-const EXPLICIT_DATA_REQUEST_RE = /\b(bestell(?:status|nummer)?|order|tracking|liefer(?:status)?|versand|paket|lager(?:bestand)?|bestand|verfügbarkeit|preis|kundendaten|adresse|telefon|email|zoll|gewicht|herkunft|artikel|item|produkt|sku|ean|seriennummer|sn|modell)\b/i;
+// content.js
+
+// UPDATE: Aggressive Suche nach Wortstämmen mit \w*
+// Findet: "versand", "versandkosten", "lieferung", "lieferstatus", "bestellung", "bestellnummer", "pakete", "produktbeschreibung" etc.
+const EXPLICIT_DATA_REQUEST_RE = /\b(bestell\w*|order|tracking|liefer\w*|versand\w*|paket\w*|lager\w*|bestand|verfügbarkeit|preis\w*|kundendaten|adresse|telefon|email|zoll|gewicht|herkunft|artikel\w*|item\w*|produkt\w*|sku|ean|seriennummer|sn|modell)\b/i;
 
 // Typische "nur umformulieren/ergänzen"-Prompts.
 const EDIT_ONLY_RE = /\b(umformulieren|umformulierung|formuliere?n?|schreib\w*\s+um|korrigier\w*|rechtschreib\w*|ton(?:alität)?|freundlicher|kürzer|länger|struktur|format|unverändert|sonst\s+unverändert|nur\s+.*ergänz\w*|bitte\s+.*ergänz\w*|ergänz\w*|hinweis)\b/i;
