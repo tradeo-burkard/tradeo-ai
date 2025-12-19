@@ -2344,6 +2344,9 @@ async function executeToolAction(fnName, fnArgs, cid) {
             maxResults: fnArgs.maxResults || 30,
             onlyWithStock: (typeof fnArgs.onlyWithStock === 'boolean') ? fnArgs.onlyWithStock : true // Default true
         };
+    } else if (fnName === 'fetchShippingCosts') {
+        actionName = 'GET_SHIPPING_COSTS';
+        actionPayload = { region: fnArgs.region };
     }
 
     if (!actionName) return { error: "Unknown Tool" };
@@ -2438,6 +2441,21 @@ function validateAndNormalizeToolCall(call) {
         if (typeof args.onlyWithStock === 'boolean') onlyWithStock = args.onlyWithStock;
 
         return { ...call, args: { searchText, mode, maxResults, onlyWithStock } };
+    }
+
+    if (name === 'fetchShippingCosts') {
+        // Erlaube nur valide Regionen, default auf WW falls Karen Quatsch macht
+        const validRegions = ['DE', 'AT', 'CH', 'EU', 'WW'];
+        let region = String(args.region || "WW").toUpperCase();
+        
+        // Einfache Mapping-Logik für Karen-Fehler
+        if (region === 'GERMANY' || region === 'DEUTSCHLAND') region = 'DE';
+        if (region === 'AUSTRIA' || region === 'ÖSTERREICH') region = 'AT';
+        if (region === 'SWITZERLAND' || region === 'SCHWEIZ') region = 'CH';
+        
+        if (!validRegions.includes(region)) region = 'WW';
+        
+        return { ...call, args: { region } };
     }
 
     return null;
@@ -2655,7 +2673,7 @@ ${userPrompt}
     if (!isPlainObject(plan)) plan = { type: "plan", schema_version: "plan.v1", tool_calls: [] };
     if (!Array.isArray(plan.tool_calls)) plan.tool_calls = [];
 
-    const allowed = new Set(["fetchOrderDetails","fetchItemDetails","fetchCustomerDetails","searchItemsByText"]);
+    const allowed = new Set(["fetchOrderDetails","fetchItemDetails","fetchCustomerDetails","searchItemsByText", "fetchShippingCosts"]);
     plan.tool_calls = plan.tool_calls
         .filter(c => isPlainObject(c) && allowed.has(c.name) && isPlainObject(c.args))
         .slice(0, 50)
@@ -2685,11 +2703,11 @@ ${userPrompt}
 async function executePlannedToolCalls(toolCalls, cid) {
     const gathered = {
         meta: { executedAt: new Date().toISOString(), cid },
-        orders: [],       // FIX: Array statt null (verhindert Überschreiben bei >1 Order)
-        customers: [],    // FIX: Array statt null
+        orders: [],       
+        customers: [],    
         items: [],
-        searchResults: [] // FIX: Array statt null
-        // raw: [] // ENTFERNT, um Token zu sparen und Doppelung zu vermeiden
+        searchResults: [],
+        shipping: [] // <--- NEU
     };
 
     if (!Array.isArray(toolCalls) || toolCalls.length === 0) return gathered;
@@ -2717,6 +2735,7 @@ async function executePlannedToolCalls(toolCalls, cid) {
         else if (r.name === 'fetchCustomerDetails') gathered.customers.push(r.data);
         else if (r.name === 'fetchItemDetails') gathered.items.push(r.data);
         else if (r.name === 'searchItemsByText') gathered.searchResults.push(r.data);
+        else if (r.name === 'fetchShippingCosts') gathered.shipping.push(r.data); // <--- NEU
     }
 
     return gathered;
@@ -3871,6 +3890,13 @@ function mergeToolData(oldData, newData) {
                  merged.searchResults.push(newItem);
              }
          });
+    }
+
+    // Am Ende der Funktion mergeToolData einfügen (vor return merged):
+    if (newData.shipping && Array.isArray(newData.shipping)) {
+         if (!merged.shipping) merged.shipping = [];
+         // Einfaches Adden, da Shipping-Infos meist statisch sind
+         newData.shipping.forEach(s => merged.shipping.push(s));
     }
 
     return merged;

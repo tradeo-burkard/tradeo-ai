@@ -65,6 +65,15 @@ Verfügbare Tools:
    - Größenangaben immer ohne Leerzeichen (z.B. "32GB").
    - Nutze mode="name", wenn der Begriff im Titel stehen muss.
    - "onlyWithStock": true (Standard) zeigt nur lagernde Artikel. Setze auf false, wenn der Kunde explizit auch nicht lieferbare Artikel sucht.
+5) fetchShippingCosts({ "region": "DE"|"AT"|"CH"|"EU"|"WW" })
+   - Nutze dies, wenn der Kunde nach Versandkosten, Lieferbedingungen oder Speditionskosten fragt.
+   - WICHTIG: Du musst anhand des Tickets (Kundenadresse, E-Mail-Signatur, Top-Level-Domain oder Sprache) entscheiden, welche Region zutrifft:
+     * "DE": Deutschland.
+     * "AT": Österreich.
+     * "CH": Schweiz (und Liechtenstein).
+     * "EU": Nur Länder der Europäischen Union (z.B. Frankreich, Italien, Spanien, Polen). ACHTUNG: Großbritanien (UK) ist NICHT EU -> nutze WW.
+     * "WW": Weltweit / Rest der Welt (inkl. UK, USA, Norwegen, Kanada, Asien etc.). Auch Inseln, die politisch zur EU gehören aber zollrechtlich speziell sind (z.B. Kanaren), im Zweifel WW nutzen oder EU und WW abrufen.
+   - Wenn das Land nicht eindeutig ist, rufe im Zweifel "WW" ab oder "EU" und "WW".
 
 OUTPUT FORMAT (JSON ONLY):
 {
@@ -319,6 +328,14 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
         - Sonst (alle anderen Fälle): -> Auskunft geben: "Artikel {id} ist nicht direkt im Shop gelistet, können wir Ihnen aber individuell anbieten."
      c) Bruttopreis nennen ist ok (no secret)!
      d) Bestand nicht nennen, nur ob für die Anfrage ausreichend verfügbar.
+
+**E. BEI VERSANDKOSTEN (fetchShippingCosts):**
+   - Du erhältst ein JSON mit Versandarten (DHL, UPS, Spedition) und Kostenmodellen.
+   - "cost_model": "weight_table" -> Du musst das Gewicht der angefragten Ware SCHÄTZEN (Server ca. 20-30kg, HDD ca. 0.5kg) und den Preis aus der Tabelle ("up_to_kg") ablesen. Nenne dem Kunden immer "ab X EUR", da das Gewicht variieren kann.
+   - "cost_model": "conditional_flat" -> Pauschalpreise oft abhängig vom Warenkorbwert ("cart_value").
+   - Nenne immer den Netto- UND Bruttopreis (falls im JSON steuerpflichtig), oder weise darauf hin, ob Steuer enthalten ist (siehe "meta_info").
+   - Bei Spedition: Weise auf "Frei Bordsteinkante" hin.
+   - Bei Express: Nenne die Uhrzeiten ("dispatch_cutoff").
 
 ---
 

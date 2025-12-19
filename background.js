@@ -82,4 +82,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             .catch(error => sendResponse({ success: false, error: error.toString() }));
         return true; // Async wait
     }
+
+    // NEU: Shipping Costs Fetcher
+    if (request.action === 'GET_SHIPPING_COSTS') {
+        const region = request.region || 'WW'; // Fallback
+        const filename = `shipping_${region}.json`;
+        
+        // Wir nutzen fetch relativ zum Extension-Root
+        fetch(chrome.runtime.getURL(filename))
+            .then(response => {
+                if (!response.ok) throw new Error(`File not found: ${filename}`);
+                return response.json();
+            })
+            .then(data => sendResponse({ success: true, data: data }))
+            .catch(error => sendResponse({ success: false, error: error.toString() }));
+            
+        return true; // Async wait signalisieren
+    }
 });
