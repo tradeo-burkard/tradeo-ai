@@ -2219,9 +2219,26 @@ function handleAiSuccess(finalResponse, isInitial, input, dummyDraft, ticketId, 
     window.aiState.chatHistory.push({ type: "draft", content: finalResponse.draft });
     
     // 2. Feedback & Reasoning rendern
-    if (finalResponse.feedback || finalResponse.reasoning) {
+    if (finalResponse.feedback || finalResponse.reasoning || finalResponse.rma_check) {
         const feedbackText = finalResponse.feedback || "Antwort erstellt.";
-        const reasoningText = finalResponse.reasoning || ""; 
+        
+        // --- RMA VISUALISIERUNG START ---
+        let reasoningText = "";
+        
+        // Prüfen, ob das neue rma_check Objekt da ist
+        if (finalResponse.rma_check && finalResponse.rma_check.is_rma_case) {
+            const rma = finalResponse.rma_check;
+            // Wir nutzen HTML-Tags, da renderReasoningMessage innerHTML nutzt
+            reasoningText += `🛡️ <b>RMA-Analyse:</b>\n`;
+            reasoningText += `• Entscheidung: <b>${rma.decision}</b>\n`;
+            reasoningText += `• Bestand vs. Retoure: ${rma.item_stock_net} vs ${rma.return_quantity}\n`;
+            reasoningText += `• Logik: ${rma.reasoning}\n\n`;
+            reasoningText += `--- Allgemein ---\n`;
+        }
+        // --- RMA VISUALISIERUNG ENDE ---
+
+        reasoningText += (finalResponse.reasoning || ""); 
+        if (!reasoningText) reasoningText = "Keine detaillierte Begründung.";
         
         const targetReasonEl = placeholders ? placeholders.reasoning : null;
         renderReasoningMessage(feedbackText, reasoningText, false, targetReasonEl);
