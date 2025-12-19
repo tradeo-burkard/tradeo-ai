@@ -771,11 +771,6 @@ async function fetchItemDetails(identifierRaw) {
                 lengthMM: variation.lengthMM,
                 heightMM: variation.heightMM,
                 customsTariffNumber: variation.customsTariffNumber,
-                isActive: variation.isActive,
-                automaticClientVisibility: variation.automaticClientVisibility,   // 0/-1 = kein Store, 1/2 = mind. ein Store
-                isHiddenInCategoryList: variation.isHiddenInCategoryList,
-                isVisibleIfNetStockIsPositive: variation.isVisibleIfNetStockIsPositive,
-                isInvisibleIfNetStockIsNotPositive: variation.isInvisibleIfNetStockIsNotPositive,
             };
 
             // 2) Item bereinigen & Country ID auflösen
@@ -856,8 +851,6 @@ async function fetchItemDetails(identifierRaw) {
                 variation: cleanVariation,
                 item: cleanItem,
                 stockNet: smartStock,
-                webshopAvailable,        // <- DAS ist die Checkbox aus deinem Screenshot (für euren Shop)
-                clientPlentyIds,         // <- Debug / für KI nachvollziehbar
                 canLinkShop,
                 salesPriceGross
             };
