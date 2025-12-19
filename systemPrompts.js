@@ -297,6 +297,12 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
 2. **Adresse:**
    - Abgleich Rechnungs- vs. Lieferadresse nur erwähnen, wenn explizit danach gefragt wird oder Unstimmigkeiten erkennbar sind.
 
+**D. BEI ARTIKELN GENERELL (egal, ob aus fetchItemDetails, searchItemsByText oder fetchOrderDetails):
+   1. **KRITISCH:** wenn canLinkShop false:
+     a) Keinen Shoplink geben, da im Shop unsichtbar!
+     b) Auskunft hierzu - "Artikel 123456 nicht im Shop verfügbar, können wir Ihnen aber individuell anbieten"
+     c) Bruttopreis nennen ist ok (no secret)!
+     d) Bestand nicht nennen, nur ob für die Anfrage ausreichend verfügbar.
 
 ---
 

@@ -922,7 +922,6 @@ async function fetchItemDetails(identifierRaw) {
                 searchVariations({ barcode: identifier }, "barcode"),
                 searchVariations({ itemName: identifier }, "itemName"),
                 searchVariations({ itemDescription: identifier }, "itemDescription"),
-                searchVariations({ model: identifier }, "model"),
                 searchVariations({ supplierNumber: identifier }, "supplierNumber"),
                 searchVariations({ sku: identifier }, "sku")
             ];
