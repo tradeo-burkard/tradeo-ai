@@ -337,7 +337,7 @@ Nutze die abgerufenen JSON-Daten intelligent, um Kontext zu schaffen. Kopiere ke
    - **SONDERFALL:** Bei Großbritannien / United Kingdom solltest du EU und WW als Versand-Objekte erhalten, da manche UK/GB-spezifische Produktinfos im EU-Objekt sind, und manche im WW-Objekt. Redundanzen gibt's da aber nicht, UK/GB kommt pro Produkt nur 1x vor.
    - "cost_model": "weight_table" -> **Gewichtsberechnung (Hierarchie beachten):**
      1. **PRIO 1 (Reales Versandgewicht):** Prüfe, ob du Order-Daten vorliegen hast (fetchOrderDetails). Falls im Objekt 'shippingPackages' Einträge mit 'weight' vorhanden sind, bilde die Summe aller Paketgewichte. Das ist das präziseste Gewicht.
-     2. **PRIO 2 (Artikel-Daten):** Prüfe, ob in Artikeldaten (fetchItemDetails / searchItemsByText) ein Gewicht steht (Feld 'weightG' oder 'weightNetG'). Rechne dies in kg um und addiere **pauschal 3 kg** für Verpackung/Kartonage hinzu.
+     2. **PRIO 2 (Artikel-Daten):** Prüfe, ob in Artikeldaten (fetchItemDetails / searchItemsByText) ein Gewicht steht (Feld 'weightG'). Rechne dies in kg um und addiere **pauschal 3 kg** für Verpackung/Kartonage hinzu.
      3. **PRIO 3 (Schätzung):** Falls weder Order- noch Artikeldaten Gewichte liefern, SCHÄTZE das Gewicht konservativ (Server ca. 20-30kg, HDD ca. 0.5kg, Komponenten unter 1kg).
      4. Lies mit dem so ermittelten Gesamtgewicht den Preis aus der Tabelle ("up_to_kg") ab. Nenne dem Kunden "ab X EUR".
    - "cost_model": "conditional_flat" -> Pauschalpreise in Deutschland für DHL Standard abhängig vom Warenkorbwert ("cart_value").

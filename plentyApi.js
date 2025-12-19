@@ -495,17 +495,27 @@ async function fetchOrderDetails(orderId) {
                             !v.isInvisibleIfNetStockIsNotPositive || hasPositiveStock
                         );
 
-                    return { variationId: vid, stockNet: net, canLinkShop };
+                    // Daten aus varData extrahieren
+                    const vInfo = varData || {};
+                    return { 
+                        variationId: vid, 
+                        stockNet: net, 
+                        canLinkShop,
+                        // Zusätzliche Daten durchschleifen
+                        model: vInfo.model,
+                        weightG: vInfo.weightG,
+                        widthMM: vInfo.widthMM,
+                        lengthMM: vInfo.lengthMM,
+                        heightMM: vInfo.heightMM,
+                        customsTariffNumber: vInfo.customsTariffNumber
+                    };
                 } catch (e) {
                     return { variationId: vid, stockNet: 0, canLinkShop: false };
                 }
             });
 
             const results = await Promise.all(stockPromises);
-            results.forEach(res => infoMap.set(res.variationId, { 
-                stockNet: res.stockNet, 
-                canLinkShop: res.canLinkShop 
-            }));
+            results.forEach(res => infoMap.set(res.variationId, res)); // Wir speichern einfach das ganze Objekt (inkl. Model, Maße etc.)
         }
 
         // ------------------------------------------------------------
@@ -594,8 +604,17 @@ async function fetchOrderDetails(orderId) {
                 itemId: item.itemId, 
                 itemVariationId: item.itemVariationId,
                 quantity: item.quantity,
-                stockNet: info.stockNet,     // <--- Aus Map
-                canLinkShop: info.canLinkShop, // <--- NEU
+                stockNet: info.stockNet,
+                canLinkShop: info.canLinkShop,
+                
+                // Neue Attribute aus infoMap:
+                model: info.model,
+                weightG: info.weightG,
+                widthMM: info.widthMM,
+                lengthMM: info.lengthMM,
+                heightMM: info.heightMM,
+                customsTariffNumber: info.customsTariffNumber,
+
                 orderItemName: item.orderItemName,
                 orderItemDescription: item.orderItemDescription,
                 references: cleanReferences(item.references),
@@ -803,7 +822,6 @@ async function fetchItemDetails(identifierRaw) {
                 model: variation.model,
                 //purchasePrice: variation.purchasePrice,
                 weightG: variation.weightG,
-                weightNetG: variation.weightNetG,
                 widthMM: variation.widthMM,
                 lengthMM: variation.lengthMM,
                 heightMM: variation.heightMM,
@@ -1262,7 +1280,13 @@ async function searchItemsByText(searchText, options = {}) {
                 description,
                 stockNet,
                 canLinkShop,
-                price
+                price,
+                // Neue Attribute:
+                weightG: v?.weightG,
+                widthMM: v?.widthMM,
+                lengthMM: v?.lengthMM,
+                heightMM: v?.heightMM,
+                customsTariffNumber: v?.customsTariffNumber
             };
         } catch (e) {
             console.warn("Enrich failed for Item " + itemId, e);
