@@ -219,7 +219,7 @@ async function fetchOrderDetails(orderId) {
         const result = {
             meta: { type: "PLENTY_ORDER_FULL_EXPORT", orderId: orderId, timestamp: new Date().toISOString() },
             order: orderData,
-            stocks: [],
+            // stocks: [], <-- Entfernt (Bestand jetzt direkt im Item)
             addresses: [],
             shippingInfo: { destinationCountry: "Unknown" }
         };
@@ -376,9 +376,6 @@ async function fetchOrderDetails(orderId) {
 
             // Worker Funktion für einzelne Items
             const enrichWorker = async (item, index) => {
-                // Wenn schon eine Description da ist und sie lang genug wirkt, behalten? 
-                // Hier überschreiben wir sie sicherheitshalber, um immer die aktuelle aus dem Stammartikel zu haben.
-                
                 const variationId = item.itemVariationId;
                 if (!variationId) return item;
 
@@ -389,16 +386,18 @@ async function fetchOrderDetails(orderId) {
                 // 2. Beschreibung laden
                 const desc = await fetchItemDescriptionByItemId(itemId);
                 
+                // Basis-Objekt erstellen inkl. ItemID
+                const newItem = {
+                    ...item,
+                    itemId: itemId
+                };
+                
                 // Nur updaten, wenn wir eine Beschreibung gefunden haben
                 if (desc) {
-                    // Wir klonen das Objekt sauber
-                    return {
-                        ...item,
-                        orderItemDescription: desc
-                    };
+                    newItem.orderItemDescription = desc;
                 }
                 
-                return item;
+                return newItem;
             };
 
             // Parallelisierung: Wir nutzen __mapLimit (global in background.js),
@@ -444,6 +443,8 @@ async function fetchOrderDetails(orderId) {
         // ------------------------------------------------------------
         // 3) Bestände holen & STRIPPEN (SMART STOCK LOGIK)
         // ------------------------------------------------------------
+        const stockMap = new Map(); // Lokaler Speicher für die Zuordnung
+
         if (orderData.orderItems) {
             const variationIds = orderData.orderItems
                 .filter((item) => item.typeId === 1 || item.typeId === 2 || item.typeId === 3) // Artikel & Variationen
@@ -454,23 +455,25 @@ async function fetchOrderDetails(orderId) {
 
             const stockPromises = uniqueVarIds.map(async (vid) => {
                 try {
-                    // 1. Item ID muss bekannt sein für den korrekten Stock Endpoint
+                    // 1. Item ID auflösen
                     const itemId = await resolveItemIdFromVariationId(vid);
-                    if (!itemId) return { variationId: vid, stockNet: 0, error: "ItemId not found" };
+                    if (!itemId) return { variationId: vid, stockNet: 0 };
 
-                    // 2. Rufe spezifischen Item-Stock Endpoint auf (liefert Bundle-Komponenten)
+                    // 2. Rufe spezifischen Item-Stock Endpoint auf
                     const stockData = await makePlentyCall(`/rest/items/${itemId}/variations/${vid}/stock`);
 
-                    // 3. Nutze Smart Stock Berechnung (Shared mit fetchItemDetails)
+                    // 3. Nutze Smart Stock Berechnung
                     const net = await calculateSmartStock(stockData, vid);
 
                     return { variationId: vid, stockNet: net };
                 } catch (e) {
-                    return { variationId: vid, stockNet: 0, error: "Fetch Fail" };
+                    return { variationId: vid, stockNet: 0 };
                 }
             });
 
-            result.stocks = await Promise.all(stockPromises);
+            const stockResults = await Promise.all(stockPromises);
+            // Ergebnisse in die Map übertragen für schnellen Zugriff
+            stockResults.forEach(res => stockMap.set(res.variationId, res.stockNet));
         }
 
         // ------------------------------------------------------------
@@ -553,8 +556,10 @@ async function fetchOrderDetails(orderId) {
 
         const cleanItems = (orderData.orderItems || []).map((item) => ({
             id: item.id,
+            itemId: item.itemId, 
             itemVariationId: item.itemVariationId,
             quantity: item.quantity,
+            stockNet: stockMap.get(item.itemVariationId) ?? 0, // <--- NEU: Bestand direkt am Item
             orderItemName: item.orderItemName,
             orderItemDescription: item.orderItemDescription,
             references: cleanReferences(item.references),
@@ -1191,7 +1196,7 @@ async function searchItemsByText(searchText, options = {}) {
             let description = (lines.length > 1) ? lines.slice(1).join("\n") : "";
 
             return {
-                itemNumber: String(itemId),
+                itemId: String(itemId),
                 variationId: variationId,
                 model,
                 name,
