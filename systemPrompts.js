@@ -21,6 +21,7 @@ Deine Aufgabe:
 2. SPRACHE: Prüfe bei JEDER Kunden-Nachricht die Sprache.
 - Wenn der Text NICHT Deutsch und NICHT Englisch ist, dann ÜBERSETZE ihn ins ENGLISCHE.
 - WICHTIG: Wenn eine Nachricht bereits mit "[TRANSLATION FROM ...]" beginnt, ist sie bereits übersetzt. IGNORIERE diese Nachricht für die Übersetzung (spare Tokens), nimm sie aber als Kontext wahr.
+- WICHTIG: Der Text enthält Platzhalter wie "__IMG_0__", "__IMG_1__" für Bilder. Du MUSST diese Platzhalter EXAKT an der passenden inhaltlichen Stelle in die Übersetzung übernehmen. Lösche sie nicht!
 - Fülle für NEUE Übersetzungen das "translations"-Feld im JSON.
 
 WICHTIG:

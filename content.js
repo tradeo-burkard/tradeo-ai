@@ -11,7 +11,7 @@ const MAX_TURNS = 8; // Maximale Anzahl an Runden (Thought/Action Loops)
 const ENABLE_BACKGROUND_PREFETCH = true;
 
 const DASHBOARD_FOLDERS_TO_SCAN = [
-    //"https://desk.tradeo.de/mailbox/3/27",  // Servershop24 -> Nicht zugewiesen
+    "https://desk.tradeo.de/mailbox/3/27",  // Servershop24 -> Nicht zugewiesen
     "https://desk.tradeo.de/mailbox/3/155"  // Servershop24 -> Meine
     //"https://desk.tradeo.de/mailbox/3/29" // Servershop24 -> Zugewiesen
 ];
@@ -2433,15 +2433,44 @@ function stripGeminiJson(rawText) {
 
 function isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
 
-// =============================================================================
-// KAREN POLYGLOT LAYER (Translations)
-// =============================================================================
+function restoreImages(translatedText, originalHtml) {
+    if (!originalHtml || !translatedText.includes('__IMG_')) return translatedText;
+    
+    try {
+        // Wir parsen das Original-HTML, um an die echten <img> Tags zu kommen
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(originalHtml, 'text/html');
+        // Die Reihenfolge von querySelectorAll ist stabil (Document Order), 
+        // daher passt Index 0 hier zu Index 0 aus processCloneContent.
+        const images = doc.querySelectorAll('img');
+        
+        // Regex sucht nach __IMG_0__, __IMG_15__ etc.
+        return translatedText.replace(/__IMG_(\d+)__/g, (match, index) => {
+            const img = images[parseInt(index, 10)];
+            // Wenn Bild gefunden, das komplette HTML-Tag zurückgeben, sonst den Marker entfernen
+            return img ? img.outerHTML : ''; 
+        });
+    } catch(e) {
+        console.warn("Tradeo AI: Fehler beim Wiederherstellen der Bilder:", e);
+        return translatedText; // Fallback auf Text mit Markern
+    }
+}
 
 // Helper für Text-Aufbereitung (wichtig für stabilen Hash)
 function processCloneContent(element) {
+    // 1. NEU: Bilder durch eindeutige, durchnummerierte Platzhalter ersetzen
+    const images = element.querySelectorAll('img');
+    images.forEach((img, index) => {
+        // Spaces wichtig, damit es nicht mit Worten verschmilzt
+        const placeholder = document.createTextNode(` __IMG_${index}__ `);
+        img.parentNode.replaceChild(placeholder, img);
+    });
+
+    // 2. Breaks behandeln
     const brs = element.querySelectorAll('br');
     brs.forEach(br => br.replaceWith('\n'));
 
+    // 3. Block-Elemente behandeln
     const blocks = element.querySelectorAll('p, div, li, tr, h1, h2, h3');
     blocks.forEach(tag => {
         if(tag.parentNode) {
@@ -2519,7 +2548,13 @@ async function applyTranslationsToUi(ticketId) {
                 threadEl.dataset.originalContent = contentEl.innerHTML;
             }
 
-            const translatedHtml = transData.text.replace(/\n/g, '<br>');
+            // --- NEU: HTML Mapping Logic ---
+            // 1. Newlines zu <br> (Standard Textverarbeitung)
+            let translatedHtmlRaw = transData.text.replace(/\n/g, '<br>');
+
+            // 2. Bilder wiederherstellen (Mapping via Marker & Original Content)
+            const translatedHtml = restoreImages(translatedHtmlRaw, threadEl.dataset.originalContent);
+
             contentEl.innerHTML = translatedHtml; 
 
             const btn = wrapper.querySelector('.karen-toggle-btn');
