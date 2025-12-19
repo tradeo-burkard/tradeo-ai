@@ -2346,7 +2346,7 @@ async function executeToolAction(fnName, fnArgs, cid) {
         };
     } else if (fnName === 'fetchShippingCosts') {
         actionName = 'GET_SHIPPING_COSTS';
-        actionPayload = { region: fnArgs.region };
+        actionPayload = { regions: fnArgs.regions };
     }
 
     if (!actionName) return { error: "Unknown Tool" };
@@ -2446,16 +2446,34 @@ function validateAndNormalizeToolCall(call) {
     if (name === 'fetchShippingCosts') {
         // Erlaube nur valide Regionen, default auf WW falls Karen Quatsch macht
         const validRegions = ['DE', 'AT', 'CH', 'EU', 'WW'];
-        let region = String(args.region || "WW").toUpperCase();
         
-        // Einfache Mapping-Logik für Karen-Fehler
-        if (region === 'GERMANY' || region === 'DEUTSCHLAND') region = 'DE';
-        if (region === 'AUSTRIA' || region === 'ÖSTERREICH') region = 'AT';
-        if (region === 'SWITZERLAND' || region === 'SCHWEIZ') region = 'CH';
+        // Input normalisieren: Sicherstellen, dass es ein Array ist
+        let rawRegions = [];
+        if (Array.isArray(args.regions)) {
+            rawRegions = args.regions;
+        } else if (args.region) {
+            // Fallback, falls LLM aus Gewohnheit "region" (Singular) nutzt
+            rawRegions = [args.region];
+        } else {
+            rawRegions = ['DE', 'AT', 'CH', 'EU', 'WW'];
+        }
+
+        const cleanedRegions = rawRegions.map(r => {
+            let region = String(r || "").toUpperCase();
+            
+            // Mapping-Logik für Karen-Fehler
+            if (region === 'GERMANY' || region === 'DEUTSCHLAND') region = 'DE';
+            if (region === 'AUSTRIA' || region === 'ÖSTERREICH') region = 'AT';
+            if (region === 'SWITZERLAND' || region === 'SCHWEIZ') region = 'CH';
+            
+            if (!validRegions.includes(region)) return 'WW';
+            return region;
+        });
+
+        // Duplikate entfernen und leere Einträge vermeiden
+        const uniqueRegions = [...new Set(cleanedRegions)].filter(Boolean);
         
-        if (!validRegions.includes(region)) region = 'WW';
-        
-        return { ...call, args: { region } };
+        return { ...call, args: { regions: uniqueRegions.length > 0 ? uniqueRegions : ['WW'] } };
     }
 
     return null;
@@ -2735,7 +2753,7 @@ async function executePlannedToolCalls(toolCalls, cid) {
         else if (r.name === 'fetchCustomerDetails') gathered.customers.push(r.data);
         else if (r.name === 'fetchItemDetails') gathered.items.push(r.data);
         else if (r.name === 'searchItemsByText') gathered.searchResults.push(r.data);
-        else if (r.name === 'fetchShippingCosts') gathered.shipping.push(r.data); // <--- NEU
+        else if (r.name === 'fetchShippingCosts' && Array.isArray(r.data)) gathered.shipping.push(...r.data); 
     }
 
     return gathered;
